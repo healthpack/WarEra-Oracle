@@ -449,7 +449,7 @@ const TreeNode = ({ label, icon: Icon, children, isRoot = false, defaultOpen = f
   );
 };
 
-export default function App() {
+export function WarEraOracle() {
   const [isScanning, setIsScanning] = useState(false);
   const isScanningRef = useRef(false);
   const [progress, setProgress] = useState(0);
