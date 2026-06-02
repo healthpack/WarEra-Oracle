@@ -5,7 +5,7 @@ import {
   ExternalLink, RefreshCw, Settings, Search
 } from 'lucide-react';
 
-const FALLBACK_GATEWAY_KEY = 'wae_ad92a24300ca86df1b76b730dec15b0337570a5d0b7119f3f96ee09f4f63e187';
+const FALLBACK_GATEWAY_KEY = 'wae_407eca4d6946a899aff7376e17a52c8225ad17212060110cec694f528d300929';
 
 const WarEraAPI = {
   fetch: async (endpoint, payload, activeKey, baseUrl) => {
