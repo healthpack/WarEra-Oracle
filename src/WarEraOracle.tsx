@@ -244,6 +244,7 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
 
       let totalDonatedWeekly = 0;
       let largeDonations30Days = 0;
+      let totalDonatedAllTime = 0;
       let maxSingleDonation = 0;
 
       w.muDonations.forEach(tx => {
@@ -263,6 +264,7 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
           }
 
           maxSingleDonation = Math.max(maxSingleDonation, amount);
+          totalDonatedAllTime += amount;
           
           // Quest Filter: Exclude standard daily (5) and weekly (25) quest donations from the 'Large' total
           if (Math.abs(amount - 5) > 0.01 && Math.abs(amount - 25) > 0.01) {
@@ -276,6 +278,7 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
 
       w.totalDonatedWeekly = totalDonatedWeekly;
       w.largeDonations30Days = largeDonations30Days;
+      w.totalDonatedAllTime = totalDonatedAllTime;
       w.maxDonation = maxSingleDonation;
       
       // Trigger: Single > 25 OR Weekly > 60
@@ -385,15 +388,44 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
   }
 
   if (suspicions.length > 0) {
-    // Sort so 'money_laundering' (critical severity) always appears at the top of the UI list
-    suspicions.sort((a, b) => {
-        if (a.severity === 'critical') return -1;
-        if (b.severity === 'critical') return 1;
-        return 0;
-    });
+    // Generate AI Summary String
+    let summaryParts = [];
+    
+    // Low Wage
+    const wageSus = suspicions.find(s => s.type === 'low_wage');
+    if (wageSus) {
+        summaryParts.push(`${wageSus.workers.length} workers are paid very low wages.`);
+    }
+
+    // Money Laundering (Highest Priority)
+    const launderSus = suspicions.find(s => s.type === 'money_laundering');
+    if (launderSus) {
+        const totalLaundered = launderSus.workers.reduce((sum, w) => sum + (w.largeDonations30Days || w.totalDonatedAllTime || 0), 0);
+        summaryParts.push(`${launderSus.workers.length} workers have donated a total of ${totalLaundered.toFixed(1)} coins to their Boss's MU in large transactions.`);
+    }
+
+    // Technical Anomalies
+    const cloneSus = suspicions.filter(s => s.type === 'cloned_progression');
+    if (cloneSus.length > 0) {
+        const totalClonedWorkers = cloneSus.reduce((sum, cluster) => sum + cluster.workers.length, 0);
+        summaryParts.push(`${totalClonedWorkers} workers have cloned skills.`);
+    }
+
+    const shellSus = suspicions.find(s => s.type === 'no_production_bonus');
+    if (shellSus) {
+        summaryParts.push(`${bossNoBonusPercentage}% of worker companies have no regional production bonuses.`);
+    }
+
+    const nameSus = suspicions.filter(s => s.type === 'naming_pattern');
+    if (nameSus.length > 0) {
+        const uniqueNamedWorkers = new Set();
+        nameSus.forEach(cluster => cluster.workers.forEach(w => uniqueNamedWorkers.add(w.uid)));
+        summaryParts.push(`${uniqueNamedWorkers.size} workers have overlapping naming patterns.`);
+    }
 
     return {
       player,
+      summary: summaryParts.join(' '),
       suspicions,
       detections: suspicions.reduce((acc, s) => acc + (s.detectionWeight !== undefined ? s.detectionWeight : s.workers.length), 0),
       zeroBonusCompanyCount,
@@ -1137,7 +1169,7 @@ export function WarEraOracle() {
                   type="text" 
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Optional API Key"
+                  placeholder="API Key Required"
                   className={`w-full bg-slate-950 border rounded p-2 text-sm outline-none font-mono transition-colors ${
                       apiKey && !apiKey.startsWith('wae_') 
                       ? 'border-red-500 text-red-400 focus:border-red-400' 
@@ -1333,6 +1365,12 @@ export function WarEraOracle() {
                       linkId={result.player.id}
                     >
                       <div className="ml-2 md:ml-6 my-2 space-y-2 border-l border-slate-800 pl-2 md:pl-4 py-2">
+                        {/* INJECT SUMMARY BOX HERE */}
+                        <div className="bg-slate-900 border border-slate-700/50 rounded p-3 text-sm mb-4">
+                           <div className="text-xs font-bold text-slate-400 mb-1 flex items-center gap-1"><Activity size={12}/> Analysis Summary</div>
+                           <p className="text-slate-300 leading-relaxed">{result.summary}</p>
+                        </div>
+                        
                         <div className="text-xs uppercase font-bold text-slate-500 mb-2">Detected Anomalies</div>
                         {result.suspicions.map((suspicion, sIdx) => (
                           <div key={sIdx} className="bg-slate-900 border border-slate-800 rounded p-2 text-sm">
