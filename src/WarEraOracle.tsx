@@ -2,30 +2,30 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   ShieldAlert, Play, Square, Activity, ChevronRight, 
   ChevronDown, AlertTriangle, Users, Database, UserX, 
-  ExternalLink, RefreshCw, Settings, Search
+  ExternalLink, RefreshCw, Settings, Search, Star, Coins
 } from 'lucide-react';
-
-const FALLBACK_GATEWAY_KEY = 'wae_407eca4d6946a899aff7376e17a52c8225ad17212060110cec694f528d300929';
 
 const WarEraAPI = {
   fetch: async (endpoint, payload, activeKey, baseUrl) => {
     const isGateway = baseUrl.includes('gateway');
     const url = `${baseUrl}${endpoint}`;
     
-    const headers = { 
-        'Content-Type': 'application/json',
-        'X-API-Key': activeKey
-    };
+    const headers = { 'Content-Type': 'application/json' };
+    if (activeKey && activeKey.trim() !== '') {
+        headers['X-API-Key'] = activeKey.trim();
+    }
     
     let res;
     try {
         if (isGateway) {
+            // Gateway Proxy Override: Unbatched POST
             res = await fetch(url, { 
                 method: 'POST', 
                 headers, 
                 body: JSON.stringify(payload) 
             });
         } else {
+            // Official API: Standard Batched GET
             const input = encodeURIComponent(JSON.stringify({ "0": payload }));
             res = await fetch(`${url}?batch=1&input=${input}`, { headers });
         }
@@ -36,6 +36,10 @@ const WarEraAPI = {
     const text = await res.text();
     let errorMessage = `HTTP ${res.status}`;
     
+    if (res.status === 429 || text.includes('Rate limit exceeded') || text.includes('"status":429')) {
+        throw new Error("RATE LIMIT TRIGGERED");
+    }
+
     if (!res.ok) {
         try {
             const parsedError = JSON.parse(text);
@@ -48,8 +52,6 @@ const WarEraAPI = {
             }
             throw new Error(`HTML response received (Possible Catch-All route). Snippet: ${text.substring(0, 50)}...`);
         }
-        
-        if (res.status === 429) throw new Error("RATE LIMIT TRIGGERED");
         throw new Error(`http ${res.status}: ${errorMessage}`);
     }
     
@@ -69,7 +71,7 @@ const WarEraAPI = {
   }
 };
 
-const analyzePlayer = (player, settings) => {
+const analyzePlayer = (player, settings, globalCache, addLog) => {
   if (!player || !player.companies) return null;
   
   let rawWorkers = player.companies.flatMap(c => c.workers || []);
@@ -192,16 +194,17 @@ const analyzePlayer = (player, settings) => {
       const unflagged = groupWorkers.filter(w => !processedNamingUids.has(w.uid));
       
       if (unflagged.length >= 2) {
-        suspicions.push({
-          type: 'naming_pattern',
-          severity: 'high',
-          desc: `Naming overlap detected: ${unflagged.length} workers share the string "${sub}"`,
-          workers: unflagged
-        });
-        unflagged.forEach(w => {
-          suspiciousWorkers.add(w);
-          processedNamingUids.add(w.uid);
-        });
+          suspicions.push({
+            type: 'naming_pattern',
+            severity: 'high',
+            desc: `Naming overlap detected: ${unflagged.length} workers share the string "${sub}"`,
+            workers: unflagged,
+            overlapString: sub 
+          });
+          unflagged.forEach(w => {
+            suspiciousWorkers.add(w);
+            processedNamingUids.add(w.uid);
+          });
       }
   });
 
@@ -230,11 +233,173 @@ const analyzePlayer = (player, settings) => {
     }
   });
 
+  // --- TARGETED MONEY LAUNDERING HEURISTIC ---
+  const launderingWorkers = [];
+  const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+  allWorkers.forEach(w => {
+      if (w.normalizedLevel >= 22) return; // Skip high level workers for money laundering check
+      if (!w.muDonations || w.muDonations.length === 0) return;
+
+      let totalDonatedWeekly = 0;
+      let largeDonations30Days = 0;
+      let maxSingleDonation = 0;
+
+      w.muDonations.forEach(tx => {
+          const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
+          
+          if (txTime < thirtyDaysAgo) return; // Ignore transactions older than 30 days
+          
+          let amount = tx.amount ?? tx.quantity ?? tx.value ?? tx.gold ?? tx.money ?? tx.total;
+          if (typeof amount === 'object' && amount !== null) {
+              amount = amount.amount ?? amount.value ?? amount.quantity ?? amount.gold ?? 0;
+          }
+          if (typeof amount !== 'number') amount = parseFloat(amount) || 0;
+          
+          if (amount === 0) {
+              const possibleVals = Object.values(tx).filter(v => typeof v === 'number' && v < 1000000000000 && v > 0);
+              if (possibleVals.length > 0) amount = Math.max(...possibleVals);
+          }
+
+          maxSingleDonation = Math.max(maxSingleDonation, amount);
+          
+          // Quest Filter: Exclude standard daily (5) and weekly (25) quest donations from the 'Large' total
+          if (Math.abs(amount - 5) > 0.01 && Math.abs(amount - 25) > 0.01) {
+              largeDonations30Days += amount;
+          }
+          
+          if (txTime >= oneWeekAgo) {
+              totalDonatedWeekly += amount;
+          }
+      });
+
+      w.totalDonatedWeekly = totalDonatedWeekly;
+      w.largeDonations30Days = largeDonations30Days;
+      w.maxDonation = maxSingleDonation;
+      
+      // Trigger: Single > 25 OR Weekly > 60
+      w.isLaundering = w.maxDonation > 25 || w.totalDonatedWeekly > 60;
+
+      if (w.isLaundering) {
+          launderingWorkers.push(w);
+      }
+  });
+
+  let hasLaundering = false;
+  let launderingWorkerCount = 0;
+
+  if (launderingWorkers.length > 0) {
+      suspicions.push({
+          type: 'money_laundering',
+          severity: 'critical', // Critical severity to force it to the top of the UI list
+          desc: `Money sent to Boss's MU via large donations (>25 Coins single or >60 Coins total/week) in the past 30 days.`,
+          workers: launderingWorkers,
+          detectionWeight: launderingWorkers.length
+      });
+      launderingWorkers.forEach(w => suspiciousWorkers.add(w));
+      hasLaundering = true;
+      launderingWorkerCount = launderingWorkers.length;
+  }
+
+  const shellCompanyWorkers = [];
+  const allNoBonusWorkers = []; 
+  let zeroBonusCompanyCount = 0;
+  let totalWorkerCompanyCount = 0;
+
+  allWorkers.forEach(w => {
+      w.noBonusOwnedCompanies = [];
+      if (!w.ownedCompanies || w.ownedCompanies.length === 0) return;
+
+      if (w.isActive === false || w.normalizedLevel >= 30) return;
+
+      w.ownedCompanies.forEach(comp => {
+          const itemCode = typeof comp.itemCode === 'object' ? comp.itemCode?._id || comp.itemCode?.code : comp.itemCode;
+          const regionId = typeof comp.region === 'object' ? comp.region?._id : comp.region;
+          if (!itemCode || !regionId) return;
+
+          const regionObj = globalCache.regions[regionId];
+          if (!regionObj) return;
+
+          let hasTimedDeposit = false;
+          if (regionObj.bonuses && Array.isArray(regionObj.bonuses)) {
+              hasTimedDeposit = regionObj.bonuses.some(b => {
+                  const bCode = typeof b.item === 'object' ? b.item?._id || b.item?.code : b.item;
+                  return String(bCode).toLowerCase() === String(itemCode).toLowerCase();
+              });
+          }
+          if (hasTimedDeposit) return;
+
+          const countryId = typeof regionObj.country === 'object' ? regionObj.country?._id : (regionObj.country || regionObj.countryId);
+          const countryObj = globalCache.countries[countryId];
+          
+          if (!countryObj || !countryObj.specializedItem) return; 
+
+          const specialized = String(typeof countryObj.specializedItem === 'object' ? countryObj.specializedItem.code || countryObj.specializedItem._id : countryObj.specializedItem).toLowerCase();
+          const produced = String(itemCode).toLowerCase();
+
+          if (specialized !== produced && specialized !== 'undefined' && produced !== 'undefined') {
+              w.noBonusOwnedCompanies.push(comp);
+          }
+      });
+
+      if (w.noBonusOwnedCompanies.length > 0) {
+          w.noBonusPercentage = Math.round((w.noBonusOwnedCompanies.length / w.ownedCompanies.length) * 100);
+          w.noBonusCount = w.noBonusOwnedCompanies.length;
+          w.totalOwnedCount = w.ownedCompanies.length;
+          
+          zeroBonusCompanyCount += w.noBonusOwnedCompanies.length;
+          totalWorkerCompanyCount += w.ownedCompanies.length;
+          
+          allNoBonusWorkers.push(w);
+          
+          if (w.noBonusPercentage > 25) {
+              shellCompanyWorkers.push(w);
+          }
+      }
+  });
+
+  let bossNoBonusPercentage = 0;
+  if (totalWorkerCompanyCount > 0) {
+      bossNoBonusPercentage = Math.round((zeroBonusCompanyCount / totalWorkerCompanyCount) * 100);
+  }
+
+  const isOnlyNoProd = suspicions.length === 0 && shellCompanyWorkers.length > 0;
+  let shouldFlagNoProd = true;
+  
+  if (isOnlyNoProd) {
+      if (shellCompanyWorkers.length < 2 || bossNoBonusPercentage < 50) {
+          shouldFlagNoProd = false;
+      }
+  }
+
+  if (shellCompanyWorkers.length > 0 && shouldFlagNoProd) {
+      suspicions.push({
+          type: 'no_production_bonus',
+          severity: 'high',
+          desc: `Found ${shellCompanyWorkers.length} workers where >25% of their portfolio are NO production bonus companies.`,
+          workers: allNoBonusWorkers, 
+          detectionWeight: shellCompanyWorkers.length 
+      });
+      allNoBonusWorkers.forEach(w => suspiciousWorkers.add(w)); 
+  }
+
   if (suspicions.length > 0) {
+    // Sort so 'money_laundering' (critical severity) always appears at the top of the UI list
+    suspicions.sort((a, b) => {
+        if (a.severity === 'critical') return -1;
+        if (b.severity === 'critical') return 1;
+        return 0;
+    });
+
     return {
       player,
       suspicions,
-      detections: suspicions.reduce((acc, s) => acc + s.workers.length, 0)
+      detections: suspicions.reduce((acc, s) => acc + (s.detectionWeight !== undefined ? s.detectionWeight : s.workers.length), 0),
+      zeroBonusCompanyCount,
+      bossNoBonusPercentage,
+      hasLaundering,
+      launderingWorkerCount
     };
   }
 
@@ -251,27 +416,29 @@ const TreeNode = ({ label, icon: Icon, children, isRoot = false, defaultOpen = f
         onClick={() => setIsOpen(!isOpen)}
       >
         {children ? (
-          isOpen ? <ChevronDown size={14} className="text-slate-500" /> : <ChevronRight size={14} className="text-slate-500" />
+          isOpen ? <ChevronDown size={14} className="text-slate-500 shrink-0" /> : <ChevronRight size={14} className="text-slate-500 shrink-0" />
         ) : (
-          <span className="w-[14px]"></span>
+          <span className="w-[14px] shrink-0"></span>
         )}
-        {Icon && <Icon size={14} className={isRoot ? "text-blue-400" : "text-slate-400"} />}
+        {Icon && <Icon size={14} className={`shrink-0 ${isRoot ? "text-blue-400" : "text-slate-400"}`} />}
         
-        {linkId ? (
-          <a href={`https://app.warera.io/user/${linkId}`} target="_blank" rel="noopener noreferrer" className="flex-1 hover:text-blue-400 hover:underline flex items-center gap-1" onClick={e => e.stopPropagation()}>
-            {label}
-            <ExternalLink size={10} />
-          </a>
-        ) : (
-          <span className="flex-1">{label}</span>
-        )}
+        <span className="flex-1 flex items-center min-w-0">
+          {linkId ? (
+            <a href={`https://app.warera.io/user/${linkId}`} target="_blank" rel="noopener noreferrer" className="hover:text-blue-400 hover:underline flex items-center gap-1 w-fit truncate" onClick={e => e.stopPropagation()}>
+              <span className="truncate">{label}</span>
+              <ExternalLink size={10} className="shrink-0" />
+            </a>
+          ) : (
+            <span className="truncate">{label}</span>
+          )}
+        </span>
         
         {badge && (
-          <span className={`text-xs px-2 py-0.5 rounded-full font-mono border ${badgeClass || 'bg-red-900/50 text-red-400 border-red-800'}`}>
+          <span className={`text-xs px-2 py-0.5 rounded-full font-mono border whitespace-nowrap shrink-0 ${badgeClass || 'bg-red-900/50 text-red-400 border-red-800'}`}>
             {badge}
           </span>
         )}
-        {extraData && <span className="text-xs text-slate-500 font-mono">{extraData}</span>}
+        {extraData && <span className="text-xs text-slate-500 font-mono whitespace-nowrap shrink-0">{extraData}</span>}
       </div>
       {isOpen && children && (
         <div className="ml-2 animate-in slide-in-from-top-1 duration-200">
@@ -282,7 +449,7 @@ const TreeNode = ({ label, icon: Icon, children, isRoot = false, defaultOpen = f
   );
 };
 
-export function WarEraOracle() {
+export default function App() {
   const [isScanning, setIsScanning] = useState(false);
   const isScanningRef = useRef(false);
   const [progress, setProgress] = useState(0);
@@ -291,6 +458,7 @@ export function WarEraOracle() {
   const [findings, setFindings] = useState({});
   const [settings, setSettings] = useState({
     suspiciousWageThreshold: 0.110,
+    concurrencyLimit: 50 
   });
   
   const [apiKey, setApiKey] = useState('');
@@ -301,8 +469,8 @@ export function WarEraOracle() {
   
   const gatewayTokens = useRef([]);
   const officialTokens = useRef([]);
-  const [gatewayCount, setGatewayCount] = useState(0);
-  const [officialCount, setOfficialCount] = useState(0);
+  
+  const [tick, setTick] = useState(0);
   
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [limitTimer, setLimitTimer] = useState(0);
@@ -310,56 +478,64 @@ export function WarEraOracle() {
   const gatewayFails = useRef(0);
   const isGatewayDead = useRef(false);
   
+  const globalRateLimitRelease = useRef(0);
+  
   const logsEndRef = useRef(null);
-  const hasAutoFetched = useRef(false);
+
+  const globalCacheRef = useRef({ countries: {}, regions: {} });
 
   const addLog = (msg, type = 'info') => {
     setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), msg, type }]);
   };
 
   useEffect(() => {
+    if (showLogs && logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logs, showLogs]);
+
+  useEffect(() => {
     const ticker = setInterval(() => {
-      const now = Date.now();
-      let didChange = false;
-      
-      const prevG = gatewayTokens.current.length;
-      gatewayTokens.current = gatewayTokens.current.filter(t => now - t < 60000);
-      if (gatewayTokens.current.length !== prevG) didChange = true;
-      
-      const prevO = officialTokens.current.length;
-      officialTokens.current = officialTokens.current.filter(t => now - t < 60000);
-      if (officialTokens.current.length !== prevO) didChange = true;
-      
-      if (didChange) {
-          setGatewayCount(gatewayTokens.current.length);
-          setOfficialCount(officialTokens.current.length);
-      }
+      setTick(t => t + 1);
     }, 250); 
-    
     return () => clearInterval(ticker);
   }, []);
 
   useEffect(() => {
-    if (!hasAutoFetched.current) {
-        hasAutoFetched.current = true;
+    if (apiKey && apiKey.trim().length > 20 && availableRegions.length === 0 && !isScanning) {
         fetchRegions();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [apiKey]);
 
   const getToken = async (forceOfficial = false) => {
       while (isScanningRef.current) {
+          
+          while (globalRateLimitRelease.current > Date.now()) {
+              if (!isScanningRef.current) throw new Error("Scan Aborted");
+              
+              const waitMs = globalRateLimitRelease.current - Date.now();
+              setIsRateLimited(true);
+              setLimitTimer(Math.ceil(waitMs / 1000));
+              setCurrentTask(`PAUSED: API COOLDOWN`);
+              
+              await new Promise(r => setTimeout(r, 500));
+          }
+          if (isRateLimited) {
+              setIsRateLimited(false);
+              setCurrentTask(prev => prev.includes('PAUSED') ? `Executing Concurrency Pool (x${settings.concurrencyLimit})...` : prev);
+          }
+
           const now = Date.now();
           gatewayTokens.current = gatewayTokens.current.filter(t => now - t < 60000);
           officialTokens.current = officialTokens.current.filter(t => now - t < 60000);
           
-          setGatewayCount(gatewayTokens.current.length);
-          setOfficialCount(officialTokens.current.length);
+          setTick(t => t + 1); 
 
           const isOfficialEnabled = apiKey && apiKey.trim() !== '';
 
-          let gCapacity = (600 - gatewayTokens.current.length) / 600;
-          let oCapacity = isOfficialEnabled ? ((190 - officialTokens.current.length) / 190) : 0;
+          let gCapacity = (3500 - gatewayTokens.current.length) / 3500;
+          let oCapacity = isOfficialEnabled ? ((400 - officialTokens.current.length) / 400) : 0;
 
           if (forceOfficial) gCapacity = -1; 
           if (isGatewayDead.current) gCapacity = -1;
@@ -367,30 +543,22 @@ export function WarEraOracle() {
           if (gCapacity > 0 || oCapacity > 0) {
               if (oCapacity > gCapacity) {
                   officialTokens.current.push(now);
-                  setOfficialCount(officialTokens.current.length);
+                  setTick(t => t + 1);
                   return 'official';
               } else {
                   gatewayTokens.current.push(now);
-                  setGatewayCount(gatewayTokens.current.length);
+                  setTick(t => t + 1);
                   return 'gateway';
               }
           }
 
           const gNext = gatewayTokens.current[0] || Infinity;
           const oNext = isOfficialEnabled ? (officialTokens.current[0] || Infinity) : Infinity;
-          
           let nextExpire = forceOfficial ? oNext : Math.min(gNext, oNext);
           if (nextExpire === Infinity) nextExpire = now; 
 
           const waitMs = Math.max(10, 60000 - (now - nextExpire) + 10);
-          
-          setIsRateLimited(true);
-          setLimitTimer(Math.ceil(waitMs / 1000));
-          setCurrentTask(`PAUSED: API COOLDOWN`);
-          
-          await new Promise(r => setTimeout(r, Math.min(waitMs, 1000)));
-          setIsRateLimited(false); 
-          setCurrentTask(prev => prev.includes('PAUSED') ? 'Executing Concurrency Pool...' : prev);
+          globalRateLimitRelease.current = Date.now() + waitMs;
       }
       throw new Error("Scan Aborted");
   };
@@ -405,12 +573,22 @@ export function WarEraOracle() {
       }
 
       const baseUrl = route === 'gateway' ? 'https://gateway.warerastats.io/trpc/' : 'https://api2.warera.io/trpc/';
-      const isOfficialEnabled = apiKey && apiKey.trim() !== '';
-      const activeKey = route === 'official' ? apiKey.trim() : (isOfficialEnabled ? apiKey.trim() : FALLBACK_GATEWAY_KEY);
+      const activeKey = apiKey.trim();
       
       try {
           return await WarEraAPI.fetch(endpoint, payload, activeKey, baseUrl);
       } catch (e) {
+          if (e.message.includes('RATE LIMIT')) {
+              globalRateLimitRelease.current = Date.now() + 10000;
+              addLog(`[WARNING] HTTP 429: Rate Limit hit on ${route.toUpperCase()}! Pausing all threads...`, 'warning');
+              
+              while (globalRateLimitRelease.current > Date.now()) {
+                  if (!isScanningRef.current) throw new Error("Scan Aborted");
+                  await new Promise(r => setTimeout(r, 500));
+              }
+              return await smartFetch(endpoint, payload, forceOfficial);
+          }
+
           const msg = e.message.toLowerCase();
           const isSchemaErr = msg.includes('no procedure') || msg.includes('too_big') || msg.includes('unrecognized key') || msg.includes('invalid_type');
           
@@ -422,6 +600,7 @@ export function WarEraOracle() {
               } else if (!isGatewayDead.current) {
                   addLog(`[DEBUG] Gateway miss on (${endpoint}): ${e.message.split('\n')[0]}. Fallback to Official...`, 'warning');
               }
+              const isOfficialEnabled = apiKey && apiKey.trim() !== '';
               if (!isOfficialEnabled) throw new Error("Gateway failed and no Live API Key provided for fallback.");
               
               return await smartFetch(endpoint, payload, true); 
@@ -432,15 +611,16 @@ export function WarEraOracle() {
 
   const fetchRegions = async () => {
     addLog('Pinging APIs to retrieve live regions...', 'info');
-    const endpoints = ['country.getAllCountries', 'country.getCountries', 'country.getAll'];
+    let regions = [];
     let success = false;
     
+    const endpoints = ['country.getAllCountries', 'country.getCountries', 'country.getAll'];
     for (const ep of endpoints) {
         if (success) break;
         try {
             const data = await smartFetch(ep, {});
-            let regions = Array.isArray(data) ? data : (data?.countries || Object.values(data || {}));
-            regions = regions.flat().filter(r => r.name);
+            let rList = Array.isArray(data) ? data : (data?.countries || Object.values(data || {}));
+            regions = rList.flat().filter(r => r.name);
             
             if (regions.length > 0) {
                 regions.sort((a, b) => a.name.localeCompare(b.name));
@@ -449,150 +629,206 @@ export function WarEraOracle() {
                 success = true;
                 addLog(`✅ Server Ping Success. Retrieved ${regions.length} regions.`, 'info');
                 
-                addLog(`Initiating background population sync via Gateway cache...`, 'info');
-                (async () => {
-                   for (let i = 0; i < regions.length; i++) {
-                       if (isGatewayDead.current) break; 
-                       try {
-                           const res = await WarEraAPI.fetch('user.getUsersByCountry', { countryId: regions[i]._id || regions[i].id, limit: 100 }, apiKey && apiKey.trim() !== '' ? apiKey.trim() : FALLBACK_GATEWAY_KEY, 'https://gateway.warerastats.io/trpc/');
-                           let pageData = Array.isArray(res) ? res : (res?.data || res?.items || Object.values(res || {}));
-                           pageData = pageData.flat(2).filter(c => typeof c === 'object' && c !== null);
-                           
-                           setAvailableRegions(prev => {
-                               const updated = [...prev];
-                               updated[i].population = pageData.length === 100 ? '100+' : pageData.length;
-                               return updated;
-                           });
-                           await new Promise(r => setTimeout(r, 10)); 
-                       } catch(e) {}
-                   }
-                })();
+                regions.forEach(c => globalCacheRef.current.countries[c._id || c.id] = c);
+
+                let regionSuccess = false;
+                const regionEps = ['region.getRegionsObject', 'region.getAllRegions', 'region.getAll', 'region.getRegions'];
+                for (const regEp of regionEps) {
+                    if (regionSuccess) break;
+                    try {
+                        const rData = await smartFetch(regEp, {});
+                        let rArray = Array.isArray(rData) ? rData : (rData?.regions || rData?.data || Object.values(rData || {}));
+                        rArray = rArray.flat().filter(r => r && typeof r === 'object' && (r._id || r.id));
+                        
+                        if (rArray.length > 0) {
+                            rArray.forEach(r => globalCacheRef.current.regions[r._id || r.id] = r);
+                            regionSuccess = true;
+                        }
+                    } catch (e) {}
+                }
             }
-        } catch (e) {}
+        } catch (e) {
+            addLog(`[DEBUG] Region fetch via ${ep} failed: ${e.message.split('\n')[0]}`, 'warning');
+        }
     }
   };
 
-  const processPlayer = async (playerObj) => {
-      try {
-          const uId = playerObj._id || playerObj.id;
-          let foundName = playerObj.username || playerObj.name || 'Unknown';
-          
+  const fetchUserCompaniesFull = async (userId) => {
+      let parsed = [];
+      for (const ep of ['company.getCompanies', 'company.getUserCompanies', 'company.getCompaniesByUserId']) {
           try {
-              const uData = await smartFetch('user.getUserLite', { userId: uId });
-              if (uData) {
-                  foundName = uData.username || uData.name || foundName;
-                  if (uData.isBanned || uData.banned) {
-                      addLog(`[OK] Player ${foundName} cleared (Account is banned).`, 'info');
-                      return;
-                  }
+              const data = await smartFetch(ep, { userId });
+              let flat = Array.isArray(data) ? data : (data?.companies || Object.values(data || {}));
+              flat = flat.flat(3).filter(c => c !== null);
+              if (flat.length > 0) {
+                  parsed = flat.map(c => typeof c === 'string' ? { _id: c.split('|').pop(), id: c.split('|').pop() } : c);
+                  break;
               }
-          } catch (e) {}
-          
-          let companyData = [];
-          let companySuccess = false;
-          let parsedCompanies = [];
-          const companyEndpoints = ['company.getCompanies', 'company.getUserCompanies', 'company.getCompaniesByUserId'];
-          
-          for (const ep of companyEndpoints) {
-              if (companySuccess) break;
+          } catch(e) {}
+      }
+      
+      await Promise.all(parsed.map(async (c) => {
+          if (!isScanningRef.current) return;
+          const cId = c._id || c.id;
+          if (cId && !c.itemCode) {
               try {
-                  companyData = await smartFetch(ep, { userId: uId });
-                  companySuccess = true;
-                  let flatData = Array.isArray(companyData) ? companyData : (companyData?.companies || Object.values(companyData || {}));
-                  flatData = flatData.flat(3).filter(c => c !== null);
-                  
-                  if (flatData.length > 0 && typeof flatData[0] === 'string') {
-                      parsedCompanies = flatData.map(str => {
-                          const id = str.includes('|') ? str.split('|').pop() : str;
-                          return { _id: id, id: id };
-                      });
-                  } else {
-                      parsedCompanies = flatData.filter(c => typeof c === 'object');
-                  }
+                  const details = await smartFetch('company.getById', { companyId: cId });
+                  if (details) Object.assign(c, details);
               } catch(e) {}
           }
+      }));
+      
+      const unique = [];
+      const seen = new Set();
+      for (const c of parsed) {
+          const cid = c._id || c.id;
+          if (cid && !seen.has(cid)) {
+              seen.add(cid);
+              unique.push(c);
+          }
+      }
+      return unique;
+  };
 
-          const uniqueCompanies = [];
-          const seenCids = new Set();
-          for (const c of parsedCompanies) {
-              const cid = c._id || c.id;
-              if (!seenCids.has(cid)) {
-                  seenCids.add(cid);
-                  uniqueCompanies.push(c);
+  const processPlayer = async (playerObj) => {
+      const uId = playerObj._id || playerObj.id;
+      let foundName = playerObj.username || playerObj.name || 'Unknown';
+      
+      // 1. Boss Profiling & Leadership Verification Check
+      let bossMuId = null;
+      let hasMuLeadership = false;
+      
+      try {
+          const uData = await smartFetch('user.getUserLite', { userId: uId });
+          if (uData) {
+              foundName = uData.username || uData.name || foundName;
+              if (uData.isBanned || uData.banned) {
+                  addLog(`[OK] Player ${foundName} cleared (Account is banned).`, 'info');
+                  return;
+              }
+              // Extract Boss MU ID
+              if (uData.mu) {
+                  bossMuId = typeof uData.mu === 'object' ? (uData.mu._id || uData.mu.id) : uData.mu;
+              } else if (uData.militaryUnit) {
+                  bossMuId = typeof uData.militaryUnit === 'object' ? (uData.militaryUnit._id || uData.militaryUnit.id) : uData.militaryUnit;
+              } else if (uData.muId) {
+                  bossMuId = uData.muId;
               }
           }
-          parsedCompanies = uniqueCompanies;
+      } catch (e) {}
 
-          // Restored Threshold
-          if (parsedCompanies.length < 1) {
-              addLog(`[OK] Player ${foundName} cleared (0 companies).`, 'info');
-              return;
-          }
+      // If Boss is in an MU, verify if they are a Manager or Commander
+      if (bossMuId) {
+          try {
+              const muData = await smartFetch('mu.getById', { muId: bossMuId });
+              if (muData) {
+                  const managers = muData.roles?.managers || [];
+                  const commanders = muData.roles?.commanders || [];
+                  
+                  if (managers.includes(uId) || commanders.includes(uId)) {
+                      hasMuLeadership = true;
+                  }
+              }
+          } catch(e) {}
+      }
+      
+      // 2. Fetch Companies
+      const parsedCompanies = await fetchUserCompaniesFull(uId);
 
-          let successfulWorkerEndpoint = null;
-          let successfulWorkerSchema = null;
-          
-          const testCid = parsedCompanies[0]._id || parsedCompanies[0].id;
-          if (testCid) {
-               const workerEndpoints = ['worker.getWorkers', 'company.getWorkers', 'company.getEmployees'];
-               for (const wep of workerEndpoints) {
-                   if (successfulWorkerEndpoint) break;
+      if (parsedCompanies.length < 1) { 
+          addLog(`[OK] Player ${foundName} cleared (Less than 1 companies).`, 'info');
+          return;
+      }
+
+      let successfulWorkerEndpoint = null;
+      let successfulWorkerSchema = null;
+      
+      const testCid = parsedCompanies[0]._id || parsedCompanies[0].id;
+      if (testCid) {
+           const workerEndpoints = ['worker.getWorkers', 'company.getWorkers', 'company.getEmployees'];
+           for (const wep of workerEndpoints) {
+               if (successfulWorkerEndpoint) break;
+               try {
+                   await smartFetch(wep, { companyId: testCid });
+                   successfulWorkerEndpoint = wep;
+                   successfulWorkerSchema = 'companyId';
+                   break; 
+               } catch (e1) {
                    try {
-                       await smartFetch(wep, { companyId: testCid });
+                       await smartFetch(wep, { id: testCid });
                        successfulWorkerEndpoint = wep;
-                       successfulWorkerSchema = 'companyId';
-                       break; 
-                   } catch (e1) {
-                       try {
-                           await smartFetch(wep, { id: testCid });
-                           successfulWorkerEndpoint = wep;
-                           successfulWorkerSchema = 'id';
-                           break;
-                       } catch (e2) {}
-                   }
+                       successfulWorkerSchema = 'id';
+                       break;
+                   } catch (e2) {}
                }
-          }
+           }
+      }
 
-          if (successfulWorkerEndpoint) {
-               await Promise.all(parsedCompanies.map(async (company) => {
-                   if (!isScanningRef.current) return;
-                   const cId = company._id || company.id;
-                   const schema = successfulWorkerSchema === 'companyId' ? { companyId: cId } : { id: cId };
-                   try {
-                       const rawWorkers = await smartFetch(successfulWorkerEndpoint, schema);
-                       let flatWorkers = Array.isArray(rawWorkers) ? rawWorkers : (rawWorkers?.workers || Object.values(rawWorkers || {}));
-                       flatWorkers = flatWorkers.flat(3).filter(w => typeof w === 'object' && w !== null);
-                       
-                       await Promise.all(flatWorkers.map(async (w) => {
-                           if (w.user && typeof w.user === 'string') {
-                               try {
-                                   const uData = await smartFetch('user.getUserLite', { userId: w.user });
-                                   if (uData) w.resolvedUser = uData;
-                               } catch (e) {}
-                           }
-                       }));
-                       company.workers = flatWorkers;
-                   } catch(err) {}
-               }));
-          }
+      // 3. Process Workers
+      if (successfulWorkerEndpoint) {
+           await Promise.all(parsedCompanies.map(async (company) => {
+               if (!isScanningRef.current) return;
+               const cId = company._id || company.id;
+               const schema = successfulWorkerSchema === 'companyId' ? { companyId: cId } : { id: cId };
+               try {
+                   const rawWorkers = await smartFetch(successfulWorkerEndpoint, schema);
+                   let flatWorkers = Array.isArray(rawWorkers) ? rawWorkers : (rawWorkers?.workers || Object.values(rawWorkers || {}));
+                   flatWorkers = flatWorkers.flat(3).filter(w => typeof w === 'object' && w !== null);
+                   
+                   await Promise.all(flatWorkers.map(async (w) => {
+                       if (w.user && typeof w.user === 'string') {
+                           try {
+                               const uData = await smartFetch('user.getUserLite', { userId: w.user });
+                               if (uData) {
+                                   w.resolvedUser = uData;
+                                   
+                                   // Extract Worker MU ID
+                                   let workerMuId = null;
+                                   if (uData.mu) workerMuId = typeof uData.mu === 'object' ? (uData.mu._id || uData.mu.id) : uData.mu;
+                                   else if (uData.militaryUnit) workerMuId = typeof uData.militaryUnit === 'object' ? (uData.militaryUnit._id || uData.militaryUnit.id) : uData.militaryUnit;
+                                   else if (uData.muId) workerMuId = uData.muId;
+                                   
+                                   w.workerMuId = workerMuId;
+                               }
+                               
+                               w.ownedCompanies = await fetchUserCompaniesFull(w.user);
 
-          const livePlayer = { id: uId, name: foundName, country: playerObj.scanContext || 'Unknown Target', companies: parsedCompanies };
-          const result = analyzePlayer(livePlayer, settings);
-          
-          if (result) {
-              addLog(`[WARNING] Suspicious patterns detected for player: ${foundName}`, 'warning');
-              setFindings(prev => {
-                const newState = { ...prev };
-                if (!newState[livePlayer.country]) newState[livePlayer.country] = [];
-                newState[livePlayer.country].push(result);
-                newState[livePlayer.country].sort((a, b) => b.detections - a.detections);
-                return newState;
-              });
-          } else {
-              addLog(`[OK] Player ${foundName} cleared.`, 'info');
-          }
-      } catch (fatalError) {
-          addLog(`[CRITICAL] Engine crash on player ${playerObj?.username || playerObj?.id || 'Unknown'}: ${fatalError.message}`, 'warning');
+                               // 4. Targeted Financial Ledger Audit (Only if they share the Boss's MU AND Boss has leadership)
+                               if (hasMuLeadership && bossMuId && w.workerMuId === bossMuId) {
+                                   try {
+                                       const txData = await smartFetch('transaction.getPaginatedTransactions', { 
+                                           userId: w.user, 
+                                           muId: bossMuId, 
+                                           transactionType: 'donation', 
+                                           limit: 100 
+                                       });
+                                       const items = Array.isArray(txData) ? txData : (txData?.items || txData?.data || txData?.transactions || []);
+                                       w.muDonations = items;
+                                   } catch(e) {}
+                               }
+
+                           } catch (e) {}
+                       }
+                   }));
+                   company.workers = flatWorkers;
+               } catch(err) {}
+           }));
+      }
+
+      const livePlayer = { id: uId, name: foundName, country: playerObj.scanContext || 'Unknown Target', companies: parsedCompanies };
+      const result = analyzePlayer(livePlayer, settings, globalCacheRef.current, addLog);
+      
+      if (result) {
+          addLog(`[WARNING] Suspicious patterns detected for player: ${foundName}`, 'warning');
+          setFindings(prev => {
+            const newState = { ...prev };
+            if (!newState[livePlayer.country]) newState[livePlayer.country] = [];
+            newState[livePlayer.country].push(result);
+            newState[livePlayer.country].sort((a, b) => b.detections - a.detections);
+            return newState;
+          });
+      } else {
+          addLog(`[OK] Player ${foundName} cleared.`, 'info');
       }
   };
 
@@ -604,10 +840,31 @@ export function WarEraOracle() {
     setLogs([]);
     gatewayFails.current = 0;
     isGatewayDead.current = false;
-    setShowLogs(true);
+    globalRateLimitRelease.current = 0;
     setIsRateLimited(false);
 
     addLog(`Initializing High-Concurrency Oracle Engine...`, 'info');
+
+    // Pre-flight auth check
+    if (apiKey && apiKey.startsWith('wae_')) {
+        addLog(`Verifying API key authorization...`, 'info');
+        try {
+            const testUrl = 'https://api2.warera.io/trpc/user.getUsers?batch=1&input=%7B%220%22%3A%7B%22limit%22%3A1%7D%7D';
+            const testRes = await fetch(testUrl, { headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey.trim() }});
+            if (testRes.status === 401 || testRes.status === 403) throw new Error("Auth Failed");
+            const testText = await testRes.text();
+            if (testText.toLowerCase().includes('unauthorized') || testText.toLowerCase().includes('invalid api key')) throw new Error("Auth Failed");
+            addLog(`✅ API Key Authorized.`, 'info');
+        } catch (e) {
+            if (e.message === 'Auth Failed' || e.message.includes('401') || e.message.includes('403')) {
+                addLog(`[CRITICAL] API Key rejected (Unauthorized). Please check your key.`, 'warning');
+                setIsScanning(false);
+                isScanningRef.current = false;
+                setCurrentTask('Idle');
+                return;
+            }
+        }
+    }
     
     let targetList = [];
     
@@ -615,34 +872,56 @@ export function WarEraOracle() {
         let actualTargetId = targetUserId.trim();
         
         if (actualTargetId && !/^[0-9a-fA-F]{24}$/.test(actualTargetId)) {
-            addLog(`Attempting to resolve username "${actualTargetId}" via global search...`, 'info');
+            addLog(`Attempting to resolve exact username "${actualTargetId}" via global search...`, 'info');
             try {
                 const searchData = await smartFetch('search.searchAnything', { searchText: actualTargetId });
                 
-                const extractIds = (obj) => {
-                    let ids = [];
-                    if (Array.isArray(obj)) {
-                        for (let item of obj) {
-                            if (typeof item === 'string' && /^[0-9a-fA-F]{24}$/.test(item)) ids.push(item);
-                            else if (typeof item === 'object') ids.push(...extractIds(item));
-                        }
-                    } else if (typeof obj === 'object' && obj !== null) {
-                        for (let key in obj) {
-                            if (key === 'userIds' && Array.isArray(obj[key])) ids.push(...obj[key].filter(i => /^[0-9a-fA-F]{24}$/.test(i)));
-                            else if (typeof obj[key] === 'object') ids.push(...extractIds(obj[key]));
-                        }
-                    }
-                    return ids;
-                };
+                let foundExactId = null;
+                const targetLower = actualTargetId.toLowerCase();
 
-                const possibleIds = extractIds(searchData);
+                // If search endpoint returned raw user IDs like {"userIds":["69ca..."]}
+                if (searchData?.userIds && Array.isArray(searchData.userIds)) {
+                    addLog(`[LIVE] Search returned raw IDs. Cross-referencing profiles...`, 'info');
+                    for (const uId of searchData.userIds) {
+                        try {
+                            const uData = await smartFetch('user.getUserLite', { userId: uId });
+                            if (uData && (uData.username?.toLowerCase() === targetLower || uData.name?.toLowerCase() === targetLower)) {
+                                foundExactId = uId;
+                                break;
+                            }
+                        } catch (e) {}
+                    }
+                } 
+                // Fallback for object-based payload
+                else {
+                    const findExactMatch = (obj) => {
+                        if (!obj || foundExactId) return;
+                        if (Array.isArray(obj)) {
+                            for (let item of obj) findExactMatch(item);
+                        } else if (typeof obj === 'object') {
+                            if ((obj.username && String(obj.username).toLowerCase() === targetLower) ||
+                                (obj.name && String(obj.name).toLowerCase() === targetLower)) {
+                                if (obj._id && /^[0-9a-fA-F]{24}$/.test(obj._id)) {
+                                    foundExactId = obj._id;
+                                    return;
+                                } else if (obj.id && /^[0-9a-fA-F]{24}$/.test(obj.id)) {
+                                    foundExactId = obj.id;
+                                    return;
+                                }
+                            }
+                            for (let key in obj) findExactMatch(obj[key]);
+                        }
+                    };
+
+                    findExactMatch(searchData);
+                }
                 
-                if (possibleIds.length > 0) {
-                    actualTargetId = possibleIds[0];
-                    addLog(`[LIVE] Resolved "${targetUserId}" to ID: ${actualTargetId}`, 'info');
+                if (foundExactId) {
+                    actualTargetId = foundExactId;
+                    addLog(`[LIVE] Resolved exact match "${targetUserId}" to ID: ${actualTargetId}`, 'info');
                 } else {
-                     addLog(`Could not locate a user named "${targetUserId}" in the search results.`, 'warning');
-                     addLog(`[CRITICAL] Failed to resolve "${targetUserId}" to a valid 24-character Database ID. Scan aborted.`, 'warning');
+                     addLog(`Could not locate an exact match for "${targetUserId}" in the search results.`, 'warning');
+                     addLog(`[CRITICAL] Failed to resolve "${targetUserId}" to a valid Database ID. Scan aborted.`, 'warning');
                      setIsScanning(false);
                      isScanningRef.current = false;
                      setCurrentTask('Idle');
@@ -669,6 +948,11 @@ export function WarEraOracle() {
             try {
                 do {
                     if (!isScanningRef.current) break;
+                    
+                    while (globalRateLimitRelease.current > Date.now()) {
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+
                     const payload = { countryId: targetRegionId, limit: 100 };
                     if (nextCursor) payload.cursor = nextCursor;
                     
@@ -700,7 +984,9 @@ export function WarEraOracle() {
                         break;
                     }
                 } while (nextCursor);
-            } catch (e) {}
+            } catch (e) {
+                addLog(`[DEBUG] Endpoint ${ep} failed: ${e.message.split('\n')[0].substring(0, 100)}...`, 'warning');
+            }
         }
         
         const finalCitizensMap = new Map();
@@ -725,21 +1011,22 @@ export function WarEraOracle() {
         return;
     }
 
-    setShowLogs(false); 
-    
     const scannedRef = { current: 0 };
     const totalPlayers = targetList.length;
 
-    const CONCURRENCY_LIMIT = 5;
     let activePromises = [];
 
-    setCurrentTask(`Executing Concurrency Pool (x${CONCURRENCY_LIMIT})...`);
+    setCurrentTask(`Executing Concurrency Pool (x${settings.concurrencyLimit})...`);
 
     try {
         for (const player of targetList) {
             if (!isScanningRef.current) break;
             
-            const p = processPlayer(player).finally(() => {
+            await new Promise(r => setTimeout(r, 10));
+            
+            const p = processPlayer(player).catch(err => {
+                addLog(`[CRITICAL] Engine crash on player ${player.name || player._id}: ${err.message}`, 'warning');
+            }).finally(() => {
                 activePromises = activePromises.filter(prom => prom !== p);
                 scannedRef.current++;
                 setProgress(Math.floor((scannedRef.current / totalPlayers) * 100));
@@ -747,7 +1034,7 @@ export function WarEraOracle() {
             
             activePromises.push(p);
             
-            if (activePromises.length >= CONCURRENCY_LIMIT) {
+            if (activePromises.length >= settings.concurrencyLimit) {
                 await Promise.race(activePromises);
             }
         }
@@ -759,7 +1046,6 @@ export function WarEraOracle() {
           setCurrentTask('Scan Complete');
           setProgress(100);
           addLog('Scan sequence terminated.', 'info');
-          setShowLogs(true);
         }
         setIsScanning(false);
         isScanningRef.current = false;
@@ -772,14 +1058,19 @@ export function WarEraOracle() {
     setIsRateLimited(false);
     setCurrentTask('Scan Aborted');
     addLog('Scan manually aborted by user.', 'warning');
-    setShowLogs(true);
   };
 
-  const gatewayPercent = Math.max(0, ((600 - gatewayCount) / 600) * 100);
-  const officialPercent = Math.max(0, ((190 - officialCount) / 190) * 100);
+  const now = Date.now();
+  gatewayTokens.current = gatewayTokens.current.filter(t => now - t < 60000);
+  officialTokens.current = officialTokens.current.filter(t => now - t < 60000);
+
+  const gatewayCount = gatewayTokens.current.length;
+  const officialCount = officialTokens.current.length;
+
+  const gatewayPercent = Math.max(0, ((3500 - gatewayCount) / 3500) * 100);
+  const officialPercent = Math.max(0, ((400 - officialCount) / 400) * 100);
   const isOfficialEnabled = apiKey && apiKey.trim() !== '';
 
-  const now = Date.now();
   const getNextRefill = (tokens) => {
     if (tokens.length === 0) return 0;
     return Math.ceil((60000 - (now - tokens[0])) / 1000);
@@ -798,7 +1089,6 @@ export function WarEraOracle() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-300 font-sans flex flex-col">
       
-      {/* GLOBAL PROGRESS BAR */}
       <div className="w-full bg-slate-900 h-5 overflow-hidden relative border-b border-slate-800">
         <div 
           className={`h-5 transition-all duration-300 ${isRateLimited ? 'bg-yellow-500/80' : 'bg-blue-600'}`} 
@@ -806,7 +1096,7 @@ export function WarEraOracle() {
         ></div>
         {isRateLimited && (
           <div className="absolute inset-0 flex items-center justify-center">
-             <span className="text-[12px] font-bold text-slate-950 tracking-widest drop-shadow-sm">
+             <span className="text-[12px] font-bold text-white tracking-widest drop-shadow-md">
                PAUSED: API COOLDOWN ({limitTimer}s)
              </span>
           </div>
@@ -825,16 +1115,15 @@ export function WarEraOracle() {
           href="https://warerastats.io/" 
           target="_blank" 
           rel="noopener noreferrer" 
-          className="text-xs text-blue-400 hover:text-blue-300 hover:underline font-mono px-3 py-1 bg-blue-900/20 border border-blue-900/50 rounded-full transition-colors"
+          className="text-xs text-blue-400 hover:text-blue-300 hover:underline font-mono px-3 py-1 bg-blue-900/20 border border-blue-900/50 rounded-full transition-colors hidden sm:block"
         >
           Supported by warerastats.io
         </a>
       </header>
 
-      <main className="flex-1 flex overflow-hidden">
+      <main className="flex-1 flex flex-col md:flex-row overflow-hidden overflow-y-auto md:overflow-hidden">
         
-        {/* LEFT PANEL */}
-        <div className="w-1/3 bg-slate-900/50 border-r border-slate-800 flex flex-col p-4 gap-4 overflow-y-auto">
+        <div className="w-full md:w-1/3 bg-slate-900/50 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col p-4 gap-4 overflow-y-visible md:overflow-y-auto shrink-0">
           
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 shrink-0">
             <h2 className="text-sm font-semibold text-slate-200 mb-4 flex items-center gap-2">
@@ -843,50 +1132,50 @@ export function WarEraOracle() {
             
             <div className="space-y-4">
               <div>
-                <label className="text-xs text-slate-400 block mb-1">Your WarEra API Key (Scan Speed Boost)</label>
+                <label className="text-xs text-slate-400 block mb-1">Your WarEra API Key (Found in WarEra Settings)</label>
                 <input 
                   type="text" 
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   placeholder="Optional API Key"
-                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-sm text-slate-200 outline-none focus:border-blue-500 font-mono"
+                  className={`w-full bg-slate-950 border rounded p-2 text-sm outline-none font-mono transition-colors ${
+                      apiKey && !apiKey.startsWith('wae_') 
+                      ? 'border-red-500 text-red-400 focus:border-red-400' 
+                      : 'border-slate-800 text-slate-200 focus:border-blue-500'
+                  }`}
                   disabled={isScanning}
                 />
+                {apiKey && !apiKey.startsWith('wae_') && (
+                    <span className="text-[10px] text-red-500 font-bold mt-1 block">Invalid API Key format. Must start with "wae_".</span>
+                )}
               </div>
 
               <div>
-                <label className="text-xs text-slate-400 block mb-1">Specific User (Optional)</label>
+                <label className="text-xs text-slate-400 block mb-1">Specific User</label>
                 <input 
                   type="text" 
                   value={targetUserId}
                   onChange={(e) => setTargetUserId(e.target.value)}
-                  placeholder="(Leave empty if scanning a country.)"
-                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-sm text-slate-200 outline-none focus:border-blue-500 font-mono"
-                  disabled={isScanning}
+                  placeholder="(Optional)"
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-sm text-slate-200 outline-none focus:border-blue-500 font-mono disabled:opacity-50"
+                  disabled={isScanning || (!apiKey || !apiKey.startsWith('wae_'))}
                 />
               </div>
 
               <div>
                 <div className="flex justify-between items-end mb-1">
                   <label className="text-xs text-slate-400 block">Target Region</label>
-                  <button 
-                    onClick={fetchRegions} 
-                    disabled={isScanning}
-                    className="text-[10px] bg-slate-800 hover:bg-slate-700 px-2 py-0.5 rounded text-slate-300 flex items-center gap-1 transition-colors disabled:opacity-50"
-                  >
-                    <RefreshCw size={10} /> Fetch Regions
-                  </button>
                 </div>
                 <select 
                   value={targetRegionId}
                   onChange={(e) => setTargetRegionId(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-sm text-slate-200 outline-none focus:border-blue-500 disabled:opacity-50"
-                  disabled={isScanning || !!targetUserId || availableRegions.length === 0}
+                  disabled={isScanning || !!targetUserId || availableRegions.length === 0 || (!apiKey || !apiKey.startsWith('wae_'))}
                 >
-                  {availableRegions.length === 0 && <option value="">Pending Network Ping...</option>}
+                  {availableRegions.length === 0 && <option value="">{(!apiKey || !apiKey.startsWith('wae_')) ? 'Awaiting Valid API Key...' : 'Pending Network Ping...'}</option>}
                   {availableRegions.map(r => (
                     <option key={r._id || r.id} value={r._id || r.id}>
-                      {r.name} {r.population ? `(👥 ${r.population})` : ''}
+                      {r.name}
                     </option>
                   ))}
                 </select>
@@ -929,7 +1218,6 @@ export function WarEraOracle() {
             </div>
           </div>
 
-          {/* TELEMETRY */}
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex flex-col shrink-0">
             <div 
                className="flex justify-between items-center cursor-pointer hover:bg-slate-800 p-1 -m-1 rounded transition-colors"
@@ -962,17 +1250,15 @@ export function WarEraOracle() {
 
         </div>
 
-        {/* RIGHT PANEL */}
-        <div className="w-2/3 p-6 bg-slate-950 overflow-y-auto">
-          <div className="flex items-center justify-between mb-6 border-b border-slate-800 pb-4">
+        <div className="w-full md:w-2/3 p-4 md:p-6 bg-slate-950 overflow-y-visible md:overflow-y-auto flex-1">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 border-b border-slate-800 pb-4">
             <h2 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
               <Database size={20} className="text-slate-400"/> Analysis Results
             </h2>
             
-            <div className="flex gap-4 font-mono text-sm">
+            <div className="flex flex-wrap items-center gap-4 font-mono text-sm">
               
-              {/* DYNAMIC LOAD BALANCER UI (Draining Bars) */}
-              <div className="bg-slate-900 border border-slate-800 px-3 py-2 rounded flex items-center w-56 text-xs">
+              <div className="bg-slate-900 border border-slate-800 px-3 py-2 rounded flex items-center w-full sm:w-56 text-xs">
                 <div className="flex flex-col gap-1.5 w-full">
                   <div className="flex justify-between text-[10px] text-slate-300 font-semibold leading-none items-center">
                     <span>WarEraStats.io Cache</span>
@@ -1008,10 +1294,10 @@ export function WarEraOracle() {
           </div>
 
           {Object.keys(findings).length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-slate-600">
+            <div className="h-full flex flex-col items-center justify-center text-slate-600 py-10">
               <Search size={48} className="mb-4 opacity-20" />
               <p>Awaiting scan findings...</p>
-              <p className="text-sm mt-2 max-w-md text-center opacity-50">
+              <p className="text-sm mt-2 max-w-md text-center opacity-50 px-4">
                 The engine dynamically load-balances across the community Gateway cache and the Official API to rapidly map multi-account networks concurrently.
               </p>
             </div>
@@ -1032,12 +1318,21 @@ export function WarEraOracle() {
                       label={result.player.name} 
                       icon={UserX}
                       defaultOpen={false} 
-                      badge={`${result.detections} Detections`}
+                      badge={
+                        <span className="flex items-center gap-1">
+                          {result.hasLaundering && (
+                              <span className="flex items-center text-red-500 font-bold drop-shadow-md mr-1">
+                                {result.launderingWorkerCount > 1 ? `${result.launderingWorkerCount}x ` : ''}<Star fill="#ef4444" size={14} className="ml-0.5" />
+                              </span>
+                          )}
+                          <span>{result.zeroBonusCompanyCount > 0 ? `(${result.zeroBonusCompanyCount} No-Prod Cos, ${result.bossNoBonusPercentage}%) (${result.detections} Det)` : `${result.detections} Detections`}</span>
+                        </span>
+                      }
                       badgeClass={getBadgeClass(result.detections)}
                       extraData={`ID: ${result.player.id}`}
                       linkId={result.player.id}
                     >
-                      <div className="ml-6 my-2 space-y-2 border-l border-slate-800 pl-4 py-2">
+                      <div className="ml-2 md:ml-6 my-2 space-y-2 border-l border-slate-800 pl-2 md:pl-4 py-2">
                         <div className="text-xs uppercase font-bold text-slate-500 mb-2">Detected Anomalies</div>
                         {result.suspicions.map((suspicion, sIdx) => (
                           <div key={sIdx} className="bg-slate-900 border border-slate-800 rounded p-2 text-sm">
@@ -1045,17 +1340,36 @@ export function WarEraOracle() {
                               <AlertTriangle size={14} className={suspicion.severity === 'high' ? 'text-red-500' : 'text-yellow-500'} />
                               {suspicion.type.replace('_', ' ').toUpperCase()}
                             </div>
-                            <p className="text-slate-400 text-xs mb-2">{suspicion.desc}</p>
+                            <p className="text-slate-400 text-xs mb-2 flex items-center gap-1 flex-wrap">
+                                {suspicion.desc.split('Coins').map((part, i, arr) => (
+                                    <React.Fragment key={i}>
+                                        {part}
+                                        {i !== arr.length - 1 && <Coins size={10} className="text-yellow-400 inline -mt-0.5" />}
+                                    </React.Fragment>
+                                ))}
+                            </p>
                             
-                            <div className="grid grid-cols-2 gap-2 mt-2">
+                            <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
                               {suspicion.workers.map((w, wIdx) => (
-                                <a key={wIdx} href={`https://app.warera.io/user/${w.uid}`} target="_blank" rel="noopener noreferrer" className="bg-slate-950 p-2 rounded border border-slate-800 flex flex-col gap-1 hover:border-blue-500 transition-colors group block">
+                                <a key={wIdx} href={`https://app.warera.io/user/${w.resolvedUser?._id || w.uid}`} target="_blank" rel="noopener noreferrer" className="bg-slate-950 p-2 rounded border border-slate-800 flex flex-col gap-1 hover:border-blue-500 transition-colors group block">
                                   <div className="flex justify-between items-center">
-                                    <span className="font-mono text-xs text-blue-300 flex items-center gap-1">
-                                      {w.normalizedName}
+                                    <span className="font-mono text-xs text-blue-300 flex items-center flex-wrap gap-0">
+                                      {suspicion.type === 'naming_pattern' ? (
+                                          w.normalizedName.split(new RegExp(`(${suspicion.overlapString})`, 'gi')).map((part, i) => 
+                                              part.toLowerCase() === suspicion.overlapString.toLowerCase() 
+                                              ? <span key={i} className="text-yellow-400 font-bold">{part}</span> 
+                                              : <span key={i}>{part}</span>
+                                          )
+                                      ) : w.normalizedName}
                                       {w.isActive === false && <span title="Inactive Player" className="bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] ml-1 border border-red-700/50 font-bold tracking-wider">[INACTIVE]</span>}
+                                      {w.noBonusPercentage > 0 && suspicion.type === 'no_production_bonus' && <span title="Shell Companies Detected" className="bg-orange-900/80 text-orange-300 px-1.5 py-0.5 rounded text-[9px] ml-1 border border-orange-700/50 font-bold tracking-wider">[{w.noBonusPercentage}% NO-PROD, {w.noBonusCount}/{w.totalOwnedCount}]</span>}
+                                      {w.isLaundering && suspicion.type === 'money_laundering' && (
+                                          <span title="Money Laundering Detected" className="bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] ml-1 border border-red-700/50 font-bold tracking-wider flex items-center gap-1">
+                                              [{w.largeDonations30Days.toFixed(1)} <Coins size={8} className="inline -mt-0.5"/> IN LARGE DONATIONS]
+                                          </span>
+                                      )}
                                     </span>
-                                    <span className="text-[10px] bg-slate-800 px-1 rounded text-slate-400 group-hover:bg-blue-900 group-hover:text-blue-200 transition-colors">
+                                    <span className="text-[10px] bg-slate-800 px-1 rounded text-slate-400 group-hover:bg-blue-900 group-hover:text-blue-200 transition-colors whitespace-nowrap">
                                       Lvl {w.normalizedLevel} <ExternalLink size={8} className="inline ml-0.5 opacity-50"/>
                                     </span>
                                   </div>
