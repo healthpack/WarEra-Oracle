@@ -18,7 +18,7 @@ The engine executes scans and evaluates suspects based on the following strict l
    
    Worker Deduplication: Workers are strictly deduplicated by their internal Database ID to prevent "ghost" clones if a company payload is returned multiple times.
    
-   3. Worker Filtering
+3. Worker Filtering
       
    Inactivity Exemption: If a worker is marked as inactive (isActive: false) and their wage is above the defined suspicious threshold, they are completely excluded from the heuristic analysis.
 
