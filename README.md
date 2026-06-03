@@ -14,7 +14,7 @@ The engine executes scans and evaluates suspects based on the following strict l
    
    Concurrency: Processes up to 50 users simultaneously, utilizing a 10ms micro-stagger to prevent triggering DDoS protection.
    
-   Boss Prerequisite: Any scanned user found to own 0 companies is instantly cleared and excluded from analysis.
+   Boss Prerequisite: Any scanned user found to own 1 companies is instantly cleared and excluded from analysis, but their transactions are still checked.
    
    Worker Deduplication: Workers are strictly deduplicated by their internal Database ID to prevent "ghost" clones if a company payload is returned multiple times.
    
