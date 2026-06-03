@@ -305,6 +305,7 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
           maxSingleDonation = Math.max(maxSingleDonation, amount);
           totalDonatedAllTime += amount;
           
+          // Exclude 5g and 25g quest donations from large laundering counts
           if (Math.abs(amount - 5) > 0.01 && Math.abs(amount - 25) > 0.01) {
               largeDonations30Days += amount;
           }
@@ -385,13 +386,14 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
           }
       });
 
+      // Track aggregate portfolio counts for ALL valid workers
+      totalWorkerCompanyCount += w.ownedCompanies.length;
+      zeroBonusCompanyCount += w.noBonusOwnedCompanies.length;
+
       if (w.noBonusOwnedCompanies.length > 0) {
           w.noBonusPercentage = Math.round((w.noBonusOwnedCompanies.length / w.ownedCompanies.length) * 100);
           w.noBonusCount = w.noBonusOwnedCompanies.length;
           w.totalOwnedCount = w.ownedCompanies.length;
-          
-          zeroBonusCompanyCount += w.noBonusOwnedCompanies.length;
-          totalWorkerCompanyCount += w.ownedCompanies.length;
           
           allNoBonusWorkers.push(w);
           
@@ -410,7 +412,8 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
   let shouldFlagNoProd = true;
   
   if (isOnlyNoProd) {
-      if (shellCompanyWorkers.length < 2 || bossNoBonusPercentage < 50) {
+      const severeShells = shellCompanyWorkers.filter(w => w.noBonusPercentage >= 50);
+      if (severeShells.length < 2 || bossNoBonusPercentage < 50) {
           shouldFlagNoProd = false;
       }
   }
@@ -420,8 +423,8 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
           type: 'no_production_bonus',
           severity: 'high',
           desc: `Found ${shellCompanyWorkers.length} workers where >25% of their portfolio are NO production bonus companies.`,
-          workers: allNoBonusWorkers, 
-          detectionWeight: shellCompanyWorkers.length 
+          workers: allNoBonusWorkers, // Display all >0% in the UI box
+          detectionWeight: shellCompanyWorkers.length // Only add >25% to detection weight
       });
       allNoBonusWorkers.forEach(w => suspiciousWorkers.add(w)); 
   }
@@ -826,7 +829,28 @@ export function WarEraOracle() {
               }
           } catch(e) {}
       }
-      return parsed;
+      
+      await Promise.all(parsed.map(async (c) => {
+          if (!isScanningRef.current) return;
+          const cId = c._id || c.id;
+          if (cId && !c.itemCode) {
+              try {
+                  const details = await smartFetch('company.getById', { companyId: cId });
+                  if (details) Object.assign(c, details);
+              } catch(e) {}
+          }
+      }));
+      
+      const unique = [];
+      const seen = new Set();
+      for (const c of parsed) {
+          const cid = c._id || c.id;
+          if (cid && !seen.has(cid)) {
+              seen.add(cid);
+              unique.push(c);
+          }
+      }
+      return unique;
   };
 
   const processPlayer = async (playerObj) => {
@@ -864,7 +888,6 @@ export function WarEraOracle() {
           } catch(e) {}
       }
       
-      // 2. Fetch Item Market Transactions for Wash Trade detection
       let itemMarketTxs = [];
       try {
           let nextCursor = null;
@@ -878,7 +901,7 @@ export function WarEraOracle() {
               itemMarketTxs.push(...items);
               
               nextCursor = txData?.nextCursor || txData?.meta?.nextCursor || null;
-              if (itemMarketTxs.length >= 1000) break; // Hard safety limit
+              if (itemMarketTxs.length >= 1000) break; 
           } while (nextCursor);
       } catch(e) {}
 
@@ -925,17 +948,14 @@ export function WarEraOracle() {
                   const b2 = typeof tx2.buyer === 'object' ? tx2.buyer?._id : (tx2.buyerId || tx2.buyer);
                   
                   if (s2 !== uId && b2 !== uId) continue;
-                  if (s1 === b1 || s2 === b2) continue; // Ignore self-trades
-
-                  const m1 = parseFloat(tx1.money || tx1.price || tx1.value || 0);
-                  const m2 = parseFloat(tx2.money || tx2.price || tx2.value || 0);
+                  if (s1 === b1 || s2 === b2) continue; 
 
                   let isCircular = false;
                   let p1, p2;
 
-                  if (s1 === uId && b2 === uId) { // Boss sold, then bought back
+                  if (s1 === uId && b2 === uId) { 
                       isCircular = true; p1 = b1; p2 = s2;
-                  } else if (b1 === uId && s2 === uId) { // Boss bought, then sold back
+                  } else if (b1 === uId && s2 === uId) { 
                       if (s1 === b2) {
                           isCircular = true; p1 = s1; p2 = b2;
                       }
@@ -943,7 +963,10 @@ export function WarEraOracle() {
 
                   if (isCircular) {
                       const isClassic = (p1 === p2);
-                      const threshold = isClassic ? 1 : 25; // 25 coin limit for bounced (C->A) washes
+                      const threshold = isClassic ? 1 : 25; 
+                      
+                      const m1 = parseFloat(tx1.money || tx1.price || tx1.value || 0);
+                      const m2 = parseFloat(tx2.money || tx2.price || tx2.value || 0);
                       
                       if (m1 < threshold || m2 < threshold) continue;
                       
@@ -994,7 +1017,6 @@ export function WarEraOracle() {
           }
       }
 
-      // 3. Fetch Companies
       const parsedCompanies = await fetchUserCompaniesFull(uId);
 
       if (parsedCompanies.length < 1 && Object.keys(washPartners).length === 0) { 
@@ -1054,7 +1076,14 @@ export function WarEraOracle() {
                                        w.workerMuId = workerMuId;
                                    }
                                    
-                                   w.ownedCompanies = await fetchUserCompaniesFull(w.user);
+                                   const level = uData?.leveling?.level || 1;
+                                   const isActive = uData?.isActive;
+                                   
+                                   if (isActive !== false && level < 30) {
+                                       w.ownedCompanies = await fetchUserCompaniesFull(w.user);
+                                   } else {
+                                       w.ownedCompanies = [];
+                                   }
 
                                    if (hasMuLeadership && bossMuId && w.workerMuId === bossMuId) {
                                        try {
@@ -1549,25 +1578,14 @@ export function WarEraOracle() {
                   
                   {suspicion.type === 'transaction_abuse' ? (
                       <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
-                        {suspicion.partners.map((p, pIdx) => {
-                          const partnerProfit = -(p.netProfit || 0);
-                          let profitNode;
-                          if (Math.abs(partnerProfit) < 0.01) {
-                              profitNode = <span className="text-slate-300">0.0 NET ({(p.volume || 0).toFixed(1)} VOL)</span>;
-                          } else if (partnerProfit > 0) {
-                              profitNode = <span className="text-green-400">+{partnerProfit.toFixed(1)} GAINED</span>;
-                          } else {
-                              profitNode = <span className="text-red-400">-{Math.abs(partnerProfit).toFixed(1)} LOST</span>;
-                          }
-                          
-                          return (
+                        {suspicion.partners.map((p, pIdx) => (
                           <a key={pIdx} href={`https://app.warera.io/user/${p.id}`} target="_blank" rel="noopener noreferrer" className="bg-slate-950 p-2 rounded border border-slate-800 flex flex-col gap-1 hover:border-blue-500 transition-colors group block">
                             <div className="flex justify-between items-center">
                               <span className="font-mono text-xs text-blue-300 flex items-center flex-wrap gap-0">
                                   {p.name}
                                   {p.isBanned && <span title="Banned Player" className="bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] ml-1 border border-red-700/50 font-bold tracking-wider">[BANNED]</span>}
                                   <span className="bg-purple-900/80 text-purple-300 px-1.5 py-0.5 rounded text-[9px] ml-1 border border-purple-700/50 font-bold tracking-wider flex items-center gap-1">
-                                      [WASH: {p.txCount} TRADES | {profitNode} <Coins size={8} className="inline -mt-0.5"/>]
+                                      [WASH: {p.txCount} TRADES | {Math.abs(p.netProfit !== 0 ? p.netProfit : p.volume).toFixed(1)} <Coins size={8} className="inline -mt-0.5"/> TRADED]
                                   </span>
                                   {p.isWorker && <span className="bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] ml-1 border border-red-700/50 font-bold tracking-wider">WORKER (2x)</span>}
                               </span>
@@ -1579,7 +1597,7 @@ export function WarEraOracle() {
                                <span>Latest Trade: <span className="text-slate-400">{p.latestTrade ? new Date(p.latestTrade).toLocaleDateString() : 'Unknown'}</span></span>
                             </div>
                           </a>
-                        )})}
+                        ))}
                       </div>
                   ) : (
                       <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
