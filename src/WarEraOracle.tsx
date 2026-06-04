@@ -703,7 +703,7 @@ export function WarEraOracle() {
     suspiciousWageThreshold: 0.110,
     concurrencyLimit: 50,
     ringOfFireMode: false,
-    rofDays: 30
+    rofDays: 5
   });
   
   const [apiKey, setApiKey] = useState('');
@@ -2019,7 +2019,7 @@ export function WarEraOracle() {
                     <div className="flex items-center gap-2">
                       <input 
                         type="range" 
-                        min="1" max="180" step="1" 
+                        min="1" max="60" step="1" 
                         value={settings.rofDays}
                         onChange={(e) => setSettings({...settings, rofDays: parseInt(e.target.value)})}
                         className="flex-1 accent-orange-500"
