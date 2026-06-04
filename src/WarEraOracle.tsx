@@ -1561,9 +1561,31 @@ export function WarEraOracle() {
           let ringLaunderCount = 0;
           let ringLaunderedCoins = 0;
 
+          // Find leader first to determine ring net profit matching WashNetworkTree Root
+          const ringLeader = members.reduce((prev, current) => (prev.detections > current.detections) ? prev : current);
+          const trueRootId = ringLeader.player.id;
+
+          let ringNetProfit = 0;
+          const leaderPartners = globalWashPartners.current[trueRootId] || {};
+          Object.values(leaderPartners).forEach(p => {
+              ringNetProfit += (p.netProfit || 0);
+          });
+
+          const isNetZero = Math.abs(ringNetProfit) < 0.01;
+
           members.forEach(m => {
               allMemberIds.add(m.player.id);
-              totalDet += (m.detections || 0);
+              
+              let mDet = m.detections || 0;
+              // If the ring yields no net output, drop the wash trading detections from the count
+              if (isNetZero) {
+                  const washSus = m.suspicions.find(s => s.type === 'transaction_abuse');
+                  if (washSus) {
+                      mDet -= (washSus.detectionWeight !== undefined ? washSus.detectionWeight : washSus.partners.length);
+                  }
+              }
+              m.adjustedDetections = mDet;
+              totalDet += mDet;
 
               Object.entries(m.washPartners || {}).forEach(([pid, pData]) => {
                   allMemberIds.add(pid);
@@ -1590,12 +1612,15 @@ export function WarEraOracle() {
 
           groupStats.push({
               rootId,
+              trueRootId,
+              ringLeader,
               members,
               allMemberIds,
               totalVolume,
               totalDet,
               ringLaunderCount,
-              ringLaunderedCoins
+              ringLaunderedCoins,
+              ringNetProfit
           });
       });
 
@@ -1610,9 +1635,17 @@ export function WarEraOracle() {
               if (globalBans.current[id]) ringBannedCount++;
           });
 
-          const ringLeader = stats.members.reduce((prev, current) => (prev.detections > current.detections) ? prev : current);
-          const trueRootId = ringLeader.player.id;
-          const rootName = ringLeader.player.name;
+          const trueRootId = stats.trueRootId;
+          const rootName = stats.ringLeader.player.name;
+
+          let profitDisplay;
+          if (Math.abs(stats.ringNetProfit) < 0.01) {
+              profitDisplay = "0.0 NET";
+          } else if (stats.ringNetProfit > 0) {
+              profitDisplay = `+${stats.ringNetProfit.toFixed(1)} NET`;
+          } else {
+              profitDisplay = `-${Math.abs(stats.ringNetProfit).toFixed(1)} NET`;
+          }
 
           finalNodes.push(
               <TreeNode 
@@ -1628,7 +1661,7 @@ export function WarEraOracle() {
                   badgeClass={getBadgeClass(stats.totalDet)}
                   extraData={
                       <span className="flex items-center gap-2 font-bold ml-2">
-                          <span className="text-yellow-400 flex items-center gap-1">| {stats.totalVolume.toFixed(1)} <Coins size={12}/> </span>
+                          <span className="text-yellow-400 flex items-center gap-1">| {profitDisplay} <Coins size={12}/> </span>
                           {stats.ringLaunderCount > 0 && (
                               <span className="text-red-500 flex items-center gap-1">| {stats.ringLaunderCount}x <Star fill="#ef4444" size={12}/> {stats.ringLaunderedCoins.toFixed(1)} <Coins size={12}/> </span>
                           )}
@@ -1641,7 +1674,7 @@ export function WarEraOracle() {
                          <WashNetworkTree rootId={trueRootId} washPartners={globalWashPartners.current} processedNodes={new Set()} globalBans={globalBans.current} globalNames={globalCacheRef.current.names} />
                       </div>
                       
-                      {stats.members.sort((a,b) => b.detections - a.detections).map((result, idx) => renderResultNode(result, idx, true))}
+                      {stats.members.sort((a,b) => (b.adjustedDetections !== undefined ? b.adjustedDetections : b.detections) - (a.adjustedDetections !== undefined ? a.adjustedDetections : a.detections)).map((result, idx) => renderResultNode(result, idx, true))}
                   </div>
               </TreeNode>
           );
@@ -1660,6 +1693,8 @@ export function WarEraOracle() {
 
       if (result.hasLaundering) redStars = result.launderingWorkerCount;
       if (result.washPartners && Object.keys(result.washPartners).length > 0) yellowStars = Object.keys(result.washPartners).length;
+
+      const activeDetections = result.adjustedDetections !== undefined ? result.adjustedDetections : result.detections;
 
       return (
           <TreeNode 
@@ -1682,10 +1717,10 @@ export function WarEraOracle() {
                       {yellowStars > 0 && <span className="flex items-center text-yellow-400">{yellowStars > 1 ? `${yellowStars}x ` : ''}<Star fill="#facc15" size={12} className="ml-0.5" /></span>}
                     </span>
                 )}
-                <span>{result.zeroBonusCompanyCount > 0 ? `(${result.zeroBonusCompanyCount} No-Prod Cos, ${result.bossNoBonusPercentage}%) (${result.detections} Det)` : `${result.detections} Detections`}</span>
+                <span>{result.zeroBonusCompanyCount > 0 ? `(${result.zeroBonusCompanyCount} No-Prod Cos, ${result.bossNoBonusPercentage}%) (${activeDetections} Det)` : `${activeDetections} Detections`}</span>
               </span>
             }
-            badgeClass={getBadgeClass(result.detections)}
+            badgeClass={getBadgeClass(activeDetections)}
             extraData={`ID: ${result.player.id}`}
             linkId={result.player.id}
           >
