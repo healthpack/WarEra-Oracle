@@ -18,14 +18,12 @@ const WarEraAPI = {
     let res;
     try {
         if (isGateway) {
-            // Gateway Proxy Override: Unbatched POST
             res = await fetch(url, { 
                 method: 'POST', 
                 headers, 
                 body: JSON.stringify(payload) 
             });
         } else {
-            // Official API: Standard Batched GET
             const input = encodeURIComponent(JSON.stringify({ "0": payload }));
             res = await fetch(`${url}?batch=1&input=${input}`, { headers });
         }
@@ -161,7 +159,7 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
               const isWorker = allWorkers.some(w => w.uid === id);
               return { id, isWorker, ...data };
           })
-          .filter(p => Math.abs(p.netProfit !== 0 ? p.netProfit : p.volume) >= 1); // Discard < 1 coin washes
+          .filter(p => Math.abs(p.netProfit !== 0 ? p.netProfit : p.volume) >= 1); 
       
       if (partnerList.length > 0) {
           const workersInvolved = partnerList.filter(p => p.isWorker);
@@ -184,13 +182,14 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
           suspicions.push({
               type: 'transaction_abuse',
               severity: 'critical',
-              desc: `Item Market Wash Trading detected with ${descParts.join(' and ')}. Traded item back-and-forth to launder money.`,
+              desc: `Item Market Wash Trading detected with ${descParts.join(' and ')}. Traded items back-and-forth to launder money.`,
               partners: partnerList,
               detectionWeight
           });
       }
   }
 
+  // --- LOW WAGE HEURISTIC ---
   const lowWageWorkers = allWorkers.filter(w => w.normalizedWage <= settings.suspiciousWageThreshold);
   if (lowWageWorkers.length >= 2) {
     suspicions.push({
@@ -202,6 +201,7 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
     lowWageWorkers.forEach(w => suspiciousWorkers.add(w));
   }
 
+  // --- NAMING PATTERN HEURISTIC ---
   const overlappingGroups = {}; 
   allWorkers.forEach(w1 => {
      allWorkers.forEach(w2 => {
@@ -247,6 +247,7 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
       }
   });
 
+  // --- CLONED PROGRESSION HEURISTIC ---
   const buildClusters = {};
   allWorkers.forEach(w => {
     if (w.normalizedBuild === 'NO_DATA' || w.normalizedBuild === 'DEFAULT_ECO') return;
@@ -288,7 +289,6 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
 
       w.muDonations.forEach(tx => {
           const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
-          
           if (txTime < thirtyDaysAgo) return; 
           
           let amount = tx.amount ?? tx.quantity ?? tx.value ?? tx.gold ?? tx.money ?? tx.total;
@@ -305,7 +305,6 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
           maxSingleDonation = Math.max(maxSingleDonation, amount);
           totalDonatedAllTime += amount;
           
-          // Exclude 5g and 25g quest donations from large laundering counts
           if (Math.abs(amount - 5) > 0.01 && Math.abs(amount - 25) > 0.01) {
               largeDonations30Days += amount;
           }
@@ -344,7 +343,40 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
       hasLaundering = true;
       launderingWorkerCount = launderingWorkers.length;
   }
+  
+  if (player.isDirectLaunderer) {
+      const selfWorker = {
+          uid: player.id,
+          normalizedName: player.name + " (SELF)",
+          normalizedLevel: player.level || '?', 
+          isBanned: player.isBanned,
+          largeDonations30Days: player.directLaunderAmount,
+          totalDonatedAllTime: player.directLaunderAmount,
+          isLaundering: true,
+          normalizedWage: 0,
+          normalizedFidelity: 0,
+          noBonusPercentage: 0
+      };
 
+      let existingLaunderSus = suspicions.find(s => s.type === 'money_laundering');
+      if (existingLaunderSus) {
+          existingLaunderSus.workers.push(selfWorker);
+          existingLaunderSus.detectionWeight += 3;
+      } else {
+          suspicions.push({
+              type: 'money_laundering',
+              severity: 'critical',
+              desc: `Detected massive outbound donations (>25 Coins single or >60 Coins total/week) from this account. Highly likely a burner funnel.`,
+              workers: [selfWorker],
+              detectionWeight: 3
+          });
+      }
+      totalLaunderedCoins += player.directLaunderAmount;
+      hasLaundering = true;
+      launderingWorkerCount += 1;
+  }
+
+  // --- SHELL COMPANY HEURISTIC ---
   const shellCompanyWorkers = [];
   const allNoBonusWorkers = []; 
   let zeroBonusCompanyCount = 0;
@@ -386,14 +418,13 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
           }
       });
 
-      // Track aggregate portfolio counts for ALL valid workers
-      totalWorkerCompanyCount += w.ownedCompanies.length;
-      zeroBonusCompanyCount += w.noBonusOwnedCompanies.length;
-
       if (w.noBonusOwnedCompanies.length > 0) {
           w.noBonusPercentage = Math.round((w.noBonusOwnedCompanies.length / w.ownedCompanies.length) * 100);
           w.noBonusCount = w.noBonusOwnedCompanies.length;
           w.totalOwnedCount = w.ownedCompanies.length;
+          
+          zeroBonusCompanyCount += w.noBonusOwnedCompanies.length;
+          totalWorkerCompanyCount += w.ownedCompanies.length;
           
           allNoBonusWorkers.push(w);
           
@@ -423,8 +454,8 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
           type: 'no_production_bonus',
           severity: 'high',
           desc: `Found ${shellCompanyWorkers.length} workers where >25% of their portfolio are NO production bonus companies.`,
-          workers: allNoBonusWorkers, // Display all >0% in the UI box
-          detectionWeight: shellCompanyWorkers.length // Only add >25% to detection weight
+          workers: allNoBonusWorkers, 
+          detectionWeight: shellCompanyWorkers.length 
       });
       allNoBonusWorkers.forEach(w => suspiciousWorkers.add(w)); 
   }
@@ -438,7 +469,7 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
     }
 
     if (hasLaundering) {
-        summaryParts.push(`${launderingWorkerCount} workers have donated a total of ${totalLaunderedCoins.toFixed(1)} Coins to their Boss's MU in large transactions.`);
+        summaryParts.push(`${launderingWorkerCount} workers have donated a total of ${totalLaunderedCoins.toFixed(1)} coins to their Boss's MU in large transactions.`);
     }
 
     const cloneSus = suspicions.filter(s => s.type === 'cloned_progression');
@@ -515,48 +546,105 @@ class UnionFind {
     }
 }
 
-const WashNetworkTree = ({ rootId, washPartners, processedNodes = new Set(), globalBans = {}, globalNames = {}, isRootNode = true }) => {
-    if (processedNodes.has(rootId)) return null;
-    
-    const currentProcessed = new Set(processedNodes);
-    currentProcessed.add(rootId);
-    
-    const partners = Object.entries(washPartners[rootId] || {}).map(([id, data]) => ({id, ...data}));
-    const validPartners = partners.filter(p => !currentProcessed.has(p.id));
-    
-    if (validPartners.length === 0 && isRootNode && processedNodes.size > 0) return null;
+// ------------------------------------------------------------------
+// RECURSIVE WASH TRADING NETWORK MAP
+// ------------------------------------------------------------------
+const WashNetworkTree = ({ rootId, washPartners, processedNodes, globalBans, globalNames, isRoot = true, edgeFromParent = null }) => {
+  if (processedNodes.has(rootId)) return null;
+  processedNodes.add(rootId);
 
-    const rootName = globalNames[rootId] || rootId;
+  const partnersObj = washPartners[rootId] || {};
+  const partners = Object.entries(partnersObj).map(([id, data]) => ({ id, ...data }));
+  
+  const rootName = globalNames[rootId] || rootId;
+  const isBanned = globalBans[rootId];
 
-    return (
-        <div className={`flex flex-col ${isRootNode ? '' : 'mt-2'}`}>
-            <div className={`inline-flex items-center border rounded px-2 py-1 w-fit z-10 bg-slate-900 hover:bg-slate-800 transition-colors ${isRootNode ? 'border-yellow-700/50' : 'border-slate-700'}`}>
-                <a href={`https://app.warera.io/user/${rootId}`} target="_blank" rel="noopener noreferrer" className={`hover:underline flex items-center gap-1 font-mono text-xs ${isRootNode ? 'text-yellow-500 font-bold' : 'text-slate-300'}`} onClick={(e) => e.stopPropagation()}>
-                    {rootName}
-                    {isRootNode && <ExternalLink size={8} className="opacity-50"/>}
-                </a>
-                {globalBans[rootId] && <span className="ml-2 bg-red-900/80 text-red-300 px-1 py-0.5 rounded text-[8px] border border-red-700/50 font-bold tracking-wider shrink-0">BANNED</span>}
-            </div>
-            
-            {validPartners.length > 0 && (
-                <div className="ml-4 border-l border-slate-700 pl-4 flex flex-col relative pt-1 pb-1">
-                    {validPartners.map((p) => (
-                        <div key={p.id} className="relative">
-                            <div className="absolute w-4 h-[1px] bg-slate-700 -left-4 top-4"></div>
-                            <WashNetworkTree 
-                                rootId={p.id} 
-                                washPartners={washPartners} 
-                                processedNodes={currentProcessed} 
-                                globalBans={globalBans} 
-                                globalNames={globalNames}
-                                isRootNode={false}
-                            />
-                        </div>
-                    ))}
-                </div>
-            )}
-        </div>
-    );
+  let rootBadge = null;
+  if (isRoot) {
+      let totalTrades = 0;
+      let bossNetProfit = 0;
+      partners.forEach(p => {
+          totalTrades += (p.txCount || 0);
+          bossNetProfit += (p.netProfit || 0);
+      });
+      
+      if (totalTrades > 0) {
+          let bossProfitNode;
+          let bossBadgeClass = "bg-slate-800 text-slate-300 border-slate-700";
+          if (Math.abs(bossNetProfit) < 0.01) {
+              bossProfitNode = "0.0 NET";
+          } else if (bossNetProfit > 0) {
+              bossProfitNode = `+${bossNetProfit.toFixed(1)} GAINED`;
+              bossBadgeClass = "bg-green-900/40 text-green-400 border-green-700/50";
+          } else {
+              bossProfitNode = `-${Math.abs(bossNetProfit).toFixed(1)} LOST`;
+              bossBadgeClass = "bg-red-900/40 text-red-400 border-red-700/50";
+          }
+          
+          rootBadge = (
+              <div className={`px-2 py-1 rounded text-[10px] font-mono border font-bold tracking-wider flex items-center gap-1 ${bossBadgeClass}`}>
+                  [WASH: {totalTrades} TRADES | {bossProfitNode} <Coins size={10} className="inline -mt-0.5"/>]
+              </div>
+          );
+      }
+  } else if (edgeFromParent) {
+      const partnerProfit = -(edgeFromParent.netProfit || 0);
+      if (Math.abs(partnerProfit) >= 0.01) {
+          let profitNode;
+          let badgeClass = "bg-slate-800 text-slate-300 border-slate-700";
+          
+          if (partnerProfit > 0) {
+              profitNode = `+${partnerProfit.toFixed(1)} GAINED`;
+              badgeClass = "bg-green-900/40 text-green-400 border-green-700/50";
+          } else {
+              profitNode = `-${Math.abs(partnerProfit).toFixed(1)} LOST`;
+              badgeClass = "bg-red-900/40 text-red-400 border-red-700/50";
+          }
+
+          rootBadge = (
+              <div className={`px-2 py-1 rounded text-[10px] font-mono border font-bold tracking-wider flex items-center gap-1 ${badgeClass}`}>
+                  [WASH: {edgeFromParent.txCount} TRADES | {profitNode} <Coins size={10} className="inline -mt-0.5"/>]
+              </div>
+          );
+      } else {
+          return null; // Ignore completely even trades per previous rule
+      }
+  }
+
+  const validPartners = partners.filter(p => !processedNodes.has(p.id) && Math.abs(p.netProfit || 0) >= 0.01);
+
+  return (
+      <div className="flex flex-col relative">
+          <div className="flex items-center gap-3 relative z-10">
+              {!isRoot && <div className="absolute -left-6 top-1/2 w-6 border-t border-slate-700"></div>}
+              
+              <a href={`https://app.warera.io/user/${rootId}`} target="_blank" rel="noopener noreferrer" className={`border ${isRoot ? 'border-amber-600/50 bg-amber-900/20 text-amber-500' : 'border-slate-700 bg-slate-900 text-slate-300'} px-3 py-1.5 rounded font-mono text-sm flex items-center gap-2 hover:border-blue-500 transition-colors z-10 bg-slate-950`}>
+                  <span className={isRoot ? "font-bold" : ""}>{rootName}</span>
+                  {isBanned && <span className="bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[10px] border border-red-700/50 font-bold uppercase tracking-wider">Banned</span>}
+                  <ExternalLink size={12} className="opacity-70 shrink-0" />
+              </a>
+              
+              {rootBadge}
+          </div>
+
+          {validPartners.length > 0 && (
+              <div className="pl-6 border-l border-slate-700 ml-4 mt-3 flex flex-col gap-3 relative">
+                  {validPartners.map(p => (
+                      <WashNetworkTree 
+                          key={p.id}
+                          rootId={p.id} 
+                          washPartners={washPartners} 
+                          processedNodes={new Set(processedNodes)} 
+                          globalBans={globalBans} 
+                          globalNames={globalNames} 
+                          isRoot={false} 
+                          edgeFromParent={p}
+                      />
+                  ))}
+              </div>
+          )}
+      </div>
+  );
 };
 
 const TreeNode = ({ label, icon: Icon, children, isRoot = false, defaultOpen = false, badge = null, badgeClass = null, extraData = null, linkId = null }) => {
@@ -630,9 +718,11 @@ export function WarEraOracle() {
   const [showLogs, setShowLogs] = useState(false);
   const gatewayFails = useRef(0);
   const isGatewayDead = useRef(false);
+  
   const globalRateLimitRelease = useRef(0);
   
   const logsContainerRef = useRef(null);
+
   const globalCacheRef = useRef({ countries: {}, regions: {}, names: {} });
   const globalWashPartners = useRef({});
   const globalBans = useRef({});
@@ -810,9 +900,7 @@ export function WarEraOracle() {
                     } catch (e) {}
                 }
             }
-        } catch (e) {
-            addLog(`[DEBUG] Region fetch via ${ep} failed: ${e.message.split('\n')[0]}`, 'warning');
-        }
+        } catch (e) {}
     }
   };
 
@@ -864,6 +952,7 @@ export function WarEraOracle() {
           const uData = await smartFetch('user.getUserLite', { userId: uId });
           if (uData) {
               foundName = uData.username || uData.name || foundName;
+              playerObj.level = uData.leveling?.level || '?';
               if (uData.isBanned || uData.banned) {
                   addLog(`[OK] Player ${foundName} cleared (Account is banned).`, 'info');
                   return;
@@ -1017,10 +1106,58 @@ export function WarEraOracle() {
           }
       }
 
+      let isDirectLaunderer = false;
+      let directLaunderAmount = 0;
+      try {
+          const outTxData = await smartFetch('transaction.getPaginatedTransactions', {
+              transactionType: 'donation',
+              userId: uId,
+              limit: 100
+          });
+          const outItems = Array.isArray(outTxData) ? outTxData : (outTxData?.items || outTxData?.data || outTxData?.transactions || []);
+          
+          const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+          let weeklyOutbound = 0;
+          let maxSingleOutbound = 0;
+          
+          outItems.forEach(tx => {
+              const senderId = typeof tx.sender === 'object' ? (tx.sender?._id || tx.sender?.id) : (tx.sender || tx.senderId || tx.from || tx.userId);
+              if (senderId !== uId) return;
+              
+              const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
+              let amount = tx.amount ?? tx.quantity ?? tx.value ?? tx.gold ?? tx.money ?? tx.total;
+              if (typeof amount === 'object' && amount !== null) {
+                  amount = amount.amount ?? amount.value ?? amount.quantity ?? amount.gold ?? 0;
+              }
+              if (typeof amount !== 'number') amount = parseFloat(amount) || 0;
+              
+              if (amount === 0) {
+                  const possibleVals = Object.values(tx).filter(v => typeof v === 'number' && v < 1000000000000 && v > 0);
+                  if (possibleVals.length > 0) amount = Math.max(...possibleVals);
+              }
+              
+              if (Math.abs(amount - 5) > 0.01 && Math.abs(amount - 25) > 0.01) {
+                  directLaunderAmount += amount;
+                  maxSingleOutbound = Math.max(maxSingleOutbound, amount);
+              }
+              
+              if (txTime >= oneWeekAgo) {
+                  weeklyOutbound += amount;
+              }
+          });
+          
+          if (maxSingleOutbound > 25 || weeklyOutbound > 60) {
+              isDirectLaunderer = true;
+          }
+      } catch(e) {}
+      
+      playerObj.isDirectLaunderer = isDirectLaunderer;
+      playerObj.directLaunderAmount = directLaunderAmount;
+
       const parsedCompanies = await fetchUserCompaniesFull(uId);
 
-      if (parsedCompanies.length < 1 && Object.keys(washPartners).length === 0) { 
-          addLog(`[OK] Player ${foundName} cleared.`, 'info');
+      if (parsedCompanies.length < 1 && Object.keys(washPartners).length === 0 && !isDirectLaunderer) { 
+          addLog(`[OK] Player ${foundName} cleared (No companies, wash trades, or massive donations).`, 'info');
           return;
       }
 
@@ -1107,7 +1244,7 @@ export function WarEraOracle() {
           }
       }
 
-      const livePlayer = { id: uId, name: foundName, isBanned: playerObj.isBanned, country: playerObj.scanContext || 'Unknown Target', companies: parsedCompanies, washPartners };
+      const livePlayer = { id: uId, name: foundName, isBanned: playerObj.isBanned, country: playerObj.scanContext || 'Unknown Target', companies: parsedCompanies, washPartners, isDirectLaunderer, directLaunderAmount };
       const result = analyzePlayer(livePlayer, settings, globalCacheRef.current, addLog);
       
       if (result) {
@@ -1578,14 +1715,30 @@ export function WarEraOracle() {
                   
                   {suspicion.type === 'transaction_abuse' ? (
                       <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
-                        {suspicion.partners.map((p, pIdx) => (
+                        {suspicion.partners.map((p, pIdx) => {
+                          const partnerProfit = -(p.netProfit || 0);
+                          let badgeColors = "";
+                          let profitText = "";
+                          
+                          if (Math.abs(partnerProfit) < 0.01) {
+                              badgeColors = "bg-slate-800 text-slate-300 border-slate-700";
+                              profitText = `0.0 NET (${(p.volume || 0).toFixed(1)} VOL)`;
+                          } else if (partnerProfit > 0) {
+                              badgeColors = "bg-green-900/40 text-green-400 border-green-700/50";
+                              profitText = `+${partnerProfit.toFixed(1)} GAINED`;
+                          } else {
+                              badgeColors = "bg-red-900/40 text-red-400 border-red-700/50";
+                              profitText = `-${Math.abs(partnerProfit).toFixed(1)} LOST`;
+                          }
+
+                          return (
                           <a key={pIdx} href={`https://app.warera.io/user/${p.id}`} target="_blank" rel="noopener noreferrer" className="bg-slate-950 p-2 rounded border border-slate-800 flex flex-col gap-1 hover:border-blue-500 transition-colors group block">
                             <div className="flex justify-between items-center">
                               <span className="font-mono text-xs text-blue-300 flex items-center flex-wrap gap-0">
                                   {p.name}
                                   {p.isBanned && <span title="Banned Player" className="bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] ml-1 border border-red-700/50 font-bold tracking-wider">[BANNED]</span>}
-                                  <span className="bg-purple-900/80 text-purple-300 px-1.5 py-0.5 rounded text-[9px] ml-1 border border-purple-700/50 font-bold tracking-wider flex items-center gap-1">
-                                      [WASH: {p.txCount} TRADES | {Math.abs(p.netProfit !== 0 ? p.netProfit : p.volume).toFixed(1)} <Coins size={8} className="inline -mt-0.5"/> TRADED]
+                                  <span className={`${badgeColors} px-1.5 py-0.5 rounded text-[9px] ml-1 border font-bold tracking-wider flex items-center gap-1`}>
+                                      [WASH: {p.txCount} TRADES | {profitText} <Coins size={8} className="inline -mt-0.5"/>]
                                   </span>
                                   {p.isWorker && <span className="bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] ml-1 border border-red-700/50 font-bold tracking-wider">WORKER (2x)</span>}
                               </span>
@@ -1597,7 +1750,7 @@ export function WarEraOracle() {
                                <span>Latest Trade: <span className="text-slate-400">{p.latestTrade ? new Date(p.latestTrade).toLocaleDateString() : 'Unknown'}</span></span>
                             </div>
                           </a>
-                        ))}
+                        )})}
                       </div>
                   ) : (
                       <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
