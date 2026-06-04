@@ -1478,7 +1478,7 @@ export function WarEraOracle() {
                     activePromises = activePromises.filter(prom => prom !== p);
                     playersScanned++;
                     
-                    const totalEstimated = playersScanned + scanQueueRef.current.length;
+                    const totalEstimated = playersScanned + activePromises.length + scanQueueRef.current.length;
                     setProgress(Math.floor((playersScanned / totalEstimated) * 100));
                 });
                 activePromises.push(p);
@@ -1869,7 +1869,7 @@ export function WarEraOracle() {
           <ShieldAlert className="text-red-500" size={28} />
           <div>
             <h1 className="text-xl font-bold text-slate-100 leading-tight">WarEra Oracle</h1>
-            <p className="text-xs text-slate-500 font-mono">Multi-Account & Bot Net Detection Heuristics</p>
+            <p className="text-xs text-slate-500 font-mono">Multi-Account & Trading Abuse Detection Heuristics</p>
           </div>
         </div>
         <a 
