@@ -189,275 +189,277 @@ const analyzePlayer = (player, settings, globalCache, addLog) => {
       }
   }
 
-  // --- LOW WAGE HEURISTIC ---
-  const lowWageWorkers = allWorkers.filter(w => w.normalizedWage <= settings.suspiciousWageThreshold);
-  if (lowWageWorkers.length >= 2) {
-    suspicions.push({
-      type: 'low_wage',
-      severity: lowWageWorkers.length > 4 ? 'high' : 'medium',
-      desc: `Found ${lowWageWorkers.length} workers with wages below or equal to ${settings.suspiciousWageThreshold}`,
-      workers: lowWageWorkers
-    });
-    lowWageWorkers.forEach(w => suspiciousWorkers.add(w));
-  }
-
-  // --- NAMING PATTERN HEURISTIC ---
-  const overlappingGroups = {}; 
-  allWorkers.forEach(w1 => {
-     allWorkers.forEach(w2 => {
-         if (w1.uid === w2.uid) return; 
-         let n1 = String(w1.normalizedName).toLowerCase();
-         let n2 = String(w2.normalizedName).toLowerCase();
-         
-         if (n1.startsWith('user_')) n1 = n1.substring(5);
-         if (n2.startsWith('user_')) n2 = n2.substring(5);
-         
-         for (let len = n1.length; len >= 3; len--) {
-             for (let i = 0; i <= n1.length - len; i++) {
-                 const sub = n1.substring(i, i + len).trim();
-                 if (sub.length < 3 || sub.includes(' ') || /^\d+$/.test(sub)) continue; 
-                 
-                 if (n2.includes(sub)) {
-                     if (!overlappingGroups[sub]) overlappingGroups[sub] = new Set();
-                     overlappingGroups[sub].add(w1);
-                     overlappingGroups[sub].add(w2);
-                 }
-             }
-         }
-     });
-  });
-  
-  const processedNamingUids = new Set();
-  Object.keys(overlappingGroups).sort((a, b) => b.length - a.length).forEach(sub => {
-      const groupWorkers = Array.from(overlappingGroups[sub]);
-      const unflagged = groupWorkers.filter(w => !processedNamingUids.has(w.uid));
-      
-      if (unflagged.length >= 2) {
-          suspicions.push({
-            type: 'naming_pattern',
-            severity: 'high',
-            desc: `Naming overlap detected: ${unflagged.length} workers share the string "${sub}"`,
-            workers: unflagged,
-            overlapString: sub 
-          });
-          unflagged.forEach(w => {
-            suspiciousWorkers.add(w);
-            processedNamingUids.add(w.uid);
-          });
-      }
-  });
-
-  // --- CLONED PROGRESSION HEURISTIC ---
-  const buildClusters = {};
-  allWorkers.forEach(w => {
-    if (w.normalizedBuild === 'NO_DATA' || w.normalizedBuild === 'DEFAULT_ECO') return;
-    
-    const levelBand = Math.floor(w.normalizedLevel / 10) * 10;
-    const key = `${w.normalizedBuild}_${levelBand}`;
-    if (!buildClusters[key]) buildClusters[key] = [];
-    buildClusters[key].push(w);
-  });
-
-  Object.entries(buildClusters).forEach(([key, group]) => {
-    const buildSignature = key.split('_')[0];
-    const band = key.split('_')[1];
-    
-    if (group.length >= 2) {
-      suspicions.push({
-        type: 'cloned_progression',
-        severity: 'medium',
-        desc: `Detected ${group.length} workers with identical skill signatures [${buildSignature}] in level band ${band}+`,
-        workers: group
-      });
-      group.forEach(w => suspiciousWorkers.add(w));
-    }
-  });
-
-  // --- TARGETED MONEY LAUNDERING HEURISTIC ---
-  const launderingWorkers = [];
-  const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-
-  allWorkers.forEach(w => {
-      if (w.normalizedLevel >= 22) return; 
-      if (!w.muDonations || w.muDonations.length === 0) return;
-
-      let totalDonatedWeekly = 0;
-      let largeDonations30Days = 0;
-      let totalDonatedAllTime = 0;
-      let maxSingleDonation = 0;
-
-      w.muDonations.forEach(tx => {
-          const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
-          if (txTime < thirtyDaysAgo) return; 
-          
-          let amount = tx.amount ?? tx.quantity ?? tx.value ?? tx.gold ?? tx.money ?? tx.total;
-          if (typeof amount === 'object' && amount !== null) {
-              amount = amount.amount ?? amount.value ?? amount.quantity ?? amount.gold ?? 0;
-          }
-          if (typeof amount !== 'number') amount = parseFloat(amount) || 0;
-          
-          if (amount === 0) {
-              const possibleVals = Object.values(tx).filter(v => typeof v === 'number' && v < 1000000000000 && v > 0);
-              if (possibleVals.length > 0) amount = Math.max(...possibleVals);
-          }
-
-          maxSingleDonation = Math.max(maxSingleDonation, amount);
-          totalDonatedAllTime += amount;
-          
-          if (Math.abs(amount - 5) > 0.01 && Math.abs(amount - 25) > 0.01) {
-              largeDonations30Days += amount;
-          }
-          
-          if (txTime >= oneWeekAgo) {
-              totalDonatedWeekly += amount;
-          }
-      });
-
-      w.totalDonatedWeekly = totalDonatedWeekly;
-      w.largeDonations30Days = largeDonations30Days;
-      w.totalDonatedAllTime = totalDonatedAllTime;
-      w.maxDonation = maxSingleDonation;
-      
-      w.isLaundering = w.maxDonation > 25 || w.totalDonatedWeekly > 60;
-
-      if (w.isLaundering) {
-          launderingWorkers.push(w);
-      }
-  });
-
-  let hasLaundering = false;
   let launderingWorkerCount = 0;
   let totalLaunderedCoins = 0;
-
-  if (launderingWorkers.length > 0) {
-      totalLaunderedCoins = launderingWorkers.reduce((sum, w) => sum + (w.largeDonations30Days || w.totalDonatedAllTime || 0), 0);
-      suspicions.push({
-          type: 'money_laundering',
-          severity: 'critical', 
-          desc: `Money sent to Boss's MU via large donations (>25 Coins single or >60 Coins total/week) in the past 30 days.`,
-          workers: launderingWorkers,
-          detectionWeight: launderingWorkers.length
-      });
-      launderingWorkers.forEach(w => suspiciousWorkers.add(w));
-      hasLaundering = true;
-      launderingWorkerCount = launderingWorkers.length;
-  }
-  
-  if (player.isDirectLaunderer) {
-      const selfWorker = {
-          uid: player.id,
-          normalizedName: player.name + " (SELF)",
-          normalizedLevel: player.level || '?', 
-          isBanned: player.isBanned,
-          largeDonations30Days: player.directLaunderAmount,
-          totalDonatedAllTime: player.directLaunderAmount,
-          isLaundering: true,
-          normalizedWage: 0,
-          normalizedFidelity: 0,
-          noBonusPercentage: 0
-      };
-
-      let existingLaunderSus = suspicions.find(s => s.type === 'money_laundering');
-      if (existingLaunderSus) {
-          existingLaunderSus.workers.push(selfWorker);
-          existingLaunderSus.detectionWeight += 3;
-      } else {
-          suspicions.push({
-              type: 'money_laundering',
-              severity: 'critical',
-              desc: `Detected massive outbound donations (>25 Coins single or >60 Coins total/week) from this account. Highly likely a burner funnel.`,
-              workers: [selfWorker],
-              detectionWeight: 3
-          });
-      }
-      totalLaunderedCoins += player.directLaunderAmount;
-      hasLaundering = true;
-      launderingWorkerCount += 1;
-  }
-
-  // --- SHELL COMPANY HEURISTIC ---
-  const shellCompanyWorkers = [];
-  const allNoBonusWorkers = []; 
+  let hasLaundering = false;
   let zeroBonusCompanyCount = 0;
-  let totalWorkerCompanyCount = 0;
+  let bossNoBonusPercentage = 0;
 
-  allWorkers.forEach(w => {
-      w.noBonusOwnedCompanies = [];
-      if (!w.ownedCompanies || w.ownedCompanies.length === 0) return;
+  if (!settings.ringOfFireMode) {
+      // --- LOW WAGE HEURISTIC ---
+      const lowWageWorkers = allWorkers.filter(w => w.normalizedWage <= settings.suspiciousWageThreshold);
+      if (lowWageWorkers.length >= 2) {
+        suspicions.push({
+          type: 'low_wage',
+          severity: lowWageWorkers.length > 4 ? 'high' : 'medium',
+          desc: `Found ${lowWageWorkers.length} workers with wages below or equal to ${settings.suspiciousWageThreshold}`,
+          workers: lowWageWorkers
+        });
+        lowWageWorkers.forEach(w => suspiciousWorkers.add(w));
+      }
 
-      if (w.isActive === false || w.normalizedLevel >= 30) return;
-
-      w.ownedCompanies.forEach(comp => {
-          const itemCode = typeof comp.itemCode === 'object' ? comp.itemCode?._id || comp.itemCode?.code : comp.itemCode;
-          const regionId = typeof comp.region === 'object' ? comp.region?._id : comp.region;
-          if (!itemCode || !regionId) return;
-
-          const regionObj = globalCache.regions[regionId];
-          if (!regionObj) return;
-
-          let hasTimedDeposit = false;
-          if (regionObj.bonuses && Array.isArray(regionObj.bonuses)) {
-              hasTimedDeposit = regionObj.bonuses.some(b => {
-                  const bCode = typeof b.item === 'object' ? b.item?._id || b.item?.code : b.item;
-                  return String(bCode).toLowerCase() === String(itemCode).toLowerCase();
+      // --- NAMING PATTERN HEURISTIC ---
+      const overlappingGroups = {}; 
+      allWorkers.forEach(w1 => {
+         allWorkers.forEach(w2 => {
+             if (w1.uid === w2.uid) return; 
+             let n1 = String(w1.normalizedName).toLowerCase();
+             let n2 = String(w2.normalizedName).toLowerCase();
+             
+             if (n1.startsWith('user_')) n1 = n1.substring(5);
+             if (n2.startsWith('user_')) n2 = n2.substring(5);
+             
+             for (let len = n1.length; len >= 3; len--) {
+                 for (let i = 0; i <= n1.length - len; i++) {
+                     const sub = n1.substring(i, i + len).trim();
+                     if (sub.length < 3 || sub.includes(' ') || /^\d+$/.test(sub)) continue; 
+                     
+                     if (n2.includes(sub)) {
+                         if (!overlappingGroups[sub]) overlappingGroups[sub] = new Set();
+                         overlappingGroups[sub].add(w1);
+                         overlappingGroups[sub].add(w2);
+                     }
+                 }
+             }
+         });
+      });
+      
+      const processedNamingUids = new Set();
+      Object.keys(overlappingGroups).sort((a, b) => b.length - a.length).forEach(sub => {
+          const groupWorkers = Array.from(overlappingGroups[sub]);
+          const unflagged = groupWorkers.filter(w => !processedNamingUids.has(w.uid));
+          
+          if (unflagged.length >= 2) {
+              suspicions.push({
+                type: 'naming_pattern',
+                severity: 'high',
+                desc: `Naming overlap detected: ${unflagged.length} workers share the string "${sub}"`,
+                workers: unflagged,
+                overlapString: sub 
+              });
+              unflagged.forEach(w => {
+                suspiciousWorkers.add(w);
+                processedNamingUids.add(w.uid);
               });
           }
-          if (hasTimedDeposit) return;
+      });
 
-          const countryId = typeof regionObj.country === 'object' ? regionObj.country?._id : (regionObj.country || regionObj.countryId);
-          const countryObj = globalCache.countries[countryId];
+      // --- CLONED PROGRESSION HEURISTIC ---
+      const buildClusters = {};
+      allWorkers.forEach(w => {
+        if (w.normalizedBuild === 'NO_DATA' || w.normalizedBuild === 'DEFAULT_ECO') return;
+        
+        const levelBand = Math.floor(w.normalizedLevel / 10) * 10;
+        const key = `${w.normalizedBuild}_${levelBand}`;
+        if (!buildClusters[key]) buildClusters[key] = [];
+        buildClusters[key].push(w);
+      });
+
+      Object.entries(buildClusters).forEach(([key, group]) => {
+        const buildSignature = key.split('_')[0];
+        const band = key.split('_')[1];
+        
+        if (group.length >= 2) {
+          suspicions.push({
+            type: 'cloned_progression',
+            severity: 'medium',
+            desc: `Detected ${group.length} workers with identical skill signatures [${buildSignature}] in level band ${band}+`,
+            workers: group
+          });
+          group.forEach(w => suspiciousWorkers.add(w));
+        }
+      });
+
+      // --- TARGETED MONEY LAUNDERING HEURISTIC ---
+      const launderingWorkers = [];
+      const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+      allWorkers.forEach(w => {
+          if (w.normalizedLevel >= 22) return; 
+          if (!w.muDonations || w.muDonations.length === 0) return;
+
+          let totalDonatedWeekly = 0;
+          let largeDonations30Days = 0;
+          let totalDonatedAllTime = 0;
+          let maxSingleDonation = 0;
+
+          w.muDonations.forEach(tx => {
+              const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
+              if (txTime < thirtyDaysAgo) return; 
+              
+              let amount = tx.amount ?? tx.quantity ?? tx.value ?? tx.gold ?? tx.money ?? tx.total;
+              if (typeof amount === 'object' && amount !== null) {
+                  amount = amount.amount ?? amount.value ?? amount.quantity ?? amount.gold ?? 0;
+              }
+              if (typeof amount !== 'number') amount = parseFloat(amount) || 0;
+              
+              if (amount === 0) {
+                  const possibleVals = Object.values(tx).filter(v => typeof v === 'number' && v < 1000000000000 && v > 0);
+                  if (possibleVals.length > 0) amount = Math.max(...possibleVals);
+              }
+
+              maxSingleDonation = Math.max(maxSingleDonation, amount);
+              totalDonatedAllTime += amount;
+              
+              if (Math.abs(amount - 5) > 0.01 && Math.abs(amount - 25) > 0.01) {
+                  largeDonations30Days += amount;
+              }
+              
+              if (txTime >= oneWeekAgo) {
+                  totalDonatedWeekly += amount;
+              }
+          });
+
+          w.totalDonatedWeekly = totalDonatedWeekly;
+          w.largeDonations30Days = largeDonations30Days;
+          w.totalDonatedAllTime = totalDonatedAllTime;
+          w.maxDonation = maxSingleDonation;
           
-          if (!countryObj || !countryObj.specializedItem) return; 
+          w.isLaundering = w.maxDonation > 25 || w.totalDonatedWeekly > 60;
 
-          const specialized = String(typeof countryObj.specializedItem === 'object' ? countryObj.specializedItem.code || countryObj.specializedItem._id : countryObj.specializedItem).toLowerCase();
-          const produced = String(itemCode).toLowerCase();
-
-          if (specialized !== produced && specialized !== 'undefined' && produced !== 'undefined') {
-              w.noBonusOwnedCompanies.push(comp);
+          if (w.isLaundering) {
+              launderingWorkers.push(w);
           }
       });
 
-      if (w.noBonusOwnedCompanies.length > 0) {
-          w.noBonusPercentage = Math.round((w.noBonusOwnedCompanies.length / w.ownedCompanies.length) * 100);
-          w.noBonusCount = w.noBonusOwnedCompanies.length;
-          w.totalOwnedCount = w.ownedCompanies.length;
-          
-          zeroBonusCompanyCount += w.noBonusOwnedCompanies.length;
-          totalWorkerCompanyCount += w.ownedCompanies.length;
-          
-          allNoBonusWorkers.push(w);
-          
-          if (w.noBonusPercentage > 25) {
-              shellCompanyWorkers.push(w);
+      if (launderingWorkers.length > 0) {
+          totalLaunderedCoins = launderingWorkers.reduce((sum, w) => sum + (w.largeDonations30Days || w.totalDonatedAllTime || 0), 0);
+          suspicions.push({
+              type: 'money_laundering',
+              severity: 'critical', 
+              desc: `Money sent to Boss's MU via large donations (>25 Coins single or >60 Coins total/week) in the past 30 days.`,
+              workers: launderingWorkers,
+              detectionWeight: launderingWorkers.length
+          });
+          launderingWorkers.forEach(w => suspiciousWorkers.add(w));
+          hasLaundering = true;
+          launderingWorkerCount = launderingWorkers.length;
+      }
+      
+      if (player.isDirectLaunderer) {
+          const selfWorker = {
+              uid: player.id,
+              normalizedName: player.name + " (SELF)",
+              normalizedLevel: player.level || '?', 
+              isBanned: player.isBanned,
+              largeDonations30Days: player.directLaunderAmount,
+              totalDonatedAllTime: player.directLaunderAmount,
+              isLaundering: true,
+              normalizedWage: 0,
+              normalizedFidelity: 0,
+              noBonusPercentage: 0
+          };
+
+          let existingLaunderSus = suspicions.find(s => s.type === 'money_laundering');
+          if (existingLaunderSus) {
+              existingLaunderSus.workers.push(selfWorker);
+              existingLaunderSus.detectionWeight += 3;
+          } else {
+              suspicions.push({
+                  type: 'money_laundering',
+                  severity: 'critical',
+                  desc: `Detected massive outbound donations (>25 Coins single or >60 Coins total/week) from this account. Highly likely a burner funnel.`,
+                  workers: [selfWorker],
+                  detectionWeight: 3
+              });
+          }
+          totalLaunderedCoins += player.directLaunderAmount;
+          hasLaundering = true;
+          launderingWorkerCount += 1;
+      }
+
+      // --- SHELL COMPANY HEURISTIC ---
+      const shellCompanyWorkers = [];
+      const allNoBonusWorkers = []; 
+      let totalWorkerCompanyCount = 0;
+
+      allWorkers.forEach(w => {
+          w.noBonusOwnedCompanies = [];
+          if (!w.ownedCompanies || w.ownedCompanies.length === 0) return;
+
+          if (w.isActive === false || w.normalizedLevel >= 30) return;
+
+          w.ownedCompanies.forEach(comp => {
+              const itemCode = typeof comp.itemCode === 'object' ? comp.itemCode?._id || comp.itemCode?.code : comp.itemCode;
+              const regionId = typeof comp.region === 'object' ? comp.region?._id : comp.region;
+              if (!itemCode || !regionId) return;
+
+              const regionObj = globalCache.regions[regionId];
+              if (!regionObj) return;
+
+              let hasTimedDeposit = false;
+              if (regionObj.bonuses && Array.isArray(regionObj.bonuses)) {
+                  hasTimedDeposit = regionObj.bonuses.some(b => {
+                      const bCode = typeof b.item === 'object' ? b.item?._id || b.item?.code : b.item;
+                      return String(bCode).toLowerCase() === String(itemCode).toLowerCase();
+                  });
+              }
+              if (hasTimedDeposit) return;
+
+              const countryId = typeof regionObj.country === 'object' ? regionObj.country?._id : (regionObj.country || regionObj.countryId);
+              const countryObj = globalCache.countries[countryId];
+              
+              if (!countryObj || !countryObj.specializedItem) return; 
+
+              const specialized = String(typeof countryObj.specializedItem === 'object' ? countryObj.specializedItem.code || countryObj.specializedItem._id : countryObj.specializedItem).toLowerCase();
+              const produced = String(itemCode).toLowerCase();
+
+              if (specialized !== produced && specialized !== 'undefined' && produced !== 'undefined') {
+                  w.noBonusOwnedCompanies.push(comp);
+              }
+          });
+
+          if (w.noBonusOwnedCompanies.length > 0) {
+              w.noBonusPercentage = Math.round((w.noBonusOwnedCompanies.length / w.ownedCompanies.length) * 100);
+              w.noBonusCount = w.noBonusOwnedCompanies.length;
+              w.totalOwnedCount = w.ownedCompanies.length;
+              
+              zeroBonusCompanyCount += w.noBonusOwnedCompanies.length;
+              totalWorkerCompanyCount += w.ownedCompanies.length;
+              
+              allNoBonusWorkers.push(w);
+              
+              if (w.noBonusPercentage > 25) {
+                  shellCompanyWorkers.push(w);
+              }
+          }
+      });
+
+      if (totalWorkerCompanyCount > 0) {
+          bossNoBonusPercentage = Math.round((zeroBonusCompanyCount / totalWorkerCompanyCount) * 100);
+      }
+
+      const isOnlyNoProd = suspicions.length === 0 && shellCompanyWorkers.length > 0;
+      let shouldFlagNoProd = true;
+      
+      if (isOnlyNoProd) {
+          const severeShells = shellCompanyWorkers.filter(w => w.noBonusPercentage >= 50);
+          if (severeShells.length < 2 || bossNoBonusPercentage < 50) {
+              shouldFlagNoProd = false;
           }
       }
-  });
 
-  let bossNoBonusPercentage = 0;
-  if (totalWorkerCompanyCount > 0) {
-      bossNoBonusPercentage = Math.round((zeroBonusCompanyCount / totalWorkerCompanyCount) * 100);
-  }
-
-  const isOnlyNoProd = suspicions.length === 0 && shellCompanyWorkers.length > 0;
-  let shouldFlagNoProd = true;
-  
-  if (isOnlyNoProd) {
-      const severeShells = shellCompanyWorkers.filter(w => w.noBonusPercentage >= 50);
-      if (severeShells.length < 2 || bossNoBonusPercentage < 50) {
-          shouldFlagNoProd = false;
+      if (shellCompanyWorkers.length > 0 && shouldFlagNoProd) {
+          suspicions.push({
+              type: 'no_production_bonus',
+              severity: 'high',
+              desc: `Found ${shellCompanyWorkers.length} workers where >25% of their portfolio are NO production bonus companies.`,
+              workers: allNoBonusWorkers, 
+              detectionWeight: shellCompanyWorkers.length 
+          });
+          allNoBonusWorkers.forEach(w => suspiciousWorkers.add(w)); 
       }
-  }
-
-  if (shellCompanyWorkers.length > 0 && shouldFlagNoProd) {
-      suspicions.push({
-          type: 'no_production_bonus',
-          severity: 'high',
-          desc: `Found ${shellCompanyWorkers.length} workers where >25% of their portfolio are NO production bonus companies.`,
-          workers: allNoBonusWorkers, 
-          detectionWeight: shellCompanyWorkers.length 
-      });
-      allNoBonusWorkers.forEach(w => suspiciousWorkers.add(w)); 
   }
 
   if (suspicions.length > 0) {
@@ -607,7 +609,7 @@ const WashNetworkTree = ({ rootId, washPartners, processedNodes, globalBans, glo
               </div>
           );
       } else {
-          return null; // Ignore completely even trades per previous rule
+          return null; 
       }
   }
 
@@ -699,7 +701,9 @@ export function WarEraOracle() {
   const [findings, setFindings] = useState({});
   const [settings, setSettings] = useState({
     suspiciousWageThreshold: 0.110,
-    concurrencyLimit: 50 
+    concurrencyLimit: 50,
+    ringOfFireMode: false,
+    rofDays: 30
   });
   
   const [apiKey, setApiKey] = useState('');
@@ -942,337 +946,349 @@ export function WarEraOracle() {
   };
 
   const processPlayer = async (playerObj) => {
-      const uId = playerObj._id || playerObj.id;
-      let foundName = playerObj.username || playerObj.name || 'Unknown';
-      
-      let bossMuId = null;
-      let hasMuLeadership = false;
-      
-      try {
-          const uData = await smartFetch('user.getUserLite', { userId: uId });
-          if (uData) {
-              foundName = uData.username || uData.name || foundName;
-              playerObj.level = uData.leveling?.level || '?';
-              if (uData.isBanned || uData.banned) {
-                  addLog(`[OK] Player ${foundName} cleared (Account is banned).`, 'info');
-                  return;
-              }
-              if (uData.mu) bossMuId = typeof uData.mu === 'object' ? (uData.mu._id || uData.mu.id) : uData.mu;
-              else if (uData.militaryUnit) bossMuId = typeof uData.militaryUnit === 'object' ? (uData.militaryUnit._id || uData.militaryUnit.id) : uData.militaryUnit;
-              else if (uData.muId) bossMuId = uData.muId;
-          }
-      } catch (e) {}
-
-      if (bossMuId) {
-          try {
-              const muData = await smartFetch('mu.getById', { muId: bossMuId });
-              if (muData) {
-                  const managers = muData.roles?.managers || [];
-                  const commanders = muData.roles?.commanders || [];
-                  
-                  if (managers.includes(uId) || commanders.includes(uId)) {
-                      hasMuLeadership = true;
-                  }
-              }
-          } catch(e) {}
-      }
-      
-      let itemMarketTxs = [];
-      const twoMonthsAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
-      
-      try {
-          let nextCursor = null;
-          let reachedOldTxs = false;
-          do {
-              if (!isScanningRef.current) break;
-              const txPayload = { transactionType: 'itemMarket', userId: uId, limit: 100 };
-              if (nextCursor) txPayload.cursor = nextCursor;
-              
-              const txData = await smartFetch('transaction.getPaginatedTransactions', txPayload);
-              let items = Array.isArray(txData) ? txData : (txData?.items || txData?.data || txData?.transactions || []);
-              
-              for (const tx of items) {
-                  const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
-                  if (txTime >= twoMonthsAgo) {
-                      itemMarketTxs.push(tx);
-                  } else {
-                      reachedOldTxs = true;
-                  }
-              }
-              
-              nextCursor = txData?.nextCursor || txData?.meta?.nextCursor || null;
-              if (reachedOldTxs || itemMarketTxs.length >= 1000) break; 
-          } while (nextCursor);
-      } catch(e) {}
-
-      const washPartners = {};
-      const itemGroups = {};
-      
-      itemMarketTxs.forEach(tx => {
-          let pseudoItemId;
-          if (typeof tx.item === 'object' && tx.item !== null) {
-              const itemCode = tx.itemCode || tx.item.code || 'unknown';
-              const acqTime = tx.item.lastAcquisitionAt || 'no_time';
-              let statsStr = 'no_stats';
-              if (tx.item.skills) {
-                  statsStr = Object.entries(tx.item.skills)
-                      .map(([k, v]) => `${k}:${typeof v === 'object' && v !== null ? (v.value ?? v.total ?? 0) : v}`)
-                      .sort().join('-');
-              }
-              pseudoItemId = `${itemCode}_${acqTime}_${statsStr}`;
-          } else {
-              pseudoItemId = tx.item || tx._id;
-          }
-          tx.pseudoItemId = pseudoItemId;
-          
-          if (!pseudoItemId) return;
-          if (!itemGroups[pseudoItemId]) itemGroups[pseudoItemId] = [];
-          itemGroups[pseudoItemId].push(tx);
-      });
-
-      Object.entries(itemGroups).forEach(([itemId, txs]) => {
-          if (txs.length < 2) return;
-          
-          txs.sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
-          
-          for (let i = 0; i < txs.length - 1; i++) {
-              const tx1 = txs[i];
-              const s1 = typeof tx1.seller === 'object' ? tx1.seller?._id : (tx1.sellerId || tx1.seller);
-              const b1 = typeof tx1.buyer === 'object' ? tx1.buyer?._id : (tx1.buyerId || tx1.buyer);
-              
-              if (s1 !== uId && b1 !== uId) continue;
-
-              for (let j = i + 1; j < txs.length; j++) {
-                  const tx2 = txs[j];
-                  const s2 = typeof tx2.seller === 'object' ? tx2.seller?._id : (tx2.sellerId || tx2.seller);
-                  const b2 = typeof tx2.buyer === 'object' ? tx2.buyer?._id : (tx2.buyerId || tx2.buyer);
-                  
-                  if (s2 !== uId && b2 !== uId) continue;
-                  if (s1 === b1 || s2 === b2) continue; 
-
-                  let isCircular = false;
-                  let p1, p2;
-
-                  if (s1 === uId && b2 === uId) { 
-                      isCircular = true; p1 = b1; p2 = s2;
-                  } else if (b1 === uId && s2 === uId) { 
-                      if (s1 === b2) {
-                          isCircular = true; p1 = s1; p2 = b2;
-                      }
-                  }
-
-                  if (isCircular) {
-                      const isClassic = (p1 === p2);
-                      const threshold = isClassic ? 1 : 25; 
-                      
-                      const m1 = parseFloat(tx1.money || tx1.price || tx1.value || 0);
-                      const m2 = parseFloat(tx2.money || tx2.price || tx2.value || 0);
-                      
-                      if (m1 < threshold || m2 < threshold) continue;
-                      
-                      const processLeg = (partnerId, money, txId, txTime, bossIsSeller) => {
-                          if (!partnerId || partnerId === uId) return;
-                          if (!washPartners[partnerId]) washPartners[partnerId] = { volume: 0, netProfit: 0, txCount: 0, items: new Set(), latestTrade: 0 };
-                          
-                          if (!washPartners[partnerId].items.has(txId)) {
-                              washPartners[partnerId].txCount += 1;
-                              washPartners[partnerId].items.add(txId);
-                              washPartners[partnerId].volume += money;
-                              washPartners[partnerId].latestTrade = Math.max(washPartners[partnerId].latestTrade || 0, txTime);
-                              
-                              if (bossIsSeller) washPartners[partnerId].netProfit += money;
-                              else washPartners[partnerId].netProfit -= money;
-                          }
-                      };
-
-                      processLeg(p1, m1, tx1._id, new Date(tx1.createdAt || 0).getTime(), s1 === uId);
-                      processLeg(p2, m2, tx2._id, new Date(tx2.createdAt || 0).getTime(), s2 === uId);
-                  }
-              }
-          }
-      });
-
-      for (const partnerId of Object.keys(washPartners)) {
-          if (!globalWashPartners.current[uId]) globalWashPartners.current[uId] = {};
-          globalWashPartners.current[uId][partnerId] = { ...washPartners[partnerId] };
-          
-          try {
-              const pData = await smartFetch('user.getUserLite', { userId: partnerId });
-              if (pData) {
-                  washPartners[partnerId].name = pData.username || pData.name || partnerId;
-                  washPartners[partnerId].level = pData.leveling?.level || '?';
-                  globalCacheRef.current.names[partnerId] = washPartners[partnerId].name;
-                  
-                  const isPBanned = !!(pData.isBanned || pData.banned || pData.infos?.isBanned);
-                  washPartners[partnerId].isBanned = isPBanned;
-                  globalBans.current[partnerId] = isPBanned;
-              }
-          } catch(e) {
-              washPartners[partnerId].name = partnerId;
-              washPartners[partnerId].level = '?';
-          }
-          
-          if (!playerObj.isSecondaryScan) {
-              scanQueueRef.current.push({ _id: partnerId, scanContext: playerObj.scanContext, isSecondaryScan: true });
-          }
-      }
-
-      let isDirectLaunderer = false;
-      let directLaunderAmount = 0;
-      try {
-          const outTxData = await smartFetch('transaction.getPaginatedTransactions', {
-              transactionType: 'donation',
-              userId: uId,
-              limit: 100
-          });
-          const outItems = Array.isArray(outTxData) ? outTxData : (outTxData?.items || outTxData?.data || outTxData?.transactions || []);
-          
-          const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-          let weeklyOutbound = 0;
-          let maxSingleOutbound = 0;
-          
-          outItems.forEach(tx => {
-              const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
-              if (txTime < twoMonthsAgo) return;
-
-              const senderId = typeof tx.sender === 'object' ? (tx.sender?._id || tx.sender?.id) : (tx.sender || tx.senderId || tx.from || tx.userId);
-              if (senderId !== uId) return;
-              
-              let amount = tx.amount ?? tx.quantity ?? tx.value ?? tx.gold ?? tx.money ?? tx.total;
-              if (typeof amount === 'object' && amount !== null) {
-                  amount = amount.amount ?? amount.value ?? amount.quantity ?? amount.gold ?? 0;
-              }
-              if (typeof amount !== 'number') amount = parseFloat(amount) || 0;
-              
-              if (amount === 0) {
-                  const possibleVals = Object.values(tx).filter(v => typeof v === 'number' && v < 1000000000000 && v > 0);
-                  if (possibleVals.length > 0) amount = Math.max(...possibleVals);
-              }
-              
-              if (Math.abs(amount - 5) > 0.01 && Math.abs(amount - 25) > 0.01) {
-                  directLaunderAmount += amount;
-                  maxSingleOutbound = Math.max(maxSingleOutbound, amount);
-              }
-              
-              if (txTime >= oneWeekAgo) {
-                  weeklyOutbound += amount;
-              }
-          });
-          
-          if (maxSingleOutbound > 25 || weeklyOutbound > 60) {
-              isDirectLaunderer = true;
-          }
-      } catch(e) {}
-      
-      playerObj.isDirectLaunderer = isDirectLaunderer;
-      playerObj.directLaunderAmount = directLaunderAmount;
-
-      const parsedCompanies = await fetchUserCompaniesFull(uId);
-
-      if (parsedCompanies.length < 1 && Object.keys(washPartners).length === 0 && !isDirectLaunderer) { 
-          addLog(`[OK] Player ${foundName} cleared (No companies, wash trades, or massive donations).`, 'info');
-          return;
-      }
-
-      let successfulWorkerEndpoint = null;
-      let successfulWorkerSchema = null;
-      
-      if (parsedCompanies.length > 0) {
-          const testCid = parsedCompanies[0]._id || parsedCompanies[0].id;
-          if (testCid) {
-               const workerEndpoints = ['worker.getWorkers', 'company.getWorkers', 'company.getEmployees'];
-               for (const wep of workerEndpoints) {
-                   if (successfulWorkerEndpoint) break;
-                   try {
-                       await smartFetch(wep, { companyId: testCid });
-                       successfulWorkerEndpoint = wep;
-                       successfulWorkerSchema = 'companyId';
-                       break; 
-                   } catch (e1) {
-                       try {
-                           await smartFetch(wep, { id: testCid });
-                       successfulWorkerEndpoint = wep;
-                       successfulWorkerSchema = 'id';
-                       break;
-                       } catch (e2) {}
-                   }
-               }
-          }
-
-          if (successfulWorkerEndpoint) {
-               await Promise.all(parsedCompanies.map(async (company) => {
-                   if (!isScanningRef.current) return;
-                   const cId = company._id || company.id;
-                   const schema = successfulWorkerSchema === 'companyId' ? { companyId: cId } : { id: cId };
-                   try {
-                       const rawWorkers = await smartFetch(successfulWorkerEndpoint, schema);
-                       let flatWorkers = Array.isArray(rawWorkers) ? rawWorkers : (rawWorkers?.workers || Object.values(rawWorkers || {}));
-                       flatWorkers = flatWorkers.flat(3).filter(w => typeof w === 'object' && w !== null);
-                       
-                       await Promise.all(flatWorkers.map(async (w) => {
-                           if (w.user && typeof w.user === 'string') {
-                               try {
-                                   const uData = await smartFetch('user.getUserLite', { userId: w.user });
-                                   if (uData) {
-                                       w.resolvedUser = uData;
-                                       w.isBanned = !!(uData.isBanned || uData.banned || uData.infos?.isBanned);
-                                       globalCacheRef.current.names[w.user] = uData.username || uData.name || w.user;
-                                       
-                                       let workerMuId = null;
-                                       if (uData.mu) workerMuId = typeof uData.mu === 'object' ? (uData.mu._id || uData.mu.id) : uData.mu;
-                                       else if (uData.militaryUnit) workerMuId = typeof uData.militaryUnit === 'object' ? (uData.militaryUnit._id || uData.militaryUnit.id) : uData.militaryUnit;
-                                       else if (uData.muId) workerMuId = uData.muId;
-                                       
-                                       w.workerMuId = workerMuId;
-                                   }
-                                   
-                                   const level = uData?.leveling?.level || 1;
-                                   const isActive = uData?.isActive;
-                                   
-                                   if (isActive !== false && level < 30) {
-                                       w.ownedCompanies = await fetchUserCompaniesFull(w.user);
-                                   } else {
-                                       w.ownedCompanies = [];
-                                   }
-
-                                   if (hasMuLeadership && bossMuId && w.workerMuId === bossMuId) {
-                                       try {
-                                           const txData = await smartFetch('transaction.getPaginatedTransactions', { 
-                                               userId: w.user, 
-                                               muId: bossMuId, 
-                                               transactionType: 'donation', 
-                                               limit: 100 
-                                           });
-                                           const items = Array.isArray(txData) ? txData : (txData?.items || txData?.data || txData?.transactions || []);
-                                           w.muDonations = items;
-                                       } catch(e) {}
-                                   }
-
-                               } catch (e) {}
-                           }
-                       }));
-                       company.workers = flatWorkers;
-                   } catch(err) {}
-               }));
-          }
-      }
-
-      const livePlayer = { id: uId, name: foundName, isBanned: playerObj.isBanned, country: playerObj.scanContext || 'Unknown Target', companies: parsedCompanies, washPartners, isDirectLaunderer, directLaunderAmount };
-      const result = analyzePlayer(livePlayer, settings, globalCacheRef.current, addLog);
-      
-      if (result) {
-          addLog(`[WARNING] Suspicious patterns detected for player: ${foundName}`, 'warning');
-          setFindings(prev => {
-            const newState = { ...prev };
-            if (!newState[livePlayer.country]) newState[livePlayer.country] = [];
-            if (!newState[livePlayer.country].some(r => r.player.id === result.player.id)) {
-                newState[livePlayer.country].push(result);
+    const uId = playerObj._id || playerObj.id;
+    let foundName = playerObj.username || playerObj.name || 'Unknown';
+    
+    let bossMuId = null;
+    let hasMuLeadership = false;
+    
+    try {
+        const uData = await smartFetch('user.getUserLite', { userId: uId });
+        if (uData) {
+            foundName = uData.username || uData.name || foundName;
+            playerObj.level = uData.leveling?.level || '?';
+            if (uData.isBanned || uData.banned) {
+                addLog(`[OK] Player ${foundName} cleared (Account is banned).`, 'info');
+                return;
             }
-            return newState;
-          });
-      } else {
-          addLog(`[OK] Player ${foundName} cleared.`, 'info');
-      }
+            if (!settings.ringOfFireMode) {
+                if (uData.mu) bossMuId = typeof uData.mu === 'object' ? (uData.mu._id || uData.mu.id) : uData.mu;
+                else if (uData.militaryUnit) bossMuId = typeof uData.militaryUnit === 'object' ? (uData.militaryUnit._id || uData.militaryUnit.id) : uData.militaryUnit;
+                else if (uData.muId) bossMuId = uData.muId;
+            }
+        }
+    } catch (e) {}
+  
+    if (!settings.ringOfFireMode && bossMuId) {
+        try {
+            const muData = await smartFetch('mu.getById', { muId: bossMuId });
+            if (muData) {
+                const managers = muData.roles?.managers || [];
+                const commanders = muData.roles?.commanders || [];
+                
+                if (managers.includes(uId) || commanders.includes(uId)) {
+                    hasMuLeadership = true;
+                }
+            }
+        } catch(e) {}
+    }
+    
+    let itemMarketTxs = [];
+    const lookbackDays = settings.ringOfFireMode ? settings.rofDays : 60;
+    const cutoffTime = Date.now() - lookbackDays * 24 * 60 * 60 * 1000;
+    
+    try {
+        let nextCursor = null;
+        let reachedOldTxs = false;
+        do {
+            if (!isScanningRef.current) break;
+            const txPayload = { transactionType: 'itemMarket', userId: uId, limit: 100 };
+            if (nextCursor) txPayload.cursor = nextCursor;
+            
+            const txData = await smartFetch('transaction.getPaginatedTransactions', txPayload);
+            let items = Array.isArray(txData) ? txData : (txData?.items || txData?.data || txData?.transactions || []);
+            
+            for (const tx of items) {
+                const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
+                if (txTime >= cutoffTime) {
+                    itemMarketTxs.push(tx);
+                } else {
+                    reachedOldTxs = true;
+                }
+            }
+            
+            nextCursor = txData?.nextCursor || txData?.meta?.nextCursor || null;
+            if (reachedOldTxs || itemMarketTxs.length >= 1000) break; 
+        } while (nextCursor);
+    } catch(e) {}
+  
+    const washPartners = {};
+    const itemGroups = {};
+    
+    itemMarketTxs.forEach(tx => {
+        let pseudoItemId;
+        if (typeof tx.item === 'object' && tx.item !== null) {
+            const itemCode = tx.itemCode || tx.item.code || 'unknown';
+            const acqTime = tx.item.lastAcquisitionAt || 'no_time';
+            let statsStr = 'no_stats';
+            if (tx.item.skills) {
+                statsStr = Object.entries(tx.item.skills)
+                    .map(([k, v]) => `${k}:${typeof v === 'object' && v !== null ? (v.value ?? v.total ?? 0) : v}`)
+                    .sort().join('-');
+            }
+            pseudoItemId = `${itemCode}_${acqTime}_${statsStr}`;
+        } else {
+            pseudoItemId = tx.item || tx._id;
+        }
+        tx.pseudoItemId = pseudoItemId;
+        
+        if (!pseudoItemId) return;
+        if (!itemGroups[pseudoItemId]) itemGroups[pseudoItemId] = [];
+        itemGroups[pseudoItemId].push(tx);
+    });
+  
+    Object.entries(itemGroups).forEach(([itemId, txs]) => {
+        if (txs.length < 2) return;
+        
+        txs.sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+        
+        for (let i = 0; i < txs.length - 1; i++) {
+            const tx1 = txs[i];
+            const s1 = typeof tx1.seller === 'object' ? tx1.seller?._id : (tx1.sellerId || tx1.seller);
+            const b1 = typeof tx1.buyer === 'object' ? tx1.buyer?._id : (tx1.buyerId || tx1.buyer);
+            
+            if (s1 !== uId && b1 !== uId) continue;
+  
+            for (let j = i + 1; j < txs.length; j++) {
+                const tx2 = txs[j];
+                const s2 = typeof tx2.seller === 'object' ? tx2.seller?._id : (tx2.sellerId || tx2.seller);
+                const b2 = typeof tx2.buyer === 'object' ? tx2.buyer?._id : (tx2.buyerId || tx2.buyer);
+                
+                if (s2 !== uId && b2 !== uId) continue;
+                if (s1 === b1 || s2 === b2) continue; 
+  
+                let isCircular = false;
+                let p1, p2;
+  
+                if (s1 === uId && b2 === uId) { 
+                    isCircular = true; p1 = b1; p2 = s2;
+                } else if (b1 === uId && s2 === uId) { 
+                    if (s1 === b2) {
+                        isCircular = true; p1 = s1; p2 = b2;
+                    }
+                }
+  
+                if (isCircular) {
+                    const isClassic = (p1 === p2);
+                    const threshold = isClassic ? 1 : 25; 
+                    
+                    const m1 = parseFloat(tx1.money || tx1.price || tx1.value || 0);
+                    const m2 = parseFloat(tx2.money || tx2.price || tx2.value || 0);
+                    
+                    if (m1 < threshold || m2 < threshold) continue;
+                    
+                    const processLeg = (partnerId, money, txId, txTime, bossIsSeller) => {
+                        if (!partnerId || partnerId === uId) return;
+                        if (!washPartners[partnerId]) washPartners[partnerId] = { volume: 0, netProfit: 0, txCount: 0, items: new Set(), latestTrade: 0 };
+                        
+                        if (!washPartners[partnerId].items.has(txId)) {
+                            washPartners[partnerId].txCount += 1;
+                            washPartners[partnerId].items.add(txId);
+                            washPartners[partnerId].volume += money;
+                            washPartners[partnerId].latestTrade = Math.max(washPartners[partnerId].latestTrade || 0, txTime);
+                            
+                            if (bossIsSeller) washPartners[partnerId].netProfit += money;
+                            else washPartners[partnerId].netProfit -= money;
+                        }
+                    };
+  
+                    processLeg(p1, m1, tx1._id, new Date(tx1.createdAt || 0).getTime(), s1 === uId);
+                    processLeg(p2, m2, tx2._id, new Date(tx2.createdAt || 0).getTime(), s2 === uId);
+                }
+            }
+        }
+    });
+  
+    for (const partnerId of Object.keys(washPartners)) {
+        if (!globalWashPartners.current[uId]) globalWashPartners.current[uId] = {};
+        globalWashPartners.current[uId][partnerId] = { ...washPartners[partnerId] };
+        
+        try {
+            const pData = await smartFetch('user.getUserLite', { userId: partnerId });
+            if (pData) {
+                washPartners[partnerId].name = pData.username || pData.name || partnerId;
+                washPartners[partnerId].level = pData.leveling?.level || '?';
+                globalCacheRef.current.names[partnerId] = washPartners[partnerId].name;
+                
+                const isPBanned = !!(pData.isBanned || pData.banned || pData.infos?.isBanned);
+                washPartners[partnerId].isBanned = isPBanned;
+                globalBans.current[partnerId] = isPBanned;
+            }
+        } catch(e) {
+            washPartners[partnerId].name = partnerId;
+            washPartners[partnerId].level = '?';
+        }
+        
+        if (!playerObj.isSecondaryScan) {
+            scanQueueRef.current.push({ _id: partnerId, scanContext: playerObj.scanContext, isSecondaryScan: true });
+        }
+    }
+  
+    let isDirectLaunderer = false;
+    let directLaunderAmount = 0;
+    let parsedCompanies = [];
+    
+    if (!settings.ringOfFireMode) {
+        try {
+            const outTxData = await smartFetch('transaction.getPaginatedTransactions', {
+                transactionType: 'donation',
+                userId: uId,
+                limit: 100
+            });
+            const outItems = Array.isArray(outTxData) ? outTxData : (outTxData?.items || outTxData?.data || outTxData?.transactions || []);
+            
+            const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+            let weeklyOutbound = 0;
+            let maxSingleOutbound = 0;
+            
+            outItems.forEach(tx => {
+                const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
+                if (txTime < cutoffTime) return;
+  
+                const senderId = typeof tx.sender === 'object' ? (tx.sender?._id || tx.sender?.id) : (tx.sender || tx.senderId || tx.from || tx.userId);
+                if (senderId !== uId) return;
+                
+                let amount = tx.amount ?? tx.quantity ?? tx.value ?? tx.gold ?? tx.money ?? tx.total;
+                if (typeof amount === 'object' && amount !== null) {
+                    amount = amount.amount ?? amount.value ?? amount.quantity ?? amount.gold ?? 0;
+                }
+                if (typeof amount !== 'number') amount = parseFloat(amount) || 0;
+                
+                if (amount === 0) {
+                    const possibleVals = Object.values(tx).filter(v => typeof v === 'number' && v < 1000000000000 && v > 0);
+                    if (possibleVals.length > 0) amount = Math.max(...possibleVals);
+                }
+                
+                if (Math.abs(amount - 5) > 0.01 && Math.abs(amount - 25) > 0.01) {
+                    directLaunderAmount += amount;
+                    maxSingleOutbound = Math.max(maxSingleOutbound, amount);
+                }
+                
+                if (txTime >= oneWeekAgo) {
+                    weeklyOutbound += amount;
+                }
+            });
+            
+            if (maxSingleOutbound > 25 || weeklyOutbound > 60) {
+                isDirectLaunderer = true;
+            }
+        } catch(e) {}
+        
+        playerObj.isDirectLaunderer = isDirectLaunderer;
+        playerObj.directLaunderAmount = directLaunderAmount;
+  
+        parsedCompanies = await fetchUserCompaniesFull(uId);
+  
+        if (parsedCompanies.length < 1 && Object.keys(washPartners).length === 0 && !isDirectLaunderer) { 
+            addLog(`[OK] Player ${foundName} cleared (No companies, wash trades, or massive donations).`, 'info');
+            return;
+        }
+  
+        let successfulWorkerEndpoint = null;
+        let successfulWorkerSchema = null;
+        
+        if (parsedCompanies.length > 0) {
+            const testCid = parsedCompanies[0]._id || parsedCompanies[0].id;
+            if (testCid) {
+                 const workerEndpoints = ['worker.getWorkers', 'company.getWorkers', 'company.getEmployees'];
+                 for (const wep of workerEndpoints) {
+                     if (successfulWorkerEndpoint) break;
+                     try {
+                         await smartFetch(wep, { companyId: testCid });
+                         successfulWorkerEndpoint = wep;
+                         successfulWorkerSchema = 'companyId';
+                         break; 
+                     } catch (e1) {
+                         try {
+                             await smartFetch(wep, { id: testCid });
+                         successfulWorkerEndpoint = wep;
+                         successfulWorkerSchema = 'id';
+                         break;
+                         } catch (e2) {}
+                     }
+                 }
+            }
+  
+            if (successfulWorkerEndpoint) {
+                 await Promise.all(parsedCompanies.map(async (company) => {
+                     if (!isScanningRef.current) return;
+                     const cId = company._id || company.id;
+                     const schema = successfulWorkerSchema === 'companyId' ? { companyId: cId } : { id: cId };
+                     try {
+                         const rawWorkers = await smartFetch(successfulWorkerEndpoint, schema);
+                         let flatWorkers = Array.isArray(rawWorkers) ? rawWorkers : (rawWorkers?.workers || Object.values(rawWorkers || {}));
+                         flatWorkers = flatWorkers.flat(3).filter(w => typeof w === 'object' && w !== null);
+                         
+                         await Promise.all(flatWorkers.map(async (w) => {
+                             if (w.user && typeof w.user === 'string') {
+                                 try {
+                                     const uData = await smartFetch('user.getUserLite', { userId: w.user });
+                                     if (uData) {
+                                         w.resolvedUser = uData;
+                                         w.isBanned = !!(uData.isBanned || uData.banned || uData.infos?.isBanned);
+                                         globalCacheRef.current.names[w.user] = uData.username || uData.name || w.user;
+                                         
+                                         let workerMuId = null;
+                                         if (uData.mu) workerMuId = typeof uData.mu === 'object' ? (uData.mu._id || uData.mu.id) : uData.mu;
+                                         else if (uData.militaryUnit) workerMuId = typeof uData.militaryUnit === 'object' ? (uData.militaryUnit._id || uData.militaryUnit.id) : uData.militaryUnit;
+                                         else if (uData.muId) workerMuId = uData.muId;
+                                         
+                                         w.workerMuId = workerMuId;
+                                     }
+                                     
+                                     const level = uData?.leveling?.level || 1;
+                                     const isActive = uData?.isActive;
+                                     
+                                     if (isActive !== false && level < 30) {
+                                         w.ownedCompanies = await fetchUserCompaniesFull(w.user);
+                                     } else {
+                                         w.ownedCompanies = [];
+                                     }
+  
+                                     if (hasMuLeadership && bossMuId && w.workerMuId === bossMuId) {
+                                         try {
+                                             const txData = await smartFetch('transaction.getPaginatedTransactions', { 
+                                                 userId: w.user, 
+                                                 muId: bossMuId, 
+                                                 transactionType: 'donation', 
+                                                 limit: 100 
+                                             });
+                                             const items = Array.isArray(txData) ? txData : (txData?.items || txData?.data || txData?.transactions || []);
+                                             w.muDonations = items;
+                                         } catch(e) {}
+                                     }
+  
+                                 } catch (e) {}
+                             }
+                         }));
+                         company.workers = flatWorkers;
+                     } catch(err) {}
+                 }));
+            }
+        }
+    } else {
+        if (Object.keys(washPartners).length === 0) {
+            addLog(`[OK] Player ${foundName} cleared (No Wash Trading Found).`, 'info');
+            return;
+        }
+    }
+  
+    const livePlayer = { id: uId, name: foundName, isBanned: playerObj.isBanned, country: playerObj.scanContext || 'Unknown Target', companies: parsedCompanies, washPartners, isDirectLaunderer, directLaunderAmount };
+    const result = analyzePlayer(livePlayer, settings, globalCacheRef.current, addLog);
+    
+    if (result) {
+        addLog(`[WARNING] Suspicious patterns detected for player: ${foundName}`, 'warning');
+        setFindings(prev => {
+          const newState = { ...prev };
+          if (!newState[livePlayer.country]) newState[livePlayer.country] = [];
+          if (!newState[livePlayer.country].some(r => r.player.id === result.player.id)) {
+              newState[livePlayer.country].push(result);
+          }
+          return newState;
+        });
+    } else {
+        addLog(`[OK] Player ${foundName} cleared.`, 'info');
+    }
   };
 
   const startScan = async () => {
@@ -1373,57 +1389,100 @@ export function WarEraOracle() {
         scanQueueRef.current = [{ _id: actualTargetId, scanContext: 'Targeted User' }];
         addLog(`Initiating targeted API scan for User ID: ${actualTargetId}`, 'info');
     } else if (targetRegionId) {
-        const rName = availableRegions.find(r => (r._id || r.id) === targetRegionId)?.name || targetRegionId;
-        addLog(`Initiating regional scan for: ${rName}...`, 'info');
+        let targetRegions = [];
+        if (targetRegionId === 'ALL') {
+            targetRegions = availableRegions.map(r => r._id || r.id);
+            addLog(`Initiating GLOBAL scan across ${targetRegions.length} regions...`, 'info');
+        } else {
+            targetRegions = [targetRegionId];
+            const rName = availableRegions.find(r => (r._id || r.id) === targetRegionId)?.name || targetRegionId;
+            addLog(`Initiating regional scan for: ${rName}...`, 'info');
+        }
         
         let allCitizens = [];
-        let nextCursor = null;
-        let success = false;
-        const endpoints = ['user.getUsersByCountry', 'user.getUsers', 'country.getCitizens'];
         
-        for (const ep of endpoints) {
-            if (success) break;
-            try {
-                do {
-                    if (!isScanningRef.current) break;
-                    
-                    while (globalRateLimitRelease.current > Date.now()) {
-                        await new Promise(r => setTimeout(r, 500));
-                    }
-
-                    const payload = { countryId: targetRegionId, limit: 100 };
-                    if (nextCursor) payload.cursor = nextCursor;
-                    
-                    const res = await smartFetch(ep, payload);
-                    let pageData = Array.isArray(res) ? res : (res?.data || res?.items || res?.citizens || Object.values(res || {}));
-                    pageData = pageData.flat(3).filter(c => typeof c === 'object' && c !== null);
-                    
-                    const uniqueCitizens = [];
-                    const seenCitizens = new Set();
-                    pageData.forEach(c => {
-                        const id = c._id || c.id || c.userId;
-                        if (!seenCitizens.has(id)) {
-                            seenCitizens.add(id);
-                            uniqueCitizens.push(c);
+        for (const regionId of targetRegions) {
+            if (!isScanningRef.current) break;
+            const rName = availableRegions.find(r => (r._id || r.id) === regionId)?.name || regionId;
+            if (targetRegionId === 'ALL') addLog(`[LIVE] Fetching citizens for ${rName} (${targetRegions.indexOf(regionId) + 1}/${targetRegions.length})...`, 'info');
+            
+            let success = false;
+            const endpoints = ['user.getUsersByCountry', 'user.getUsers', 'country.getCitizens'];
+            
+            for (const ep of endpoints) {
+                if (success) break;
+                
+                let nextCursor = null;
+                let page = 1;
+                let hasMore = true;
+                let loopSeenSet = new Set();
+                
+                try {
+                    do {
+                        if (!isScanningRef.current) break;
+                        
+                        while (globalRateLimitRelease.current > Date.now()) {
+                            await new Promise(r => setTimeout(r, 500));
                         }
-                    });
-                    
-                    if (uniqueCitizens.length > 0) {
-                        allCitizens.push(...uniqueCitizens);
-                        success = true;
-                        nextCursor = res?.nextCursor || res?.meta?.nextCursor || null;
-                        if (nextCursor) addLog(`[LIVE] Fetched page ${allCitizens.length / pageData.length}. Found nextCursor...`, 'info');
-                    } else {
-                        nextCursor = null;
-                    }
-                    
-                    if (allCitizens.length > 2000) {
-                        addLog(`[WARNING] Safety cap reached (2000 users). Terminating region fetch.`, 'warning');
-                        break;
-                    }
-                } while (nextCursor);
-            } catch (e) {
-                addLog(`[DEBUG] Endpoint ${ep} failed: ${e.message.split('\n')[0].substring(0, 100)}...`, 'warning');
+
+                        const payload = { countryId: regionId, limit: 100 };
+                        if (nextCursor) payload.cursor = nextCursor;
+                        else if (page > 1) payload.page = page;
+                        
+                        const res = await smartFetch(ep, payload);
+                        let pageData = Array.isArray(res) ? res : (res?.data || res?.items || res?.citizens || Object.values(res || {}));
+                        pageData = pageData.flat(3).filter(c => typeof c === 'object' && c !== null);
+                        
+                        let newUsersCount = 0;
+                        const uniqueCitizens = [];
+                        
+                        pageData.forEach(c => {
+                            const id = c._id || c.id || c.userId;
+                            if (!loopSeenSet.has(id)) {
+                                loopSeenSet.add(id);
+                                c.scanContext = rName;
+                                uniqueCitizens.push(c);
+                                newUsersCount++;
+                            }
+                        });
+                        
+                        if (uniqueCitizens.length > 0) {
+                            allCitizens.push(...uniqueCitizens);
+                            success = true;
+                        }
+                        
+                        if (pageData.length === 0) {
+                            hasMore = false;
+                        } else if (newUsersCount === 0) {
+                            // Hit an endpoint that doesn't respect pagination or looped back
+                            hasMore = false;
+                        } else {
+                            const nextC = res?.nextCursor || res?.meta?.nextCursor || null;
+                            if (nextC) {
+                                nextCursor = nextC;
+                                hasMore = true;
+                            } else if (pageData.length >= 100) {
+                                hasMore = true;
+                            } else {
+                                hasMore = false;
+                            }
+                            
+                            if (hasMore) {
+                                addLog(`[LIVE] Region ${rName}: Fetched page ${page}. Fetching next...`, 'info');
+                                page++;
+                            }
+                        }
+                        
+                        const safetyCap = targetRegionId === 'ALL' ? 100000 : 2000;
+                        if (allCitizens.length > safetyCap) {
+                            addLog(`[WARNING] Safety cap reached (${safetyCap} users). Terminating fetch.`, 'warning');
+                            hasMore = false;
+                            break;
+                        }
+                    } while (hasMore);
+                } catch (e) {
+                    addLog(`[DEBUG] Endpoint ${ep} failed: ${e.message.split('\n')[0].substring(0, 100)}...`, 'warning');
+                }
             }
         }
         
@@ -1435,8 +1494,7 @@ export function WarEraOracle() {
         allCitizens = Array.from(finalCitizensMap.values());
         
         if (allCitizens.length > 0) {
-            allCitizens.forEach(c => c.scanContext = rName);
-            addLog(`[LIVE] Acquired ${allCitizens.length} users in region.`, 'info');
+            addLog(`[LIVE] Acquired ${allCitizens.length} users for scanning.`, 'info');
             scanQueueRef.current = allCitizens;
         }
     }
@@ -1869,7 +1927,7 @@ export function WarEraOracle() {
           <ShieldAlert className="text-red-500" size={28} />
           <div>
             <h1 className="text-xl font-bold text-slate-100 leading-tight">WarEra Oracle</h1>
-            <p className="text-xs text-slate-500 font-mono">Multi-Account & Trading Abuse Detection Heuristics</p>
+            <p className="text-xs text-slate-500 font-mono">Multi-Account & Bot Net Detection Heuristics</p>
           </div>
         </div>
         <a 
@@ -1898,7 +1956,7 @@ export function WarEraOracle() {
                   type="text" 
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Required"
+                  placeholder="Optional API Key"
                   className={`w-full bg-slate-950 border rounded p-2 text-sm outline-none font-mono transition-colors ${
                       apiKey && !apiKey.startsWith('wae_') 
                       ? 'border-red-500 text-red-400 focus:border-red-400' 
@@ -1934,6 +1992,7 @@ export function WarEraOracle() {
                   disabled={isScanning || !!targetUserId || availableRegions.length === 0 || (!apiKey || !apiKey.startsWith('wae_'))}
                 >
                   {availableRegions.length === 0 && <option value="">{(!apiKey || !apiKey.startsWith('wae_')) ? 'Awaiting Valid API Key...' : 'Pending Network Ping...'}</option>}
+                  {availableRegions.length > 0 && <option value="ALL">🌍 Global Scan (All Regions)</option>}
                   {availableRegions.map(r => (
                     <option key={r._id || r.id} value={r._id || r.id}>
                       {r.name}
@@ -1943,20 +2002,52 @@ export function WarEraOracle() {
               </div>
 
               <div className="border-t border-slate-800 pt-4 mt-2">
-                <label className="text-xs text-slate-400 block mb-1">Suspicious Wage Threshold</label>
-                <div className="flex items-center gap-2">
+                <label className="flex items-center gap-2 cursor-pointer text-sm font-semibold text-orange-500 mb-4 hover:text-orange-400 transition-colors">
                   <input 
-                    type="range" 
-                    min="0.01" max="0.15" step="0.001" 
-                    value={settings.suspiciousWageThreshold}
-                    onChange={(e) => setSettings({...settings, suspiciousWageThreshold: parseFloat(e.target.value)})}
-                    className="flex-1 accent-red-500"
+                    type="checkbox" 
+                    checked={settings.ringOfFireMode}
+                    onChange={(e) => setSettings({...settings, ringOfFireMode: e.target.checked})}
+                    className="accent-orange-500 w-4 h-4"
                     disabled={isScanning}
                   />
-                  <span className="text-sm font-mono bg-slate-950 px-2 py-1 rounded w-16 text-center border border-slate-800">
-                    {settings.suspiciousWageThreshold.toFixed(3)}
-                  </span>
-                </div>
+                  🔥 Ring of Fire Mode (Wash Trading Only)
+                </label>
+
+                {settings.ringOfFireMode ? (
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1">Transaction History Search (Days Back)</label>
+                    <div className="flex items-center gap-2">
+                      <input 
+                        type="range" 
+                        min="1" max="180" step="1" 
+                        value={settings.rofDays}
+                        onChange={(e) => setSettings({...settings, rofDays: parseInt(e.target.value)})}
+                        className="flex-1 accent-orange-500"
+                        disabled={isScanning}
+                      />
+                      <span className="text-sm font-mono bg-slate-950 px-2 py-1 rounded w-16 text-center border border-orange-900/50 text-orange-400">
+                        {settings.rofDays}d
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1">Suspicious Wage Threshold</label>
+                    <div className="flex items-center gap-2">
+                      <input 
+                        type="range" 
+                        min="0.01" max="0.15" step="0.001" 
+                        value={settings.suspiciousWageThreshold}
+                        onChange={(e) => setSettings({...settings, suspiciousWageThreshold: parseFloat(e.target.value)})}
+                        className="flex-1 accent-red-500"
+                        disabled={isScanning}
+                      />
+                      <span className="text-sm font-mono bg-slate-950 px-2 py-1 rounded w-16 text-center border border-slate-800">
+                        {settings.suspiciousWageThreshold.toFixed(3)}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
