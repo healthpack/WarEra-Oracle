@@ -978,8 +978,11 @@ export function WarEraOracle() {
       }
       
       let itemMarketTxs = [];
+      const twoMonthsAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
+      
       try {
           let nextCursor = null;
+          let reachedOldTxs = false;
           do {
               if (!isScanningRef.current) break;
               const txPayload = { transactionType: 'itemMarket', userId: uId, limit: 100 };
@@ -987,10 +990,18 @@ export function WarEraOracle() {
               
               const txData = await smartFetch('transaction.getPaginatedTransactions', txPayload);
               let items = Array.isArray(txData) ? txData : (txData?.items || txData?.data || txData?.transactions || []);
-              itemMarketTxs.push(...items);
+              
+              for (const tx of items) {
+                  const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
+                  if (txTime >= twoMonthsAgo) {
+                      itemMarketTxs.push(tx);
+                  } else {
+                      reachedOldTxs = true;
+                  }
+              }
               
               nextCursor = txData?.nextCursor || txData?.meta?.nextCursor || null;
-              if (itemMarketTxs.length >= 1000) break; 
+              if (reachedOldTxs || itemMarketTxs.length >= 1000) break; 
           } while (nextCursor);
       } catch(e) {}
 
@@ -1121,10 +1132,12 @@ export function WarEraOracle() {
           let maxSingleOutbound = 0;
           
           outItems.forEach(tx => {
+              const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
+              if (txTime < twoMonthsAgo) return;
+
               const senderId = typeof tx.sender === 'object' ? (tx.sender?._id || tx.sender?.id) : (tx.sender || tx.senderId || tx.from || tx.userId);
               if (senderId !== uId) return;
               
-              const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
               let amount = tx.amount ?? tx.quantity ?? tx.value ?? tx.gold ?? tx.money ?? tx.total;
               if (typeof amount === 'object' && amount !== null) {
                   amount = amount.amount ?? amount.value ?? amount.quantity ?? amount.gold ?? 0;
@@ -1885,7 +1898,7 @@ export function WarEraOracle() {
                   type="text" 
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Optional API Key"
+                  placeholder="Required"
                   className={`w-full bg-slate-950 border rounded p-2 text-sm outline-none font-mono transition-colors ${
                       apiKey && !apiKey.startsWith('wae_') 
                       ? 'border-red-500 text-red-400 focus:border-red-400' 
