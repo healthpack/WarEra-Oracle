@@ -588,8 +588,14 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = []) => {
   let rawWorkers = player.companies ? player.companies.flatMap(c => c.workers || []) : [];
   const uniqueWorkersMap = new Map();
   rawWorkers.forEach(w => {
-    const uid = w._id || w.id || w.user || Math.random().toString(36).slice(2);
+    const rawUser = w.user;
+    const resolvedUserId = typeof rawUser === 'string' ? rawUser : (rawUser?._id || rawUser?.id || null);
+    const uid = w._id || w.id || resolvedUserId || Math.random().toString(36).slice(2);
     w.uid = uid;
+    // If user is an object with profile data, pre-populate resolvedUser
+    if (typeof rawUser === 'object' && rawUser !== null && !w.resolvedUser) {
+      w.resolvedUser = rawUser;
+    }
     uniqueWorkersMap.set(uid, w);
   });
   let allWorkers = Array.from(uniqueWorkersMap.values());
@@ -1339,17 +1345,19 @@ export function WarEraOracle() {
       playerObj.isDirectLaunderer=isDirectLaunderer; playerObj.directLaunderAmount=directLaunderAmount;
 
       // ── Action pacing detection: consecutive-run algorithm ──
-      // A real script fires in unbroken bursts of identical-interval actions.
-      // We find the longest consecutive streak where every gap matches a target
-      // delta ±tolerance. Scattered coincidental matches in 100k events don't qualify.
+      // Pacing uses only Donation + Market actions (scripted economic actions).
+      // Crafting/opening cases are included in the heatmap (actionTimes) but NOT pacing,
+      // because their intervals are too variable to produce meaningful pacing signals.
+      const PACING_ACTION_TYPES = new Set(['Donation', 'Market List', 'Market Buy']);
       let pacingHits=0, pacingAvgMs=0, pacingEdges=[], pacingSingleType=null;
-      actionTimes.sort((a,b)=>a.time-b.time);
+      const pacingTimes = actionTimes.filter(a => PACING_ACTION_TYPES.has(a.type));
+      pacingTimes.sort((a,b)=>a.time-b.time);
 
-      // Build sequential gap list (only gaps 100ms–60s; ignore idle gaps)
+      // Build sequential gap list from pacing-eligible actions only (100ms–60s)
       const seqDeltas=[];
-      for(let i=1;i<actionTimes.length;i++) {
-        const d=actionTimes[i].time-actionTimes[i-1].time;
-        if(d>=100&&d<=60000) seqDeltas.push({ delta:d, start:actionTimes[i-1].time, end:actionTimes[i].time, type:actionTimes[i].type, idx:i });
+      for(let i=1;i<pacingTimes.length;i++) {
+        const d=pacingTimes[i].time-pacingTimes[i-1].time;
+        if(d>=100&&d<=60000) seqDeltas.push({ delta:d, start:pacingTimes[i-1].time, end:pacingTimes[i].time, type:pacingTimes[i].type, idx:i });
       }
 
       // For each unique candidate delta (sampled from actual gaps), find the longest
@@ -1420,30 +1428,40 @@ export function WarEraOracle() {
             let flatWorkers=Array.isArray(rawWorkers)?rawWorkers:(rawWorkers?.workers||Object.values(rawWorkers||{}));
             flatWorkers=flatWorkers.flat(3).filter(w=>typeof w==='object'&&w!==null);
             await Promise.all(flatWorkers.map(async w => {
-              if (w.user && typeof w.user==='string') {
+              // w.user may be a bare string ID or an object {_id, username, ...}
+              const rawUser = w.user;
+              const userId = typeof rawUser === 'string' ? rawUser
+                : (rawUser?._id || rawUser?.id || rawUser?.userId || null);
+              // If the object already has profile data, pre-populate so we skip the fetch
+              if (typeof rawUser === 'object' && rawUser !== null && (rawUser.username || rawUser.name)) {
+                w.resolvedUser = w.resolvedUser || rawUser;
+              }
+              if (userId) {
                 try {
-                  const uData=await smartFetch('user.getUserLite',{userId:w.user});
+                  const uData = w.resolvedUser?.username
+                    ? w.resolvedUser  // already have profile from object
+                    : await smartFetch('user.getUserLite', { userId });
                   if (uData) {
                     w.resolvedUser=uData; w.isBanned=!!(uData.isBanned||uData.banned||uData.infos?.isBanned);
-                    globalCacheRef.current.names[w.user]=uData.username||uData.name||w.user;
+                    globalCacheRef.current.names[userId]=uData.username||uData.name||userId;
                     let workerMuId=uData.mu?(typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu):(uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
                     w.workerMuId=workerMuId;
                   }
                   const level=uData?.leveling?.level||1;
                   const isActive=uData?.isActive;
-                  if (isActive!==false&&level<30) w.ownedCompanies=await fetchUserCompaniesFull(w.user);
+                  if (isActive!==false&&level<30) w.ownedCompanies=await fetchUserCompaniesFull(userId);
                   else w.ownedCompanies=[];
                   // Record baseline for dynamic wealth comparison
                   const workerAELevel = w.ownedCompanies ? Math.max(0, ...w.ownedCompanies.map(c => c.automatedEngine || c.aeLevel || c.engineLevel || 0)) : 0;
                   recordPlayerWealthBaseline(level, w.ownedCompanies?.length || 0, workerAELevel);
                   if (hasMuLeadership&&bossMuId&&w.workerMuId===bossMuId) {
                     try {
-                      const txData=await smartFetch('transaction.getPaginatedTransactions',{userId:w.user,muId:bossMuId,transactionType:'donation',limit:100});
+                      const txData=await smartFetch('transaction.getPaginatedTransactions',{userId,muId:bossMuId,transactionType:'donation',limit:100});
                       const items=Array.isArray(txData)?txData:(txData?.items||txData?.data||txData?.transactions||[]);
                       w.muDonations=items;
                     } catch(e) {}
                   }
-                } catch(e) { addLog(`[DEBUG] Worker resolve failed ${w.user}: ${e.message}`, 'debug'); }
+                } catch(e) { addLog(`[DEBUG] Worker resolve failed ${userId}: ${e.message}`, 'debug'); }
               }
             }));
             company.workers=flatWorkers;
@@ -1493,7 +1511,7 @@ export function WarEraOracle() {
 
     if (apiKey && apiKey.startsWith('wae_')) {
       try {
-        const testRes=await fetch('https://api2.warera.io/trpc/user.getUsers?batch=1&input=%7B%220%22%3A%7B%22limit%22%3A1%7D%7D',{headers:{'Content-Type':'application/json','X-API-Key':apiKey.trim()}});
+        const testRes=await fetch('https://api2.warera.io/trpc/country.getAllCountries?batch=1&input=%7B%220%22%3A%7B%7D%7D',{headers:{'Content-Type':'application/json','X-API-Key':apiKey.trim()}});
         if (testRes.status===401||testRes.status===403) throw new Error("Auth Failed");
         const tt=await testRes.text();
         if (tt.toLowerCase().includes('unauthorized')||tt.toLowerCase().includes('invalid api key')) throw new Error("Auth Failed");
@@ -1533,7 +1551,7 @@ export function WarEraOracle() {
         if (!isScanningRef.current) break;
         const rName=availableRegions.find(r=>(r._id||r.id)===regionId)?.name||regionId;
         let success=false;
-        for (const ep of ['user.getUsersByCountry','user.getUsers','country.getCitizens']) {
+        for (const ep of ['user.getUsersByCountry']) {
           if (success) break;
           let nextCursor=null, page=1, hasMore=true, loopSeenSet=new Set();
           try {
