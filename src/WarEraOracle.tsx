@@ -990,18 +990,22 @@ export function WarEraOracle() {
   };
 
   const smartFetch = async (endpoint, payload, forceOfficial=false) => {
-    // Try the Vercel Redis cache proxy first — falls back transparently on any error
+    // Try the Vercel Redis cache proxy first (1.5s timeout — fall through on any failure)
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1500);
       const cacheRes = await fetch('/api/cache', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ endpoint, payload, forceOfficial, apiKey: apiKey.trim() }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
       if (cacheRes.ok) {
         const cacheJson = await cacheRes.json();
         if (cacheJson?.data !== undefined) return cacheJson.data;
       }
-    } catch(e) { /* cache proxy unavailable — fall through to direct */ }
+    } catch(e) { /* cache proxy unavailable or timed out — fall through to direct */ }
 
     // Direct path (used when running outside Vercel, or proxy failed)
     let route;
@@ -1041,30 +1045,70 @@ export function WarEraOracle() {
   };
 
   const fetchRegions = async () => {
-    addLog('Pinging APIs to retrieve live regions...', 'info');
-    let regions = [];
-    let success = false;
-    for (const ep of ['country.getAllCountries']) {
-      if (success) break;
-      try {
-        const data = await smartFetch(ep, {});
-        let rList = Array.isArray(data) ? data : (data?.countries || Object.values(data || {}));
-        regions = rList.flat().filter(r => r.name);
-        if (regions.length > 0) {
-          regions.sort((a,b) => a.name.localeCompare(b.name));
-          setAvailableRegions(regions); setTargetRegionId(regions[0]._id || regions[0].id); success=true;
-          addLog(`✅ Server Ping OK. ${regions.length} regions loaded.`, 'info');
-          regions.forEach(c => globalCacheRef.current.countries[c._id || c.id] = c);
-          for (const regEp of ['region.getRegionsObject']) {
-            try {
-              const rData = await smartFetch(regEp, {});
-              let rArray = Array.isArray(rData) ? rData : (rData?.regions || rData?.data || Object.values(rData || {}));
-              rArray = rArray.flat().filter(r => r && typeof r === 'object' && (r._id || r.id));
-              if (rArray.length > 0) { rArray.forEach(r => globalCacheRef.current.regions[r._id||r.id]=r); break; }
-            } catch(e) { addLog(`[DEBUG] Region endpoint ${regEp} failed`, 'debug'); }
+    addLog('Pinging WarEra API for regions...', 'info');
+    // Use the official API directly — this runs outside a scan so smartFetch
+    // would route through the cache proxy which may not be available locally.
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey && apiKey.trim()) headers['X-API-Key'] = apiKey.trim();
+
+    const directFetch = async (endpoint, payload = {}) => {
+      // Try gateway first, then official
+      for (const [baseUrl, isGateway] of [
+        ['https://gateway.warerastats.io/trpc/', true],
+        ['https://api2.warera.io/trpc/', false],
+      ]) {
+        try {
+          const url = `${baseUrl}${endpoint}`;
+          let res;
+          if (isGateway) {
+            res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+          } else {
+            const input = encodeURIComponent(JSON.stringify({ '0': payload }));
+            res = await fetch(`${url}?batch=1&input=${input}`, { headers });
           }
-        }
-      } catch(e) { addLog(`[DEBUG] Country endpoint ${ep} failed`, 'debug'); }
+          if (!res.ok) continue;
+          const text = await res.text();
+          const json = JSON.parse(text);
+          const obj = Array.isArray(json) ? json[0] : json;
+          if (obj?.error) continue;
+          return obj?.result?.data?.json ?? obj?.result?.data ?? obj;
+        } catch(e) { /* try next */ }
+      }
+      throw new Error(`${endpoint} unreachable`);
+    };
+
+    try {
+      // Step 1: countries (dropdown list + specialization cache)
+      const countriesData = await directFetch('country.getAllCountries');
+      let countries = Array.isArray(countriesData)
+        ? countriesData
+        : (countriesData?.countries || Object.values(countriesData || {}));
+      countries = countries.flat().filter(r => r && r.name);
+
+      if (countries.length === 0) {
+        addLog('[DEBUG] country.getAllCountries returned no data', 'debug');
+        return;
+      }
+
+      countries.sort((a,b) => a.name.localeCompare(b.name));
+      setAvailableRegions(countries);
+      setTargetRegionId(countries[0]._id || countries[0].id);
+      countries.forEach(c => globalCacheRef.current.countries[c._id || c.id] = c);
+      addLog(`✅ ${countries.length} countries loaded.`, 'info');
+
+      // Step 2: region map (used for production bonus checks)
+      // region.getRegionsObject returns { regionId: regionObj, ... } — an object, not array
+      try {
+        const regData = await directFetch('region.getRegionsObject');
+        const regMap = regData && typeof regData === 'object' && !Array.isArray(regData) ? regData : {};
+        const regEntries = Object.values(regMap).filter(r => r && typeof r === 'object' && (r._id || r.id));
+        regEntries.forEach(r => globalCacheRef.current.regions[r._id || r.id] = r);
+        if (regEntries.length > 0) addLog(`✅ ${regEntries.length} regions cached.`, 'info');
+      } catch(e) {
+        addLog(`[DEBUG] Region cache failed (non-critical): ${e.message}`, 'debug');
+      }
+    } catch(e) {
+      addLog(`[DEBUG] Failed to load countries: ${e.message}`, 'debug');
     }
   };
 
