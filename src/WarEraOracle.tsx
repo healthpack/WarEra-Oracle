@@ -895,8 +895,7 @@ export function WarEraOracle() {
   const globalBans = useRef({});
   const globalHermitPrimaries = useRef({}); // uid -> { partnerId, volume }
   const scanQueueRef = useRef([]);
-  const successfulWorkerEndpointRef = useRef(null);
-  const successfulWorkerSchemaRef = useRef(null);
+  // (worker endpoint is now fixed to worker.getWorkers with companyId — no ref needed)
 
   // ── Filter / Sort state ──
   const [filterType, setFilterType] = useState('all');
@@ -1045,7 +1044,7 @@ export function WarEraOracle() {
     addLog('Pinging APIs to retrieve live regions...', 'info');
     let regions = [];
     let success = false;
-    for (const ep of ['country.getAllCountries','country.getCountries','country.getAll']) {
+    for (const ep of ['country.getAllCountries']) {
       if (success) break;
       try {
         const data = await smartFetch(ep, {});
@@ -1056,7 +1055,7 @@ export function WarEraOracle() {
           setAvailableRegions(regions); setTargetRegionId(regions[0]._id || regions[0].id); success=true;
           addLog(`✅ Server Ping OK. ${regions.length} regions loaded.`, 'info');
           regions.forEach(c => globalCacheRef.current.countries[c._id || c.id] = c);
-          for (const regEp of ['region.getRegionsObject','region.getAllRegions','region.getAll','region.getRegions']) {
+          for (const regEp of ['region.getRegionsObject']) {
             try {
               const rData = await smartFetch(regEp, {});
               let rArray = Array.isArray(rData) ? rData : (rData?.regions || rData?.data || Object.values(rData || {}));
@@ -1071,7 +1070,7 @@ export function WarEraOracle() {
 
   const fetchUserCompaniesFull = async (userId) => {
     let parsed = [];
-    for (const ep of ['company.getCompanies','company.getUserCompanies','company.getCompaniesByUserId']) {
+    for (const ep of ['company.getCompanies']) {
       try {
         const data = await smartFetch(ep, { userId });
         let flat = Array.isArray(data) ? data : (data?.companies || Object.values(data||{}));
@@ -1404,27 +1403,13 @@ export function WarEraOracle() {
         addLog(`[OK] ${foundName} cleared (no heuristics met).`, 'info'); return;
       }
 
-      // ── Worker endpoint discovery (cached across scan) ──
-      if (parsedCompanies.length > 0 && !successfulWorkerEndpointRef.current) {
-        const testCid = parsedCompanies[0]._id || parsedCompanies[0].id;
-        if (testCid) {
-          for (const wep of ['worker.getWorkers','company.getWorkers','company.getEmployees']) {
-            if (successfulWorkerEndpointRef.current) break;
-            try { await smartFetch(wep, { companyId: testCid }); successfulWorkerEndpointRef.current=wep; successfulWorkerSchemaRef.current='companyId'; break; }
-            catch(e1) {
-              try { await smartFetch(wep, { id: testCid }); successfulWorkerEndpointRef.current=wep; successfulWorkerSchemaRef.current='id'; break; } catch(e2) {}
-            }
-          }
-        }
-      }
-
-      if (successfulWorkerEndpointRef.current && parsedCompanies.length > 0) {
+      // ── Worker fetching — worker.getWorkers with companyId (confirmed endpoint) ──
+      if (parsedCompanies.length > 0) {
         await Promise.all(parsedCompanies.map(async company => {
           if (!isScanningRef.current) return;
           const cId=company._id||company.id;
-          const schema=successfulWorkerSchemaRef.current==='companyId'?{companyId:cId}:{id:cId};
           try {
-            const rawWorkers=await smartFetch(successfulWorkerEndpointRef.current, schema);
+            const rawWorkers=await smartFetch('worker.getWorkers', { companyId: cId });
             let flatWorkers=Array.isArray(rawWorkers)?rawWorkers:(rawWorkers?.workers||Object.values(rawWorkers||{}));
             flatWorkers=flatWorkers.flat(3).filter(w=>typeof w==='object'&&w!==null);
             await Promise.all(flatWorkers.map(async w => {
@@ -1505,7 +1490,7 @@ export function WarEraOracle() {
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
     globalWashPartners.current={}; globalBans.current={}; globalHermitPrimaries.current={};
     scanQueueRef.current=[];
-    successfulWorkerEndpointRef.current=null; successfulWorkerSchemaRef.current=null;
+    // worker endpoint is fixed, no refs to reset
 
     addLog(`Initializing High-Concurrency Oracle Engine...`, 'info');
 
