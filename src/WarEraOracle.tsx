@@ -582,7 +582,7 @@ const detectTemporalClustering = (player, actionTimes) => {
 // ─────────────────────────────────────────────
 //  MAIN ANALYZER  (orchestrates modules)
 // ─────────────────────────────────────────────
-const analyzePlayer = (player, settings, globalCache, actionTimes = []) => {
+const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRun = false) => {
   if (!player) return null;
 
   let rawWorkers = player.companies ? player.companies.flatMap(c => c.workers || []) : [];
@@ -601,7 +601,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = []) => {
   let allWorkers = Array.from(uniqueWorkersMap.values());
   const washPartners = player.washPartners || {};
   const hasAdvancedFlags = player.sniperHits >= 5 || player.maxConcurrentTxs >= 5 || player.isHermit || player.isMutualHermit || player.pacingHits >= settings.pacingMinHits;
-  if (allWorkers.length < 2 && Object.keys(washPartners).length === 0 && !player.isDirectLaunderer && !hasAdvancedFlags) return null;
+  if (!_forceRun && allWorkers.length < 2 && Object.keys(washPartners).length === 0 && !player.isDirectLaunderer && !hasAdvancedFlags) return null;
 
   // Normalize workers
   const validWorkers = [];
@@ -717,6 +717,91 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = []) => {
     // Attach contribution breakdown for tooltip
     scoreBreakdown: allSuspicions.map(s => ({
       type: s.type, weight: s.detectionWeight !== undefined ? s.detectionWeight : (s.workers?.length || s.partners?.length || 1), severity: s.severity
+    }))
+  };
+};
+
+// ─────────────────────────────────────────────
+//  PHASE 1 ANALYZER  (transaction-derived only, no workers)
+// ─────────────────────────────────────────────
+const analyzePhase1 = (player, settings, globalCache) => {
+  if (!player) return null;
+
+  const washPartners = player.washPartners || {};
+  const hasAdvancedFlags = player.sniperHits >= 5 || player.maxConcurrentTxs >= 5 ||
+    player.isHermit || player.isMutualHermit || player.pacingHits >= settings.pacingMinHits;
+
+  if (Object.keys(washPartners).length === 0 && !player.isDirectLaunderer &&
+      !hasAdvancedFlags && !player.tipAbuse) return null;
+
+  const automationSuspicions = detectAutomation(player, settings);
+  const { suspicions: econSuspicions, totalCoinsWashed } = detectEconomicNetwork(player, [], settings, globalCache);
+
+  const allSuspicions = [...automationSuspicions, ...econSuspicions];
+
+  if (player.isDirectLaunderer) {
+    const selfWorker = {
+      uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?',
+      largeDonations30Days: player.directLaunderAmount, totalDonatedAllTime: player.directLaunderAmount,
+      isLaundering: true, noBonusPercentage: 0
+    };
+    const existingLaunder = allSuspicions.find(s => s.type === 'money_laundering');
+    if (existingLaunder) { existingLaunder.workers.push(selfWorker); existingLaunder.detectionWeight += 3; }
+    else allSuspicions.push({
+      type: 'money_laundering', severity: 'critical',
+      desc: 'Massive outbound donations from this account. Likely a burner funnel.',
+      workers: [selfWorker], detectionWeight: 3
+    });
+  }
+
+  if (player.tipAbuse) {
+    const { heavyTippers, repeatTippers } = player.tipAbuse;
+    allSuspicions.push({
+      type: 'tip_farming', severity: 'high',
+      desc: `Article Tip Farming: ${heavyTippers} account(s) tipped this player 5+ times; ${repeatTippers} unique account(s) tipped 3+ times. Coordinated engagement inflation.`,
+      workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?' }],
+      detectionWeight: heavyTippers * 2 + repeatTippers
+    });
+  }
+
+  if (allSuspicions.length === 0) return null;
+
+  allSuspicions.sort((a, b) => {
+    const order = ['money_laundering', 'transaction_abuse', 'market_automation', 'superhuman_apm', 'script_pacing', 'mutual_hermit', 'hermit_network', 'tip_farming'];
+    const ai = order.indexOf(a.type); const bi = order.indexOf(b.type);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1; if (bi !== -1) return 1;
+    return (b.severity === 'critical' ? 1 : 0) - (a.severity === 'critical' ? 1 : 0);
+  });
+
+  const summaryParts = [];
+  if (player.sniperHits >= 5) summaryParts.push(`Sniper automation (${player.sniperHits} hits).`);
+  if (player.maxConcurrentTxs >= 5) summaryParts.push(`Superhuman APM (${player.maxConcurrentTxs} concurrent ops).`);
+  if (player.pacingHits >= settings.pacingMinHits) summaryParts.push(`Script pacing (${player.pacingHits} actions at ~${player.pacingAvgMs}ms).`);
+  if (player.isHermit) summaryParts.push(`Hermit network (isolated trading).`);
+  if (player.isMutualHermit) summaryParts.push(`Mutual hermit pair detected.`);
+  if (player.isDirectLaunderer) summaryParts.push(`Outbound donation burner detected.`);
+  if (player.tipAbuse) summaryParts.push(`Article tip farming (${player.tipAbuse.heavyTippers} heavy, ${player.tipAbuse.repeatTippers} repeat tippers).`);
+  const abuseSus = allSuspicions.find(s => s.type === 'transaction_abuse');
+  if (abuseSus) summaryParts.push(`Wash Trading ring with ${abuseSus?.partners?.length || 0} partners.`);
+
+  const detections = allSuspicions.reduce((acc, s) => acc + (s.detectionWeight !== undefined ? s.detectionWeight : (s.workers?.length || s.partners?.length || 1)), 0);
+
+  return {
+    player,
+    summary: summaryParts.join(' ') || 'Phase 1 transaction flags — load worker analysis for full details.',
+    suspicions: allSuspicions,
+    detections,
+    phase2Status: 'pending',
+    hasLaundering: player.isDirectLaunderer,
+    launderingWorkerCount: player.isDirectLaunderer ? 1 : 0,
+    totalLaunderedCoins: player.directLaunderAmount || 0,
+    washPartners, washPartnerCount: Object.keys(washPartners).length, totalCoinsWashed,
+    zeroBonusCompanyCount: 0, bossNoBonusPercentage: 0,
+    scoreBreakdown: allSuspicions.map(s => ({
+      type: s.type,
+      weight: s.detectionWeight !== undefined ? s.detectionWeight : (s.workers?.length || s.partners?.length || 1),
+      severity: s.severity
     }))
   };
 };
@@ -875,6 +960,7 @@ export function WarEraOracle() {
     pacingToleranceMs: 50,
     pacingMinHits: 6,
     verboseDebug: false,
+    phase2AutoThreshold: 3,
   });
   const [apiKey, setApiKey] = useState('');
   const [targetUserId, setTargetUserId] = useState('');
@@ -894,6 +980,8 @@ export function WarEraOracle() {
   const globalWashPartners = useRef({});
   const globalBans = useRef({});
   const globalHermitPrimaries = useRef({}); // uid -> { partnerId, volume }
+  const phase2DataRef = useRef({});
+  const didLogTipPayloadRef = useRef(false);
   const scanQueueRef = useRef([]);
   // (worker endpoint is now fixed to worker.getWorkers with companyId — no ref needed)
 
@@ -1134,7 +1222,8 @@ export function WarEraOracle() {
     return unique;
   };
 
-  const processPlayer = async (playerObj) => {
+  // ── PHASE 1: transaction-derived analysis (runs for every player) ──
+  const processPlayerPhase1 = async (playerObj) => {
     const uId = playerObj._id || playerObj.id;
     let foundName = playerObj.username || playerObj.name || 'Unknown';
     let bossMuId = null, hasMuLeadership = false;
@@ -1314,7 +1403,6 @@ export function WarEraOracle() {
     const centralityPercentage = totalMarketVolume>0?(highestVolumeWithSinglePartner/totalMarketVolume)*100:0;
     const isHermit = totalMarketVolume>=50&&uniqueTradingPartners.size<=3&&centralityPercentage>50&&hermitTxCount>=5;
 
-    // NEW: Mutual hermit detection — register primary partner, check if they point back
     if (isHermit && primaryBossId) {
       globalHermitPrimaries.current[uId] = { primaryBossId, volume: highestVolumeWithSinglePartner };
     }
@@ -1326,7 +1414,6 @@ export function WarEraOracle() {
       try { const pd=await smartFetch('user.getUserLite',{userId:primaryBossId}); if(pd){hermitBossName=pd.username||pd.name||primaryBossId;globalCacheRef.current.names[primaryBossId]=hermitBossName;} } catch(e){}
     }
 
-    // ── Hermit resale details (unchanged) ──
     let hermitResaleDetails="";
     if (isHermit && primaryBossId) {
       let netFlow=partnerNetFlow.get(primaryBossId)||0;
@@ -1341,13 +1428,15 @@ export function WarEraOracle() {
       else if (itemsSoldToBossAfter>0) hermitResaleDetails+=` | Resale: ${itemsSoldToBossAfter} items back to Boss (Net: ${profitFromBossAfter>0?'+':''}${profitFromBossAfter.toFixed(1)})`;
     }
 
-    // ── Donation & additional action fetching (now parallelized) ──
-    let isDirectLaunderer=false, directLaunderAmount=0, parsedCompanies=[];
+    let isDirectLaunderer=false, directLaunderAmount=0;
+    let pacingHits=0, pacingAvgMs=0, pacingEdges=[], pacingSingleType=null;
+    let tipAbuse = null;
 
     if (!settings.ringOfFireMode) {
-      // Fetch donations (for laundering detection + pacing) and crafting actions (pacing only) in parallel
-      const [outTxResult, ...pacingTxResults] = await Promise.allSettled([
+      // Fetch donations, articleTip (recipient), and pacing actions in parallel
+      const [outTxResult, tipTxResult, ...pacingTxResults] = await Promise.allSettled([
         smartFetch('transaction.getPaginatedTransactions', { transactionType: 'donation', userId: uId, limit: 100 }),
+        smartFetch('transaction.getPaginatedTransactions', { transactionType: 'articleTip', userId: uId, limit: 100 }),
         smartFetch('transaction.getPaginatedTransactions', { transactionType: 'openCase', userId: uId, limit: 100 }),
         smartFetch('transaction.getPaginatedTransactions', { transactionType: 'craftItem', userId: uId, limit: 100 }),
         smartFetch('transaction.getPaginatedTransactions', { transactionType: 'dismantleItem', userId: uId, limit: 100 }),
@@ -1373,103 +1462,156 @@ export function WarEraOracle() {
         if (maxSingleOutbound>25||weeklyOutbound>60) isDirectLaunderer=true;
       }
 
-      // Add crafting/case/dismantle actions to pacing timeline (not laundering)
+      // ── articleTip: log payload shape, then detect tip farming ──
+      if (tipTxResult.status === 'fulfilled') {
+        const tipItems = Array.isArray(tipTxResult.value) ? tipTxResult.value : (tipTxResult.value?.items||tipTxResult.value?.data||tipTxResult.value?.transactions||[]);
+        if (!didLogTipPayloadRef.current) {
+          didLogTipPayloadRef.current = true;
+          addLog(`[TIP PAYLOAD] raw top-level: ${JSON.stringify(tipTxResult.value).substring(0, 400)}`, 'info');
+          if (tipItems.length > 0) addLog(`[TIP PAYLOAD] item[0]: ${JSON.stringify(tipItems[0])}`, 'info');
+        }
+        const tipperCounts = {};
+        tipItems.forEach(tx => {
+          const recipientId = typeof tx.recipient==='object' ? (tx.recipient?._id||tx.recipient?.id) : (tx.recipientId||tx.receiverId||tx.receiver||tx.toId||tx.to);
+          const tipperId = typeof tx.sender==='object' ? (tx.sender?._id||tx.sender?.id) : (tx.senderId||tx.sender||tx.fromId||tx.from||tx.authorId);
+          if (recipientId===uId && tipperId && tipperId!==uId) {
+            tipperCounts[tipperId] = (tipperCounts[tipperId]||0) + 1;
+          }
+        });
+        const heavyTippers = Object.values(tipperCounts).filter(c => c >= 5).length;
+        const repeatTippers = Object.values(tipperCounts).filter(c => c >= 3).length;
+        if (heavyTippers >= 1 || repeatTippers >= 2) tipAbuse = { heavyTippers, repeatTippers, tipperCounts };
+      } else {
+        addLog(`[DEBUG] articleTip fetch failed for ${foundName}: ${tipTxResult.reason?.message}`, 'debug');
+      }
+
       ['openCase','craftItem','dismantleItem'].forEach((aType, idx) => {
-        const result = pacingTxResults[idx];
-        if (result.status === 'fulfilled') {
-          const items = Array.isArray(result.value) ? result.value : (result.value?.items||result.value?.data||result.value?.transactions||[]);
+        const r = pacingTxResults[idx];
+        if (r.status === 'fulfilled') {
+          const items = Array.isArray(r.value) ? r.value : (r.value?.items||r.value?.data||r.value?.transactions||[]);
           items.forEach(tx => {
             const txTime=new Date(tx.createdAt||tx.timestamp||tx.date||Date.now()).getTime();
             if (txTime>=cutoffTime) actionTimes.push({ time: txTime, type: aType });
           });
-        } else { addLog(`[DEBUG] ${aType} pacing fetch failed: ${result.reason?.message}`, 'debug'); }
+        } else { addLog(`[DEBUG] ${aType} pacing fetch failed: ${r.reason?.message}`, 'debug'); }
       });
 
       playerObj.isDirectLaunderer=isDirectLaunderer; playerObj.directLaunderAmount=directLaunderAmount;
 
-      // ── Action pacing detection: consecutive-run algorithm ──
-      // Pacing uses only Donation + Market actions (scripted economic actions).
-      // Crafting/opening cases are included in the heatmap (actionTimes) but NOT pacing,
-      // because their intervals are too variable to produce meaningful pacing signals.
+      // ── Pacing detection ──
       const PACING_ACTION_TYPES = new Set(['Donation', 'Market List', 'Market Buy']);
-      let pacingHits=0, pacingAvgMs=0, pacingEdges=[], pacingSingleType=null;
       const pacingTimes = actionTimes.filter(a => PACING_ACTION_TYPES.has(a.type));
       pacingTimes.sort((a,b)=>a.time-b.time);
-
-      // Build sequential gap list from pacing-eligible actions only (100ms–60s)
       const seqDeltas=[];
       for(let i=1;i<pacingTimes.length;i++) {
         const d=pacingTimes[i].time-pacingTimes[i-1].time;
         if(d>=100&&d<=60000) seqDeltas.push({ delta:d, start:pacingTimes[i-1].time, end:pacingTimes[i].time, type:pacingTimes[i].type, idx:i });
       }
-
-      // For each unique candidate delta (sampled from actual gaps), find the longest
-      // *consecutive* run in seqDeltas where every element matches that delta ±tolerance.
       if (seqDeltas.length >= settings.pacingMinHits) {
-        // Sample candidate centers from the actual deltas to avoid O(n²) on huge sets
         const candidateDeltas = [...new Set(seqDeltas.map(d => Math.round(d.delta / 50) * 50))];
-
         for (const center of candidateDeltas) {
-          // Walk seqDeltas in order; count consecutive matching elements
           let streak=[], bestStreak=[];
           for (const gap of seqDeltas) {
-            if (Math.abs(gap.delta - center) <= settings.pacingToleranceMs) {
-              streak.push(gap);
-            } else {
-              // Allow one non-matching gap to bridge short interruptions (e.g. page load)
-              if (streak.length > bestStreak.length) bestStreak = streak;
-              streak = [];
-            }
+            if (Math.abs(gap.delta - center) <= settings.pacingToleranceMs) { streak.push(gap); }
+            else { if (streak.length > bestStreak.length) bestStreak = streak; streak = []; }
           }
           if (streak.length > bestStreak.length) bestStreak = streak;
-
           if (bestStreak.length > pacingHits) {
             pacingHits = bestStreak.length;
             pacingAvgMs = Math.round(bestStreak.reduce((s,g)=>s+g.delta,0)/bestStreak.length);
             pacingEdges = bestStreak;
           }
         }
-
         if (pacingHits >= settings.pacingMinHits) {
           const types=pacingEdges.map(e=>e.type);
           const typeSet=new Set(types);
           if (typeSet.size===1) pacingSingleType=[...typeSet][0];
-        } else {
-          // Didn't meet threshold — reset
-          pacingHits=0; pacingAvgMs=0; pacingEdges=[];
-        }
+        } else { pacingHits=0; pacingAvgMs=0; pacingEdges=[]; }
       }
       playerObj.pacingHits=pacingHits; playerObj.pacingAvgMs=pacingAvgMs; playerObj.pacingEdges=pacingEdges; playerObj.pacingSingleType=pacingSingleType;
+    }
 
-      parsedCompanies = await fetchUserCompaniesFull(uId);
+    // ── Early return: no phase-1 signals ──
+    const hasP1Flags = Object.keys(washPartners).length > 0 || isDirectLaunderer ||
+      sniperHits >= 5 || maxConcurrentTxs >= 5 || isHermit || isMutualHermit ||
+      pacingHits >= settings.pacingMinHits || tipAbuse !== null;
 
-      if (parsedCompanies.length<1&&Object.keys(washPartners).length===0&&!isDirectLaunderer&&sniperHits<5&&maxConcurrentTxs<5&&!isHermit&&!isMutualHermit&&pacingHits<settings.pacingMinHits) {
-        addLog(`[OK] ${foundName} cleared (no heuristics met).`, 'info'); return;
+    if (!hasP1Flags) { addLog(`[OK] ${foundName} cleared (no transaction flags).`, 'info'); return; }
+
+    const livePlayer = {
+      id: uId, name: foundName, isBanned: playerObj.isBanned, country: playerObj.scanContext||'Unknown Target',
+      companies: [],
+      washPartners, isDirectLaunderer, directLaunderAmount,
+      sniperHits, sniperDetails, maxConcurrentTxs, apmDetails: { avgGapMs: apmAvgGapMs, txs: worstApmWindow },
+      pacingHits: playerObj.pacingHits||0, pacingAvgMs: playerObj.pacingAvgMs||0, pacingEdges: playerObj.pacingEdges||[],
+      pacingSingleType: playerObj.pacingSingleType||null,
+      totalMarketVolume, uniqueTradingPartnersSize: uniqueTradingPartners.size,
+      isHermit, isMutualHermit, mutualHermitPartnerName: isMutualHermit ? (globalCacheRef.current.names[primaryBossId]||primaryBossId) : null,
+      centralityPercentage, hermitTxCount, hermitResaleDetails, hermitBossId: primaryBossId, hermitBossName,
+      accountCreatedAt: playerObj.accountCreatedAt,
+      tipAbuse,
+    };
+
+    if (!settings.ringOfFireMode) {
+      phase2DataRef.current[uId] = { livePlayer, actionTimes, hasMuLeadership, bossMuId, foundName, country: livePlayer.country };
+    }
+
+    const phase1Result = analyzePhase1(livePlayer, settings, globalCacheRef.current);
+    if (phase1Result) {
+      phase1Result.phase2Status = settings.ringOfFireMode ? 'complete' : 'pending';
+      addLog(`[WARNING] Phase 1 flags: ${foundName} (score ${phase1Result.detections})`, 'warning');
+      setFindings(prev => {
+        const newState = { ...prev };
+        if (!newState[livePlayer.country]) newState[livePlayer.country]=[];
+        if (!newState[livePlayer.country].some(r=>r.player.id===phase1Result.player.id)) newState[livePlayer.country].push(phase1Result);
+        return newState;
+      });
+      if (!settings.ringOfFireMode && phase1Result.detections >= settings.phase2AutoThreshold) {
+        await processPlayerPhase2(uId, livePlayer.country, true);
       }
+    } else {
+      addLog(`[OK] ${foundName} cleared.`, 'info');
+    }
+  };
 
-      // ── Worker fetching — worker.getWorkers with companyId (confirmed endpoint) ──
+  // ── PHASE 2: worker analysis (runs on-demand or when phase-1 score >= threshold) ──
+  const processPlayerPhase2 = async (playerId, country, fromScan = false) => {
+    const phase2Data = phase2DataRef.current[playerId];
+    if (!phase2Data) { addLog(`[DEBUG] Phase 2 triggered for ${playerId} but no phase 1 data found.`, 'debug'); return; }
+
+    const { livePlayer, actionTimes, hasMuLeadership, bossMuId, foundName } = phase2Data;
+
+    setFindings(prev => {
+      const newState = { ...prev };
+      if (newState[country]) {
+        const idx = newState[country].findIndex(r => r.player.id === playerId);
+        if (idx >= 0) newState[country][idx] = { ...newState[country][idx], phase2Status: 'running' };
+      }
+      return newState;
+    });
+
+    addLog(`[INFO] Phase 2 worker analysis: ${foundName}...`, 'info');
+
+    try {
+      const parsedCompanies = await fetchUserCompaniesFull(playerId);
+
       if (parsedCompanies.length > 0) {
         await Promise.all(parsedCompanies.map(async company => {
-          if (!isScanningRef.current) return;
+          if (fromScan && !isScanningRef.current) return;
           const cId=company._id||company.id;
           try {
             const rawWorkers=await smartFetch('worker.getWorkers', { companyId: cId });
             let flatWorkers=Array.isArray(rawWorkers)?rawWorkers:(rawWorkers?.workers||Object.values(rawWorkers||{}));
             flatWorkers=flatWorkers.flat(3).filter(w=>typeof w==='object'&&w!==null);
             await Promise.all(flatWorkers.map(async w => {
-              // w.user may be a bare string ID or an object {_id, username, ...}
               const rawUser = w.user;
-              const userId = typeof rawUser === 'string' ? rawUser
-                : (rawUser?._id || rawUser?.id || rawUser?.userId || null);
-              // If the object already has profile data, pre-populate so we skip the fetch
-              if (typeof rawUser === 'object' && rawUser !== null && (rawUser.username || rawUser.name)) {
+              const userId = typeof rawUser === 'string' ? rawUser : (rawUser?._id||rawUser?.id||rawUser?.userId||null);
+              if (typeof rawUser === 'object' && rawUser !== null && (rawUser.username||rawUser.name)) {
                 w.resolvedUser = w.resolvedUser || rawUser;
               }
               if (userId) {
                 try {
-                  const uData = w.resolvedUser?.username
-                    ? w.resolvedUser  // already have profile from object
-                    : await smartFetch('user.getUserLite', { userId });
+                  const uData = w.resolvedUser?.username ? w.resolvedUser : await smartFetch('user.getUserLite', { userId });
                   if (uData) {
                     w.resolvedUser=uData; w.isBanned=!!(uData.isBanned||uData.banned||uData.infos?.isBanned);
                     globalCacheRef.current.names[userId]=uData.username||uData.name||userId;
@@ -1480,9 +1622,8 @@ export function WarEraOracle() {
                   const isActive=uData?.isActive;
                   if (isActive!==false&&level<30) w.ownedCompanies=await fetchUserCompaniesFull(userId);
                   else w.ownedCompanies=[];
-                  // Record baseline for dynamic wealth comparison
-                  const workerAELevel = w.ownedCompanies ? Math.max(0, ...w.ownedCompanies.map(c => c.automatedEngine || c.aeLevel || c.engineLevel || 0)) : 0;
-                  recordPlayerWealthBaseline(level, w.ownedCompanies?.length || 0, workerAELevel);
+                  const workerAELevel = w.ownedCompanies ? Math.max(0, ...w.ownedCompanies.map(c => c.automatedEngine||c.aeLevel||c.engineLevel||0)) : 0;
+                  recordPlayerWealthBaseline(level, w.ownedCompanies?.length||0, workerAELevel);
                   if (hasMuLeadership&&bossMuId&&w.workerMuId===bossMuId) {
                     try {
                       const txData=await smartFetch('transaction.getPaginatedTransactions',{userId,muId:bossMuId,transactionType:'donation',limit:100});
@@ -1497,42 +1638,44 @@ export function WarEraOracle() {
           } catch(err) { addLog(`[DEBUG] Worker fetch failed for company ${cId}: ${err.message}`, 'debug'); }
         }));
       }
-    } else {
-      if (Object.keys(washPartners).length===0&&sniperHits<5&&maxConcurrentTxs<5&&!isHermit&&!isMutualHermit&&pacingHits<settings.pacingMinHits) {
-        addLog(`[OK] ${foundName} cleared.`, 'info'); return;
-      }
-    }
 
-    const livePlayer = {
-      id: uId, name: foundName, isBanned: playerObj.isBanned, country: playerObj.scanContext||'Unknown Target',
-      companies: parsedCompanies, washPartners, isDirectLaunderer, directLaunderAmount,
-      sniperHits, sniperDetails, maxConcurrentTxs, apmDetails: { avgGapMs: apmAvgGapMs, txs: worstApmWindow },
-      pacingHits: playerObj.pacingHits||0, pacingAvgMs: playerObj.pacingAvgMs||0, pacingEdges: playerObj.pacingEdges||[],
-      pacingSingleType: playerObj.pacingSingleType||null,
-      totalMarketVolume, uniqueTradingPartnersSize: uniqueTradingPartners.size,
-      isHermit, isMutualHermit, mutualHermitPartnerName: isMutualHermit ? (globalCacheRef.current.names[primaryBossId]||primaryBossId) : null,
-      centralityPercentage, hermitTxCount, hermitResaleDetails, hermitBossId: primaryBossId, hermitBossName,
-      accountCreatedAt: playerObj.accountCreatedAt,
-    };
+      const fullPlayer = { ...livePlayer, companies: parsedCompanies };
+      const result = analyzePlayer(fullPlayer, settings, globalCacheRef.current, actionTimes, true);
 
-    const result = analyzePlayer(livePlayer, settings, globalCacheRef.current, actionTimes);
-    if (result) {
-      addLog(`[WARNING] Suspicious patterns: ${foundName}`, 'warning');
       setFindings(prev => {
         const newState = { ...prev };
-        if (!newState[livePlayer.country]) newState[livePlayer.country]=[];
-        if (!newState[livePlayer.country].some(r=>r.player.id===result.player.id)) newState[livePlayer.country].push(result);
+        if (!newState[country]) newState[country] = [];
+        const idx = newState[country].findIndex(r => r.player.id === playerId);
+        if (result) {
+          result.phase2Status = 'complete';
+          if (idx >= 0) newState[country][idx] = result;
+          else newState[country].push(result);
+        } else {
+          if (idx >= 0) newState[country][idx] = { ...newState[country][idx], phase2Status: 'complete' };
+        }
         return newState;
       });
-    } else {
-      addLog(`[OK] ${foundName} cleared.`, 'info');
+      addLog(`[INFO] Phase 2 complete: ${foundName}.`, 'info');
+    } catch(e) {
+      addLog(`[CRITICAL] Phase 2 failed for ${foundName}: ${e.message}`, 'warning');
+      setFindings(prev => {
+        const newState = { ...prev };
+        if (newState[country]) {
+          const idx = newState[country].findIndex(r => r.player.id === playerId);
+          if (idx >= 0) newState[country][idx] = { ...newState[country][idx], phase2Status: 'error' };
+        }
+        return newState;
+      });
     }
   };
+
+  const runPhase2 = (playerId, country) => { processPlayerPhase2(playerId, country, false); };
 
   const startScan = async () => {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
     globalWashPartners.current={}; globalBans.current={}; globalHermitPrimaries.current={};
+    phase2DataRef.current={}; didLogTipPayloadRef.current=false;
     scanQueueRef.current=[];
     // worker endpoint is fixed, no refs to reset
 
@@ -1623,7 +1766,7 @@ export function WarEraOracle() {
           const player=scanQueueRef.current.shift();
           const pid=player._id||player.id;
           if (processedIds.has(pid)) continue; processedIds.add(pid);
-          const p=(async()=>{ await new Promise(r=>setTimeout(r,10)); try { await processPlayer(player); } catch(err) { addLog(`[CRITICAL] Engine crash on ${player.name||player._id}: ${err.message}`, 'warning'); } })();
+          const p=(async()=>{ await new Promise(r=>setTimeout(r,10)); try { await processPlayerPhase1(player); } catch(err) { addLog(`[CRITICAL] Engine crash on ${player.name||player._id}: ${err.message}`, 'warning'); } })();
           p.finally(()=>{ activePromises=activePromises.filter(pr=>pr!==p); playersScanned++; const total=playersScanned+activePromises.length+scanQueueRef.current.length; setProgress(Math.floor((playersScanned/total)*100)); });
           activePromises.push(p);
         }
@@ -1773,6 +1916,7 @@ export function WarEraOracle() {
 
   // ── Re-scan a single player ──
   const rescanPlayer = (playerId, country) => {
+    delete phase2DataRef.current[playerId];
     setFindings(prev => { const n={...prev}; if(n[country]) n[country]=n[country].filter(r=>r.player.id!==playerId); return n; });
     scanQueueRef.current.unshift({ _id: playerId, scanContext: country });
     if (!isScanningRef.current) {
@@ -1785,7 +1929,7 @@ export function WarEraOracle() {
             while (scanQueueRef.current.length>0&&activePromises.length<5) {
               const player=scanQueueRef.current.shift(); const pid=player._id||player.id;
               if (processedIds.has(pid)) continue; processedIds.add(pid);
-              const p=(async()=>{ await new Promise(r=>setTimeout(r,10)); try{await processPlayer(player);}catch(err){addLog(`[CRITICAL] ${err.message}`,'warning');} })();
+              const p=(async()=>{ await new Promise(r=>setTimeout(r,10)); try{await processPlayerPhase1(player);}catch(err){addLog(`[CRITICAL] ${err.message}`,'warning');} })();
               p.finally(()=>{ activePromises=activePromises.filter(pr=>pr!==p); });
               activePromises.push(p);
             }
@@ -1848,6 +1992,7 @@ export function WarEraOracle() {
       naming_pattern: <AlertTriangle size={13} className="text-orange-400"/>,
       cloned_progression: <AlertTriangle size={13} className="text-yellow-400"/>,
       no_production_bonus: <AlertTriangle size={13} className="text-orange-500"/>,
+      tip_farming: <Star size={13} className="text-amber-400"/>,
     };
     return map[type] || <AlertTriangle size={13} className="text-slate-400"/>;
   };
@@ -1988,6 +2133,16 @@ export function WarEraOracle() {
         }
         badgeClass={getBadgeClass(activeDetections)}
         extraData={<span className="flex items-center gap-1 ml-2">
+          {result.phase2Status === 'pending' && (
+            <button onClick={e=>{e.stopPropagation();runPhase2(result.player.id,country);}} className="flex items-center gap-1 px-2 py-1 bg-indigo-900/60 hover:bg-indigo-700/80 text-indigo-300 hover:text-indigo-100 rounded border border-indigo-700/60 text-[10px] font-semibold transition-colors shrink-0" title="Fetch companies & workers and run full detection">
+              <Users size={9}/><span>Load Worker Analysis</span>
+            </button>
+          )}
+          {result.phase2Status === 'running' && (
+            <span className="flex items-center gap-1 px-2 py-1 bg-slate-800 text-slate-400 rounded border border-slate-700 text-[10px] font-semibold animate-pulse shrink-0">
+              <Activity size={9}/><span>Analyzing…</span>
+            </span>
+          )}
           <span className="inline-flex items-center rounded-md border border-slate-700 overflow-hidden text-[10px] font-semibold shrink-0">
             <button onClick={e=>{e.stopPropagation();rescanPlayer(result.player.id,country);}} className="flex items-center gap-1 px-2 py-1 bg-slate-900 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors border-r border-slate-700" title="Re-scan"><RefreshCw size={9}/><span className="hidden sm:inline">Rescan</span></button>
             <button onClick={e=>{e.stopPropagation();exportSinglePlayer(result);}} className="flex items-center gap-1 px-2 py-1 bg-slate-900 hover:bg-blue-900/50 text-slate-400 hover:text-blue-300 transition-colors border-r border-slate-700" title="Export JSON"><Download size={9}/><span className="hidden sm:inline">Export</span></button>
@@ -2000,6 +2155,12 @@ export function WarEraOracle() {
           <div className="bg-slate-900 border border-slate-700/50 rounded p-3 text-sm mb-4">
             <div className="text-xs font-bold text-slate-400 mb-1 flex items-center gap-1"><Activity size={12}/> Analysis Summary</div>
             <p className="text-slate-300 leading-relaxed">{String(result.summary)}</p>
+            {result.phase2Status === 'pending' && (
+              <p className="text-indigo-400 text-xs mt-2 flex items-center gap-1"><Users size={11}/> Worker analysis pending — click <strong>Load Worker Analysis</strong> or wait for auto-trigger (threshold: {settings.phase2AutoThreshold}).</p>
+            )}
+            {result.phase2Status === 'running' && (
+              <p className="text-slate-400 text-xs mt-2 animate-pulse flex items-center gap-1"><Activity size={11}/> Fetching companies, workers, and profiles…</p>
+            )}
           </div>
           <div className="text-xs uppercase font-bold text-slate-500 mb-2">Detected Anomalies</div>
           {result.suspicions.map((suspicion, sIdx) => (
@@ -2228,6 +2389,7 @@ export function WarEraOracle() {
                   {label:'Superhuman APM Window (ms)',key:'apmWindowMs',min:100,max:20000,step:100,accent:'accent-purple-500',fmt:v=>v},
                   {label:'Pacing Tolerance (ms)',key:'pacingToleranceMs',min:1,max:100,step:1,accent:'accent-pink-500',fmt:v=>`±${v}`},
                   {label:'Pacing Min Hits',key:'pacingMinHits',min:4,max:20,step:1,accent:'accent-pink-500',fmt:v=>v},
+                  {label:'Phase 2 Auto-Trigger Score',key:'phase2AutoThreshold',min:1,max:20,step:1,accent:'accent-indigo-500',fmt:v=>v},
                 ].map(({label,key,min,max,step,accent,fmt})=>(
                   <div key={key}>
                     <label className="text-xs text-slate-400 block mb-1">{label}</label>
