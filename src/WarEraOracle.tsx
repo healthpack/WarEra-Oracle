@@ -1122,7 +1122,7 @@ export function WarEraOracle() {
           addLog(`[CRITICAL] Gateway failed 4 times. Circuit Breaker tripped. Falling back to Official API.`, 'warning');
           setTimeout(() => { if (isScanningRef.current) { isGatewayDead.current=false; gatewayFails.current=0; addLog(`[INFO] Gateway routing resurrected.`, 'info'); } }, 60000);
         } else if (!isGatewayDead.current) {
-          addLog(`[DEBUG] Gateway miss (${endpoint}): ${e.message.split('\n')[0]}. Falling back...`, 'debug');
+          addLog(`[GATEWAY] Miss #${gatewayFails.current} on ${endpoint}: ${e.message.split('\n')[0]}`, 'info');
         }
         const isOfficialEnabled = apiKey && apiKey.trim() !== '';
         if (!isOfficialEnabled) throw new Error("Gateway failed and no Live API Key provided for fallback.");
@@ -1225,13 +1225,13 @@ export function WarEraOracle() {
   // ── PHASE 1: transaction-derived analysis (runs for every player) ──
   const processPlayerPhase1 = async (playerObj) => {
     const uId = playerObj._id || playerObj.id;
-    let foundName = playerObj.username || playerObj.name || 'Unknown';
+    let foundName = playerObj.username || playerObj.name || playerObj.displayName || playerObj.nickname || playerObj.profile?.username || playerObj.profile?.name || 'Unknown';
     let bossMuId = null, hasMuLeadership = false;
 
     try {
       const uData = await smartFetch('user.getUserLite', { userId: uId });
       if (uData) {
-        foundName = uData.username || uData.name || foundName;
+        foundName = uData.username || uData.name || uData.displayName || uData.nickname || uData.user?.username || uData.user?.name || uData.profile?.username || uData.profile?.name || foundName;
         playerObj.level = uData.leveling?.level || '?';
         playerObj.accountCreatedAt = uData.createdAt || uData.registeredAt || null;
         if (uData.isBanned || uData.banned) { addLog(`[OK] ${foundName} cleared (banned).`, 'info'); return; }
@@ -1733,7 +1733,9 @@ export function WarEraOracle() {
               const payload={countryId:regionId,limit:100};
               if (nextCursor) payload.cursor=nextCursor; else if (page>1) payload.page=page;
               const res=await smartFetch(ep,payload);
-              let pageData=Array.isArray(res)?res:(res?.data||res?.items||res?.citizens||Object.values(res||{}));
+              let pageData=Array.isArray(res)?res:(res?.data||res?.items||res?.citizens||res?.users||res?.members||Object.values(res||{}));
+              if (!Array.isArray(pageData)) pageData=Object.values(pageData||{});
+              if (page===1&&pageData.flat(3).filter(c=>typeof c==='object'&&c!==null).length===0) addLog(`[WARNING] ${rName} p1 raw shape: ${JSON.stringify(res).substring(0,300)}`, 'warning');
               pageData=pageData.flat(3).filter(c=>typeof c==='object'&&c!==null);
               let newCount=0; const uniqueC=[];
               pageData.forEach(c=>{ const id=c._id||c.id||c.userId; if(!loopSeenSet.has(id)){loopSeenSet.add(id);c.scanContext=rName;uniqueC.push(c);newCount++;} });
@@ -1748,8 +1750,9 @@ export function WarEraOracle() {
               }
               if (allCitizens.length>(targetRegionId==='ALL'?100000:2000)) { hasMore=false; break; }
             } while (hasMore);
-          } catch(e) { addLog(`[DEBUG] ${ep} failed: ${e.message.substring(0,80)}`, 'debug'); }
+          } catch(e) { addLog(`[WARNING] ${ep} for ${rName} failed: ${e.message.substring(0,120)}`, 'warning'); }
         }
+        if (!success) addLog(`[WARNING] ${rName}: no citizens extracted (endpoint loop exhausted).`, 'warning');
       }
       const finalMap=new Map(); allCitizens.forEach(c=>{ const id=c._id||c.id||c.userId; finalMap.set(id,c); });
       allCitizens=Array.from(finalMap.values());
