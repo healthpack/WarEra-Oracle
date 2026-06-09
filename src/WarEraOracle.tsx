@@ -226,7 +226,7 @@ const detectWorkerPatterns = (allWorkers, settings, globalCache) => {
   });
 
   // Symmetric wage — only consider active workers with fidelity >= 7 (loyal, invested workers)
-  const highFidelityWorkers = allWorkers.filter(w => w.isActive !== false && w.normalizedFidelity >= 7 && w.normalizedWage > settings.suspiciousWageThreshold);
+  const highFidelityWorkers = allWorkers.filter(w => w.isActive !== false && w.normalizedFidelity >= 7 && w.normalizedWage > settings.suspiciousWageThreshold && w.normalizedWage < 0.128);
   const activeWages = highFidelityWorkers.map(w => w.normalizedWage);
   if (activeWages.length >= 4) {
     const mean = activeWages.reduce((a,b) => a+b, 0) / activeWages.length;
@@ -243,7 +243,7 @@ const detectWorkerPatterns = (allWorkers, settings, globalCache) => {
   }
 
   // Fidelity Maximization Ring
-  const maxFidelityWorkers = allWorkers.filter(w => w.normalizedFidelity === 10 && w.isActive !== false);
+  const maxFidelityWorkers = allWorkers.filter(w => w.normalizedFidelity === 10 && w.isActive !== false && w.normalizedWage < 0.128);
   const totalActiveWorkers = allWorkers.filter(w => w.isActive !== false).length;
   if (maxFidelityWorkers.length >= 4) {
     const fidelityPct = totalActiveWorkers > 0 ? Math.round((maxFidelityWorkers.length / totalActiveWorkers) * 100) : 100;
@@ -707,6 +707,17 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
     ...shellSuspicions,
   ];
 
+  // Carry forward tip farming from Phase 1 so Phase 2 replacement doesn't lose the flag
+  if (player.tipAbuse) {
+    const { heavyTippers, repeatTippers } = player.tipAbuse;
+    allSuspicions.push({
+      type: 'tip_farming', severity: 'high',
+      desc: `Article Tip Farming: ${heavyTippers} account(s) tipped this player 10+ times; ${repeatTippers} unique account(s) tipped 5+ times. Coordinated engagement inflation.`,
+      workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?' }],
+      detectionWeight: heavyTippers * 2 + repeatTippers,
+    });
+  }
+
   if (allSuspicions.length === 0) return null;
 
   // Build summary
@@ -742,7 +753,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   if (abuseSus) summaryParts.push(`Wash Trading ring with ${abuseSus?.partners?.length || 0} partners.`);
 
   allSuspicions.sort((a, b) => {
-    const order = ['coordinated_donation','money_laundering','transaction_abuse','market_automation','superhuman_apm','script_pacing','mutual_hermit','hermit_network','newborn_wealthy'];
+    const order = ['coordinated_donation','money_laundering','transaction_abuse','market_automation','superhuman_apm','script_pacing','mutual_hermit','hermit_network','tip_farming','newborn_wealthy'];
     const ai = order.indexOf(a.type); const bi = order.indexOf(b.type);
     if (ai !== -1 && bi !== -1) return ai - bi;
     if (ai !== -1) return -1; if (bi !== -1) return 1;
@@ -798,7 +809,7 @@ const analyzePhase1 = (player, settings, globalCache) => {
     const { heavyTippers, repeatTippers } = player.tipAbuse;
     allSuspicions.push({
       type: 'tip_farming', severity: 'high',
-      desc: `Article Tip Farming: ${heavyTippers} account(s) tipped this player 5+ times; ${repeatTippers} unique account(s) tipped 3+ times. Coordinated engagement inflation.`,
+      desc: `Article Tip Farming: ${heavyTippers} account(s) tipped this player 10+ times; ${repeatTippers} unique account(s) tipped 5+ times. Coordinated engagement inflation.`,
       workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?' }],
       detectionWeight: heavyTippers * 2 + repeatTippers
     });
@@ -821,7 +832,8 @@ const analyzePhase1 = (player, settings, globalCache) => {
   if (player.isHermit) summaryParts.push(`Hermit network (isolated trading).`);
   if (player.isMutualHermit) summaryParts.push(`Mutual hermit pair detected.`);
   if (player.isDirectLaunderer) summaryParts.push(`Outbound donation burner detected.`);
-  if (player.tipAbuse) summaryParts.push(`Article tip farming (${player.tipAbuse.heavyTippers} heavy, ${player.tipAbuse.repeatTippers} repeat tippers).`);
+  const tipSusP2 = allSuspicions.find(s => s.type === 'tip_farming');
+  if (tipSusP2) summaryParts.push(`Article tip farming (${player.tipAbuse?.heavyTippers || 0} heavy, ${player.tipAbuse?.repeatTippers || 0} repeat tippers).`);
   const abuseSus = allSuspicions.find(s => s.type === 'transaction_abuse');
   if (abuseSus) summaryParts.push(`Wash Trading ring with ${abuseSus?.partners?.length || 0} partners.`);
 
@@ -995,9 +1007,9 @@ export function WarEraOracle() {
     concurrencyLimit: 50,
     ringOfFireMode: false,
     rofDays: 30,
-    sniperThresholdMs: 2500,
+    sniperThresholdMs: 1000,
     apmWindowMs: 500,
-    pacingToleranceMs: 50,
+    pacingToleranceMs: 3,
     pacingMinHits: 6,
     verboseDebug: false,
     phase2AutoThreshold: 3,
@@ -1540,8 +1552,8 @@ export function WarEraOracle() {
             tipperCounts[tipperId] = (tipperCounts[tipperId]||0) + 1;
           }
         });
-        const heavyTippers = Object.values(tipperCounts).filter(c => c >= 5).length;
-        const repeatTippers = Object.values(tipperCounts).filter(c => c >= 3).length;
+        const heavyTippers = Object.values(tipperCounts).filter(c => c >= 10).length;
+        const repeatTippers = Object.values(tipperCounts).filter(c => c >= 5).length;
         if (heavyTippers >= 1 || repeatTippers >= 2) tipAbuse = { heavyTippers, repeatTippers, tipperCounts };
       } else {
         addLog(`[DEBUG] articleTip fetch failed for ${foundName}: ${tipTxResult.reason?.message}`, 'debug');
@@ -1601,7 +1613,7 @@ export function WarEraOracle() {
     if (!hasP1Flags) { addLog(`[OK] ${foundName} cleared (no transaction flags).`, 'info'); return; }
 
     const livePlayer = {
-      id: uId, name: foundName, isBanned: playerObj.isBanned, country: playerObj.scanContext||'Unknown Target',
+      id: uId, name: foundName, level: playerObj.level, isBanned: playerObj.isBanned, country: playerObj.scanContext||'Unknown Target',
       companies: [],
       washPartners, isDirectLaunderer, directLaunderAmount,
       sniperHits, sniperDetails, maxConcurrentTxs, apmDetails: { avgGapMs: apmAvgGapMs, txs: worstApmWindow },
