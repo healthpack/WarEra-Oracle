@@ -484,66 +484,26 @@ const getBaselineForLevel = (level) => {
 };
 
 /** Account age vs wealth disparity detection — uses dynamic level baseline where available */
-const detectAgeDateAnomaly = (player, allWorkers) => {
+const detectAgeDateAnomaly = (player, allWorkers, settings) => {
+  const multiplier = settings?.wealthAnomalyMultiplier ?? 5;
   const suspicions = [];
   const now = Date.now();
-
   const youngRichWorkers = [];
 
   allWorkers.forEach(w => {
     if (!w.resolvedUser?.createdAt) return;
-    const age = now - new Date(w.resolvedUser.createdAt).getTime();
-    const ageInDays = age / (24 * 60 * 60 * 1000);
-    if (ageInDays >= 45) return; // Only flag accounts under 45 days old
+    const ageInDays = (now - new Date(w.resolvedUser.createdAt).getTime()) / (24 * 60 * 60 * 1000);
+    if (ageInDays >= 45) return;
 
     const level = w.normalizedLevel || 1;
-    const companyCount = w.ownedCompanies?.length || 0;
-    // Automated Engine level — look across all the worker's companies
-    const maxAELevel = w.ownedCompanies
-      ? Math.max(0, ...w.ownedCompanies.map(c => c.automatedEngine || c.aeLevel || c.engineLevel || 0))
-      : 0;
-
-    const baseline = getBaselineForLevel(level);
-    let isSuspicious = false;
-    let reason = '';
-
-    if (baseline) {
-      // Dynamic comparison: flag if significantly above p75 for their level
-      const companyAnomaly = companyCount > baseline.p75Companies * 1.5 && companyCount >= 3;
-      const aeAnomaly = maxAELevel >= 5 && (baseline.p75AE === 0 || maxAELevel > baseline.p75AE * 1.3);
-      if (companyAnomaly || aeAnomaly) {
-        isSuspicious = true;
-        const parts = [];
-        if (companyAnomaly) parts.push(`${companyCount} companies (p75 for level ${level}: ${baseline.p75Companies})`);
-        if (aeAnomaly) parts.push(`AE level ${maxAELevel} (p75: ${baseline.p75AE || 0})`);
-        reason = `${parts.join(' and ')} — significantly above peers at this level (n=${baseline.sampleSize}).`;
-      }
-    } else {
-      // Fallback heuristic when no baseline data: flag high AE or many companies on very new accounts
-      const companyAnomaly = companyCount >= 3 && ageInDays < 45;
-      const aeAnomaly = maxAELevel >= 5 && ageInDays < 45;
-      if (companyAnomaly || aeAnomaly) {
-        isSuspicious = true;
-        const parts = [];
-        if (companyAnomaly) parts.push(`${companyCount} companies at level ${level}`);
-        if (aeAnomaly) parts.push(`Automated Engine at level ${maxAELevel}`);
-        reason = `${parts.join(' and ')} for an account only ${Math.floor(ageInDays)} days old.`;
-      }
-    }
-
-    // Coin wealth check via Redis-backed per-level baseline
     const coinWealth = w.resolvedUser?.userWealth?.value;
     const levelForWealth = w.resolvedUser?.userLevel?.value ?? level;
     const avgCoinWealth = getWealthAverageForLevel(levelForWealth);
-    if (coinWealth != null && avgCoinWealth !== null && coinWealth > avgCoinWealth * 5) {
-      isSuspicious = true;
-      reason += (reason ? ' Also: ' : '') + `coin wealth ${coinWealth.toFixed(0)} is ${(coinWealth/avgCoinWealth).toFixed(1)}× the level ${levelForWealth} average (${avgCoinWealth.toFixed(0)}).`;
-    }
 
-    if (isSuspicious) {
+    if (coinWealth != null && avgCoinWealth !== null && coinWealth > avgCoinWealth * multiplier) {
       w.accountAgeDays = Math.floor(ageInDays);
-      w.wealthReason = reason;
-      w.wealthMaxAELevel = maxAELevel;
+      w.wealthReason = `coin wealth ${coinWealth.toFixed(0)} is ${(coinWealth/avgCoinWealth).toFixed(1)}× the level ${levelForWealth} average (${avgCoinWealth.toFixed(0)}). Account is ${Math.floor(ageInDays)} days old.`;
+      w.wealthMaxAELevel = 0;
       youngRichWorkers.push(w);
     }
   });
@@ -551,7 +511,7 @@ const detectAgeDateAnomaly = (player, allWorkers) => {
   if (youngRichWorkers.length >= 1) {
     suspicions.push({
       type: 'newborn_wealthy', severity: youngRichWorkers.length >= 2 ? 'critical' : 'high',
-      desc: `${youngRichWorkers.length} young worker account(s) show disproportionate wealth relative to age and level. This may indicate funding from a main account.`,
+      desc: `${youngRichWorkers.length} young worker account(s) show disproportionate coin wealth for their level. This may indicate funding from a main account.`,
       workers: youngRichWorkers, detectionWeight: youngRichWorkers.length * 2
     });
   }
@@ -559,46 +519,19 @@ const detectAgeDateAnomaly = (player, allWorkers) => {
   // Check the boss account itself
   if (player.accountCreatedAt) {
     const ageDays = (now - new Date(player.accountCreatedAt).getTime()) / (24 * 60 * 60 * 1000);
-    const companyCount = player.companies?.length || 0;
-    const maxAELevel = player.companies
-      ? Math.max(0, ...player.companies.map(c => c.automatedEngine || c.aeLevel || c.engineLevel || 0))
-      : 0;
-    const baseline = getBaselineForLevel(player.level);
-    let bossFlag = false, bossReason = '';
-
-    if (baseline && ageDays < 45) {
-      const companyAnomaly = companyCount > baseline.p75Companies * 1.5 && companyCount >= 3;
-      const aeAnomaly = maxAELevel >= 5 && (baseline.p75AE === 0 || maxAELevel > baseline.p75AE * 1.3);
-      if (companyAnomaly || aeAnomaly) {
-        bossFlag = true;
-        const parts = [];
-        if (companyAnomaly) parts.push(`${companyCount} companies`);
-        if (aeAnomaly) parts.push(`AE level ${maxAELevel}`);
-        bossReason = `${parts.join(' and ')} at level ${player.level} (p75 for level: ${baseline.p75Companies} cos, ${baseline.p75AE||0} AE). Account is only ${Math.floor(ageDays)} days old.`;
+    if (ageDays < 45) {
+      const bossCoinWealth = player.userWealth?.value;
+      const bossLevel = player.userLevel?.value ?? player.level;
+      const bossAvg = getWealthAverageForLevel(bossLevel);
+      if (bossCoinWealth != null && bossAvg !== null && bossCoinWealth > bossAvg * multiplier) {
+        const bossReason = `coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth/bossAvg).toFixed(1)}× the level ${bossLevel} average (${bossAvg.toFixed(0)}). Account is ${Math.floor(ageDays)} days old.`;
+        suspicions.push({
+          type: 'newborn_wealthy', severity: 'high',
+          desc: `Boss account may be a recently funded alt: ${bossReason}`,
+          workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?', accountAgeDays: Math.floor(ageDays), wealthReason: bossReason, wealthMaxAELevel: 0 }],
+          detectionWeight: 3
+        });
       }
-    } else if (ageDays < 45 && companyCount >= 4) {
-      bossFlag = true;
-      bossReason = `${companyCount} companies at only ${Math.floor(ageDays)} days old.`;
-    } else if (ageDays < 45 && maxAELevel >= 5) {
-      bossFlag = true;
-      bossReason = `Automated Engine at level ${maxAELevel} on an account only ${Math.floor(ageDays)} days old.`;
-    }
-    // Coin wealth check (applies regardless of company/AE data)
-    const bossCoinWealth = player.userWealth?.value;
-    const bossLevelForWealth = player.userLevel?.value ?? player.level;
-    const bossAvgCoinWealth = getWealthAverageForLevel(bossLevelForWealth);
-    if (bossCoinWealth != null && bossAvgCoinWealth !== null && ageDays < 45 && bossCoinWealth > bossAvgCoinWealth * 5) {
-      bossFlag = true;
-      bossReason = (bossReason ? bossReason + ' Also: ' : '') + `coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth/bossAvgCoinWealth).toFixed(1)}× the level ${bossLevelForWealth} average (${bossAvgCoinWealth.toFixed(0)}).`;
-    }
-
-    if (bossFlag) {
-      suspicions.push({
-        type: 'newborn_wealthy', severity: 'high',
-        desc: `Boss account may be a recently funded alt: ${bossReason}`,
-        workers: [{ uid: player.id, normalizedName: player.name + " (SELF)", normalizedLevel: player.level || '?', accountAgeDays: Math.floor(ageDays), wealthReason: bossReason, wealthMaxAELevel: maxAELevel }],
-        detectionWeight: 3
-      });
     }
   }
 
@@ -696,7 +629,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   // Run all detection modules
   const automationSuspicions = detectAutomation(player, settings);
   const { suspicions: econSuspicions, totalCoinsWashed } = detectEconomicNetwork(player, allWorkers, settings, globalCache);
-  const ageSuspicions = detectAgeDateAnomaly(player, allWorkers);
+  const ageSuspicions = detectAgeDateAnomaly(player, allWorkers, settings);
   const temporalSuspicions = detectTemporalClustering(player, actionTimes);
 
   let workerSuspicions = [], workerSuspiciousSet = new Set();
@@ -719,12 +652,17 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
 
   // Carry forward tip farming from Phase 1 so Phase 2 replacement doesn't lose the flag
   if (player.tipAbuse) {
-    const { heavyTippers, repeatTippers, tipperCounts } = player.tipAbuse;
+    const { heavyTippers, repeatTippers, tipperCounts, tipperAmounts, tipperSentTotals, totalTipsReceived, totalCoinsReceived } = player.tipAbuse;
+    const coinsStr = totalCoinsReceived > 0 ? ` ${totalCoinsReceived.toFixed(1)} coins earned through tips.` : '';
     allSuspicions.push({
       type: 'tip_farming', severity: 'high',
-      desc: `Article Tip Farming: ${heavyTippers} account(s) tipped this player 10+ times; ${repeatTippers} unique account(s) tipped 5+ times. Coordinated engagement inflation.`,
+      desc: `Article Tip Farming: ${heavyTippers} account(s) tipped 10+ times; ${repeatTippers} tipped 5+ times.${coinsStr} Coordinated engagement inflation.`,
       workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?' }],
       tipperCounts: tipperCounts || {},
+      tipperAmounts: tipperAmounts || {},
+      tipperSentTotals: tipperSentTotals || {},
+      totalTipsReceived: totalTipsReceived || 0,
+      totalCoinsReceived: totalCoinsReceived || 0,
       detectionWeight: heavyTippers * 2 + repeatTippers,
     });
   }
@@ -817,12 +755,17 @@ const analyzePhase1 = (player, settings, globalCache) => {
   }
 
   if (player.tipAbuse) {
-    const { heavyTippers, repeatTippers, tipperCounts } = player.tipAbuse;
+    const { heavyTippers, repeatTippers, tipperCounts, tipperAmounts, tipperSentTotals, totalTipsReceived, totalCoinsReceived } = player.tipAbuse;
+    const coinsStr = totalCoinsReceived > 0 ? ` ${totalCoinsReceived.toFixed(1)} coins earned through tips.` : '';
     allSuspicions.push({
       type: 'tip_farming', severity: 'high',
-      desc: `Article Tip Farming: ${heavyTippers} account(s) tipped this player 10+ times; ${repeatTippers} unique account(s) tipped 5+ times. Coordinated engagement inflation.`,
+      desc: `Article Tip Farming: ${heavyTippers} account(s) tipped 10+ times; ${repeatTippers} tipped 5+ times.${coinsStr} Coordinated engagement inflation.`,
       workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?' }],
       tipperCounts: tipperCounts || {},
+      tipperAmounts: tipperAmounts || {},
+      tipperSentTotals: tipperSentTotals || {},
+      totalTipsReceived: totalTipsReceived || 0,
+      totalCoinsReceived: totalCoinsReceived || 0,
       detectionWeight: heavyTippers * 2 + repeatTippers
     });
   }
@@ -1017,6 +960,7 @@ export function WarEraOracle() {
   const [settings, setSettings] = useState({
     suspiciousWageThreshold: 0.110,
     concurrencyLimit: 50,
+    wealthAnomalyMultiplier: 5,
     sniperThresholdMs: 1000,
     apmWindowMs: 500,
     pacingToleranceMs: 3,
@@ -1579,27 +1523,46 @@ export function WarEraOracle() {
           if (tipItems.length > 0) addLog(`[TIP PAYLOAD] item[0]: ${JSON.stringify(tipItems[0])}`, 'info');
         }
         const tipperCounts = {};
+        const tipperAmounts = {};
+        let totalTipsReceived = 0;
+        let totalCoinsReceived = 0;
         tipItems.forEach(tx => {
           const recipientId = typeof tx.recipient==='object' ? (tx.recipient?._id||tx.recipient?.id) : (tx.sellerId||tx.recipientId||tx.receiverId||tx.receiver||tx.toId||tx.to);
           const tipperId = typeof tx.sender==='object' ? (tx.sender?._id||tx.sender?.id) : (tx.buyerId||tx.senderId||tx.sender||tx.fromId||tx.from||tx.authorId);
           if (recipientId===uId && tipperId && tipperId!==uId) {
+            const amt = typeof tx.amount==='number' ? tx.amount : typeof tx.coins==='number' ? tx.coins : typeof tx.value==='number' ? tx.value : typeof tx.price==='number' ? tx.price : 0;
             tipperCounts[tipperId] = (tipperCounts[tipperId]||0) + 1;
+            tipperAmounts[tipperId] = (tipperAmounts[tipperId]||0) + amt;
+            totalTipsReceived++;
+            totalCoinsReceived += amt;
           }
         });
         const heavyTippers = Object.values(tipperCounts).filter(c => c >= 10).length;
         const repeatTippers = Object.values(tipperCounts).filter(c => c >= 5).length;
         if (heavyTippers >= 1 || repeatTippers >= 2) {
-          tipAbuse = { heavyTippers, repeatTippers, tipperCounts };
-          // Resolve names for qualifying tippers not yet in cache
+          // Resolve names and fetch sent-tip totals for qualifying tippers
+          const tipperSentTotals = {};
           for (const tipperId of Object.keys(tipperCounts)) {
             if (tipperCounts[tipperId] < 5) continue;
-            if (globalCacheRef.current.names[tipperId]) continue;
+            if (!globalCacheRef.current.names[tipperId]) {
+              try {
+                const td = await smartFetch('user.getUserLite', { userId: tipperId });
+                const tName = td?.username || td?.name || td?.displayName || null;
+                if (tName) globalCacheRef.current.names[tipperId] = tName;
+              } catch { /* best-effort */ }
+            }
             try {
-              const td = await smartFetch('user.getUserLite', { userId: tipperId });
-              const tName = td?.username || td?.name || td?.displayName || null;
-              if (tName) globalCacheRef.current.names[tipperId] = tName;
+              const tipperTxData = await smartFetch('transaction.getPaginatedTransactions', { transactionType: 'articleTip', userId: tipperId, limit: 100 });
+              const tipperItems = Array.isArray(tipperTxData) ? tipperTxData : (tipperTxData?.items||tipperTxData?.data||tipperTxData?.transactions||[]);
+              let sentCount = 0;
+              tipperItems.forEach(tx => {
+                const senderId = typeof tx.sender==='object' ? (tx.sender?._id||tx.sender?.id) : (tx.buyerId||tx.senderId||tx.sender||tx.fromId||tx.from||tx.authorId);
+                if (senderId === tipperId) sentCount++;
+              });
+              if (sentCount > 0) tipperSentTotals[tipperId] = sentCount;
             } catch { /* best-effort */ }
           }
+          tipAbuse = { heavyTippers, repeatTippers, tipperCounts, tipperAmounts, tipperSentTotals, totalTipsReceived, totalCoinsReceived };
         }
       } else {
         addLog(`[DEBUG] articleTip fetch failed for ${foundName}: ${tipTxResult.reason?.message}`, 'debug');
@@ -2374,14 +2337,22 @@ export function WarEraOracle() {
               {suspicion.type==='tip_farming'&&suspicion.tipperCounts&&Object.keys(suspicion.tipperCounts).length>0?(
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
                   {Object.entries(suspicion.tipperCounts).filter(([,c])=>c>=5).sort((a,b)=>b[1]-a[1]).map(([tipperId,count],tIdx)=>{
-                    const tipperName=globalCacheRef.current.names?.[tipperId]||tipperId;
+                    const tipperName=globalCacheRef.current.names?.[tipperId];
+                    const receivedPct=suspicion.totalTipsReceived>0?Math.round(count/suspicion.totalTipsReceived*100):null;
+                    const sentTotal=suspicion.tipperSentTotals?.[tipperId];
+                    const sentPct=sentTotal>0?Math.round(count/sentTotal*100):null;
+                    const coinsFromTipper=suspicion.tipperAmounts?.[tipperId];
                     return (
                       <a key={tIdx} href={`https://app.warera.io/user/${tipperId}`} target="_blank" rel="noopener noreferrer" className="bg-slate-950 p-2 rounded border border-slate-800 flex flex-col gap-1 hover:border-amber-500 transition-colors group block">
                         <div className="flex justify-between items-center">
-                          <span className="font-mono text-xs text-blue-300">{String(tipperName)}</span>
+                          <span className="font-mono text-xs text-blue-300">{tipperName||<span className="text-slate-500">{tipperId}</span>}</span>
                           <span className="text-[10px] bg-amber-900/30 text-amber-400 border border-amber-800/50 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">{count} tips <Star size={8}/></span>
                         </div>
-                        <div className="text-[10px] font-mono text-slate-500 flex items-center gap-1">ID: {tipperId} <ExternalLink size={8} className="inline opacity-50"/></div>
+                        <div className="text-[10px] font-mono text-slate-400 flex flex-col gap-0.5 mt-0.5">
+                          {receivedPct!==null&&<span className="text-slate-400">{receivedPct}% of all tips received by target</span>}
+                          {sentPct!==null&&<span className="text-amber-500">{sentPct}% of all tips ever sent by this user</span>}
+                          {coinsFromTipper>0&&<span className="text-emerald-500 flex items-center gap-0.5">{coinsFromTipper.toFixed(1)} coins donated <Coins size={8}/></span>}
+                        </div>
                       </a>
                     );
                   })}
@@ -2577,6 +2548,7 @@ export function WarEraOracle() {
                 </div>
 
                 {[
+                  {label:'Wealth Anomaly Threshold (× avg)',key:'wealthAnomalyMultiplier',min:1.5,max:10,step:0.5,accent:'accent-cyan-500',fmt:v=>`${v}×`},
                   {label:'Sniper Threshold (ms)',key:'sniperThresholdMs',min:100,max:5000,step:100,accent:'accent-red-500',fmt:v=>v},
                   {label:'Superhuman APM Window (ms)',key:'apmWindowMs',min:100,max:20000,step:100,accent:'accent-purple-500',fmt:v=>v},
                   {label:'Pacing Tolerance (ms)',key:'pacingToleranceMs',min:1,max:100,step:1,accent:'accent-pink-500',fmt:v=>`±${v}`},
@@ -2585,7 +2557,7 @@ export function WarEraOracle() {
                   <div key={key}>
                     <label className="text-xs text-slate-400 block mb-1">{label}</label>
                     <div className="flex items-center gap-2">
-                      <input type="range" min={min} max={max} step={step} value={settings[key]} onChange={e=>setSettings({...settings,[key]:key==='pacingToleranceMs'||key==='pacingMinHits'?parseInt(e.target.value):parseInt(e.target.value)})} className={`flex-1 ${accent}`} disabled={isScanning}/>
+                      <input type="range" min={min} max={max} step={step} value={settings[key]} onChange={e=>setSettings({...settings,[key]:key==='wealthAnomalyMultiplier'?parseFloat(e.target.value):parseInt(e.target.value)})} className={`flex-1 ${accent}`} disabled={isScanning}/>
                       <span className="text-sm font-mono bg-slate-950 px-2 py-1 rounded w-16 text-center border border-slate-800">{fmt(settings[key])}</span>
                     </div>
                   </div>
