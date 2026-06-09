@@ -982,6 +982,7 @@ export function WarEraOracle() {
   const globalHermitPrimaries = useRef({}); // uid -> { partnerId, volume }
   const phase2DataRef = useRef({});
   const didLogTipPayloadRef = useRef(false);
+  const didLogUserLiteShapeRef = useRef(false);
   const scanQueueRef = useRef([]);
   // (worker endpoint is now fixed to worker.getWorkers with companyId — no ref needed)
 
@@ -1232,6 +1233,7 @@ export function WarEraOracle() {
       const uData = await smartFetch('user.getUserLite', { userId: uId });
       if (uData) {
         foundName = uData.username || uData.name || uData.displayName || uData.nickname || uData.user?.username || uData.user?.name || uData.profile?.username || uData.profile?.name || foundName;
+        if (foundName==='Unknown'&&!didLogUserLiteShapeRef.current){didLogUserLiteShapeRef.current=true;addLog(`[INFO] getUserLite shape (first Unknown): ${JSON.stringify(uData).substring(0,300)}`, 'info');}
         playerObj.level = uData.leveling?.level || '?';
         playerObj.accountCreatedAt = uData.createdAt || uData.registeredAt || null;
         if (uData.isBanned || uData.banned) { addLog(`[OK] ${foundName} cleared (banned).`, 'info'); return; }
@@ -1675,7 +1677,7 @@ export function WarEraOracle() {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
     globalWashPartners.current={}; globalBans.current={}; globalHermitPrimaries.current={};
-    phase2DataRef.current={}; didLogTipPayloadRef.current=false;
+    phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false;
     scanQueueRef.current=[];
     // worker endpoint is fixed, no refs to reset
 
@@ -1733,7 +1735,10 @@ export function WarEraOracle() {
               const payload={countryId:regionId,limit:100};
               if (nextCursor) payload.cursor=nextCursor; else if (page>1) payload.page=page;
               const res=await smartFetch(ep,payload);
-              let pageData=Array.isArray(res)?res:(res?.data||res?.items||res?.citizens||res?.users||res?.members||Object.values(res||{}));
+              // Resolve double-encoded responses (gateway returns array of JSON strings)
+              let resolvedRes=res;
+              if (Array.isArray(res)&&res.length>0&&typeof res[0]==='string'){try{resolvedRes=JSON.parse(res[0]);}catch{}}
+              let pageData=Array.isArray(resolvedRes)?resolvedRes:(resolvedRes?.data||resolvedRes?.items||resolvedRes?.citizens||resolvedRes?.users||resolvedRes?.members||Object.values(resolvedRes||{}));
               if (!Array.isArray(pageData)) pageData=Object.values(pageData||{});
               if (page===1&&pageData.flat(3).filter(c=>typeof c==='object'&&c!==null).length===0) addLog(`[WARNING] ${rName} p1 raw shape: ${JSON.stringify(res).substring(0,300)}`, 'warning');
               pageData=pageData.flat(3).filter(c=>typeof c==='object'&&c!==null);
@@ -1742,7 +1747,7 @@ export function WarEraOracle() {
               if (uniqueC.length>0) { allCitizens.push(...uniqueC); success=true; }
               if (pageData.length===0||newCount===0) hasMore=false;
               else {
-                const nextC=res?.nextCursor||res?.meta?.nextCursor||null;
+                const nextC=resolvedRes?.nextCursor||resolvedRes?.meta?.nextCursor||res?.nextCursor||null;
                 if (nextC) { nextCursor=nextC; hasMore=true; }
                 else if (pageData.length>=100) hasMore=true;
                 else hasMore=false;
