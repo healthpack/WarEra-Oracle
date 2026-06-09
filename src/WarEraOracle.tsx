@@ -446,6 +446,19 @@ const getWealthAverageForLevel = (level) => {
   }
   return totalCount >= 5 ? weightedSum / totalCount : null;
 };
+const getWealthAverageExtended = (level) => {
+  if (level == null) return null;
+  const lvl = Math.round(level);
+  for (const radius of [1, 5, 10, 25, 50, 100, 250]) {
+    let weightedSum = 0, totalCount = 0;
+    for (let l = lvl - radius; l <= lvl + radius; l++) {
+      const e = wealthByLevel[String(l)];
+      if (e?.count >= 1) { weightedSum += e.avg * e.count; totalCount += e.count; }
+    }
+    if (totalCount >= 5) return { avg: weightedSum / totalCount, radius, totalCount };
+  }
+  return null;
+};
 
 const recordPlayerWealthBaseline = (level, companyCount, maxAELevel) => {
   const band = Math.floor((level || 1) / 5) * 5;
@@ -709,11 +722,12 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
 
   // Carry forward tip farming from Phase 1 so Phase 2 replacement doesn't lose the flag
   if (player.tipAbuse) {
-    const { heavyTippers, repeatTippers } = player.tipAbuse;
+    const { heavyTippers, repeatTippers, tipperCounts } = player.tipAbuse;
     allSuspicions.push({
       type: 'tip_farming', severity: 'high',
       desc: `Article Tip Farming: ${heavyTippers} account(s) tipped this player 10+ times; ${repeatTippers} unique account(s) tipped 5+ times. Coordinated engagement inflation.`,
       workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?' }],
+      tipperCounts: tipperCounts || {},
       detectionWeight: heavyTippers * 2 + repeatTippers,
     });
   }
@@ -761,7 +775,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   });
 
   return {
-    player, summary: summaryParts.join(' '), suspicions: allSuspicions,
+    player, summary: summaryParts.join(' ') || `Worker analysis: ${allSuspicions.length} anomal${allSuspicions.length === 1 ? 'y' : 'ies'} detected.`, suspicions: allSuspicions,
     detections: allSuspicions.reduce((acc, s) => acc + (s.detectionWeight !== undefined ? s.detectionWeight : (s.workers?.length || s.partners?.length || 1)), 0),
     zeroBonusCompanyCount, bossNoBonusPercentage, hasLaundering, launderingWorkerCount,
     totalLaunderedCoins, washPartners, washPartnerCount: Object.keys(washPartners).length, totalCoinsWashed,
@@ -806,11 +820,12 @@ const analyzePhase1 = (player, settings, globalCache) => {
   }
 
   if (player.tipAbuse) {
-    const { heavyTippers, repeatTippers } = player.tipAbuse;
+    const { heavyTippers, repeatTippers, tipperCounts } = player.tipAbuse;
     allSuspicions.push({
       type: 'tip_farming', severity: 'high',
       desc: `Article Tip Farming: ${heavyTippers} account(s) tipped this player 10+ times; ${repeatTippers} unique account(s) tipped 5+ times. Coordinated engagement inflation.`,
       workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?' }],
+      tipperCounts: tipperCounts || {},
       detectionWeight: heavyTippers * 2 + repeatTippers
     });
   }
@@ -1036,6 +1051,8 @@ export function WarEraOracle() {
   const didLogTipPayloadRef = useRef(false);
   const didLogUserLiteShapeRef = useRef(false);
   const effectiveConcurrencyRef = useRef(50);
+  const concurrencyLastReducedRef = useRef(0);
+  const alwaysPhase2Ref = useRef(false);
   const scanQueueRef = useRef([]);
   // (worker endpoint is now fixed to worker.getWorkers with companyId — no ref needed)
 
@@ -1181,8 +1198,15 @@ export function WarEraOracle() {
       // DB connection pool saturation — reduce concurrency, fall back, don't trip circuit breaker
       if (route === 'gateway' && (msg.includes('sqlstate 53300') || msg.includes('too many clients'))) {
         const cur = effectiveConcurrencyRef.current;
-        const next = cur > 25 ? 25 : cur > 12 ? 12 : cur > 6 ? 6 : cur;
-        if (next < cur) { effectiveConcurrencyRef.current = next; addLog(`[GATEWAY] DB saturated — reducing concurrency ${cur} → ${next}`, 'warning'); }
+        const now = Date.now();
+        if (now - concurrencyLastReducedRef.current > 15000) {
+          const next = cur > 25 ? 25 : cur > 12 ? 12 : cur > 6 ? 6 : cur;
+          if (next < cur) {
+            effectiveConcurrencyRef.current = next;
+            concurrencyLastReducedRef.current = now;
+            addLog(`[GATEWAY] DB saturated — reducing concurrency ${cur} → ${next} (15s cooldown active)`, 'warning');
+          }
+        }
         return await smartFetch(endpoint, payload, true);
       }
       if (route === 'gateway' && !isSchemaErr) {
@@ -1642,9 +1666,20 @@ export function WarEraOracle() {
         if (!newState[livePlayer.country].some(r=>r.player.id===phase1Result.player.id)) newState[livePlayer.country].push(phase1Result);
         return newState;
       });
-      if (!settings.ringOfFireMode && phase1Result.detections >= settings.phase2AutoThreshold) {
+      if (!settings.ringOfFireMode && (alwaysPhase2Ref.current || phase1Result.detections >= 1)) {
         await processPlayerPhase2(uId, livePlayer.country, true);
       }
+    } else if (!settings.ringOfFireMode && alwaysPhase2Ref.current) {
+      // Single-user targeted scan: run Phase 2 even with no Phase 1 flags
+      addLog(`[INFO] ${foundName} — no Phase 1 flags; running worker analysis for targeted scan.`, 'info');
+      const placeholder = {
+        player: livePlayer, summary: 'No transaction flags — running worker analysis…', suspicions: [],
+        detections: 0, phase2Status: 'running', washPartners: {}, washPartnerCount: 0,
+        totalCoinsWashed: 0, zeroBonusCompanyCount: 0, bossNoBonusPercentage: 0,
+        hasLaundering: false, launderingWorkerCount: 0, totalLaunderedCoins: 0, scoreBreakdown: []
+      };
+      setFindings(prev => { const n={...prev}; if (!n[livePlayer.country]) n[livePlayer.country]=[]; n[livePlayer.country].push(placeholder); return n; });
+      await processPlayerPhase2(uId, livePlayer.country, true);
     } else {
       addLog(`[OK] ${foundName} cleared.`, 'info');
     }
@@ -1753,14 +1788,15 @@ export function WarEraOracle() {
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
     globalWashPartners.current={}; globalBans.current={}; globalHermitPrimaries.current={};
     phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false;
-    effectiveConcurrencyRef.current=settings.concurrencyLimit;
+    effectiveConcurrencyRef.current=settings.concurrencyLimit; concurrencyLastReducedRef.current=0;
+    alwaysPhase2Ref.current=false;
     scanQueueRef.current=[];
     // worker endpoint is fixed, no refs to reset
 
     // Load per-level wealth baseline from Redis
     try {
       const wbRes = await fetch('/api/cache', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'get_wealth_baseline' }) });
-      if (wbRes.ok) { const wbJson = await wbRes.json(); const loaded = wbJson.data||{}; Object.assign(wealthByLevel, loaded); addLog(`[INFO] Wealth baseline: ${Object.keys(wealthByLevel).length} level entries loaded.`, 'info'); }
+      if (wbRes.ok) { const wbJson = await wbRes.json(); let loaded = wbJson.data||{}; if (typeof loaded === 'object' && !Array.isArray(loaded)) { Object.assign(wealthByLevel, loaded); addLog(`[INFO] Wealth baseline: ${Object.keys(wealthByLevel).length} level entries loaded.`, 'info'); } }
     } catch(e) { addLog(`[DEBUG] Could not load wealth baseline: ${e.message}`, 'debug'); }
 
     addLog(`Initializing High-Concurrency Oracle Engine...`, 'info');
@@ -1800,6 +1836,7 @@ export function WarEraOracle() {
         } catch(e) { addLog(`Search failed: ${e.message}`, 'warning'); }
       }
       scanQueueRef.current=[{ _id: actualTargetId, scanContext: 'Targeted User' }];
+      alwaysPhase2Ref.current = true;
     } else if (targetRegionId) {
       let targetRegions = targetRegionId==='ALL' ? availableRegions.map(r=>r._id||r.id) : [targetRegionId];
       let allCitizens=[];
@@ -2215,7 +2252,28 @@ export function WarEraOracle() {
 
     return (
       <TreeNode key={result.player.id}
-        label={<><span className="truncate">{String(result.player.name)}</span>{result.player.isBanned&&<span className="ml-2 bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] border border-red-700/50 font-bold tracking-wider align-middle shrink-0">BANNED</span>}</>}
+        label={<>{(() => {
+          const coinWealth = result.player.userWealth?.value;
+          const lvl = result.player.userLevel?.value ?? result.player.level;
+          const avgData = lvl != null ? getWealthAverageExtended(lvl) : null;
+          const pct = (coinWealth != null && avgData) ? ((coinWealth - avgData.avg) / avgData.avg * 100) : null;
+          return (
+            <span className="relative group/wtooltip inline-block">
+              <span className="truncate cursor-default">{String(result.player.name)}</span>
+              {coinWealth != null && (
+                <div className="absolute left-0 top-full mt-1 hidden group-hover/wtooltip:block bg-slate-800 text-slate-300 text-[10px] p-2 rounded shadow-xl border border-slate-600 z-[60] whitespace-nowrap min-w-[190px] pointer-events-none">
+                  <div className="font-bold text-amber-300 mb-1">Wealth: {coinWealth.toFixed(1)} coins</div>
+                  {avgData ? (
+                    <>
+                      <div className="text-slate-400">Lvl {lvl} avg: {avgData.avg.toFixed(1)} coins ({avgData.totalCount} samples, ±{avgData.radius} lvl)</div>
+                      <div className={`font-semibold mt-0.5 ${pct >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>{pct >= 0 ? '+' : ''}{pct.toFixed(1)}% {pct >= 0 ? 'above' : 'below'} level average</div>
+                    </>
+                  ) : <div className="text-slate-500">No level comparison data yet</div>}
+                </div>
+              )}
+            </span>
+          );
+        })()}{result.player.isBanned&&<span className="ml-2 bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] border border-red-700/50 font-bold tracking-wider align-middle shrink-0">BANNED</span>}</>}
         icon={UserX} defaultOpen={forceOpen&&idx===0}
         badge={
           <span className="flex items-center gap-1">
@@ -2250,7 +2308,7 @@ export function WarEraOracle() {
             <div className="text-xs font-bold text-slate-400 mb-1 flex items-center gap-1"><Activity size={12}/> Analysis Summary</div>
             <p className="text-slate-300 leading-relaxed">{String(result.summary)}</p>
             {result.phase2Status === 'pending' && (
-              <p className="text-indigo-400 text-xs mt-2 flex items-center gap-1"><Users size={11}/> Worker analysis pending — click <strong>Load Worker Analysis</strong> or wait for auto-trigger (threshold: {settings.phase2AutoThreshold}).</p>
+              <p className="text-indigo-400 text-xs mt-2 flex items-center gap-1"><Users size={11}/> Worker analysis pending — click <strong>Load Worker Analysis</strong> to run full analysis.</p>
             )}
             {result.phase2Status === 'running' && (
               <p className="text-slate-400 text-xs mt-2 animate-pulse flex items-center gap-1"><Activity size={11}/> Fetching companies, workers, and profiles…</p>
@@ -2273,7 +2331,22 @@ export function WarEraOracle() {
               {/* Temporal clustering heatmap */}
               {suspicion.type==='temporal_clustering'&&suspicion.hourBuckets&&<ActivityHeatmap hourBuckets={suspicion.hourBuckets}/>}
 
-              {suspicion.type==='transaction_abuse'?(
+              {suspicion.type==='tip_farming'&&suspicion.tipperCounts&&Object.keys(suspicion.tipperCounts).length>0?(
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
+                  {Object.entries(suspicion.tipperCounts).sort((a,b)=>b[1]-a[1]).map(([tipperId,count],tIdx)=>{
+                    const tipperName=globalCacheRef.current.names?.[tipperId]||tipperId;
+                    return (
+                      <a key={tIdx} href={`https://app.warera.io/user/${tipperId}`} target="_blank" rel="noopener noreferrer" className="bg-slate-950 p-2 rounded border border-slate-800 flex flex-col gap-1 hover:border-amber-500 transition-colors group block">
+                        <div className="flex justify-between items-center">
+                          <span className="font-mono text-xs text-blue-300">{String(tipperName)}</span>
+                          <span className="text-[10px] bg-amber-900/30 text-amber-400 border border-amber-800/50 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">{count} tips <Star size={8}/></span>
+                        </div>
+                        <div className="text-[10px] font-mono text-slate-500 flex items-center gap-1">ID: {tipperId} <ExternalLink size={8} className="inline opacity-50"/></div>
+                      </a>
+                    );
+                  })}
+                </div>
+              ):suspicion.type==='transaction_abuse'?(
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
                   {suspicion.partners.map((p,pIdx)=>{
                     const partnerProfit=-(p.netProfit||0);
@@ -2432,7 +2505,7 @@ export function WarEraOracle() {
 
               <div>
                 <label className="text-xs text-slate-400 block mb-1">Your WarEra API Key</label>
-                <input type="text" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="Optional API Key"
+                <input type="text" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="Required API Key"
                   className={`w-full bg-slate-950 border rounded p-2 text-sm outline-none font-mono transition-colors ${apiKey&&!apiKey.startsWith('wae_')?'border-red-500 text-red-400 focus:border-red-400':'border-slate-800 text-slate-200 focus:border-blue-500'}`} disabled={isScanning}/>
                 {apiKey&&!apiKey.startsWith('wae_')&&<span className="text-[10px] text-red-500 font-bold mt-1 block">Must start with "wae_"</span>}
               </div>
@@ -2483,7 +2556,6 @@ export function WarEraOracle() {
                   {label:'Superhuman APM Window (ms)',key:'apmWindowMs',min:100,max:20000,step:100,accent:'accent-purple-500',fmt:v=>v},
                   {label:'Pacing Tolerance (ms)',key:'pacingToleranceMs',min:1,max:100,step:1,accent:'accent-pink-500',fmt:v=>`±${v}`},
                   {label:'Pacing Min Hits',key:'pacingMinHits',min:4,max:20,step:1,accent:'accent-pink-500',fmt:v=>v},
-                  {label:'Phase 2 Auto-Trigger Score',key:'phase2AutoThreshold',min:1,max:20,step:1,accent:'accent-indigo-500',fmt:v=>v},
                 ].map(({label,key,min,max,step,accent,fmt})=>(
                   <div key={key}>
                     <label className="text-xs text-slate-400 block mb-1">{label}</label>

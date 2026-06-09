@@ -109,8 +109,12 @@ export default async function handler(req, res) {
   if (body.action === 'get_wealth_baseline') {
     try {
       const raw = await redisGet(WEALTH_BASELINE_KEY);
-      return res.status(200).json({ data: raw ? JSON.parse(raw) : {} });
-    } catch (e) { return res.status(500).json({ error: e.message }); }
+      if (!raw) return res.status(200).json({ data: {} });
+      let parsed = JSON.parse(raw);
+      // Upstash stores the raw POST body; unwrap [value,'EX',ttl] format
+      if (Array.isArray(parsed) && typeof parsed[0] === 'string') parsed = JSON.parse(parsed[0]);
+      return res.status(200).json({ data: typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {} });
+    } catch (e) { return res.status(200).json({ data: {} }); }
   }
   if (body.action === 'set_wealth_baseline') {
     if (!body.data || typeof body.data !== 'object') return res.status(400).json({ error: 'Missing data' });
