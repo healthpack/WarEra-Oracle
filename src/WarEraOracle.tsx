@@ -2487,7 +2487,7 @@ export function WarEraOracle() {
         <div className="flex items-center gap-3">
           <ShieldAlert className="text-red-500" size={28}/>
           <div>
-            <h1 className="text-xl font-bold text-slate-100 leading-tight tracking-widest uppercase">Palantirish</h1>
+            <h1 className="text-xl font-bold text-slate-100 leading-tight tracking-tight">Palantirish</h1>
             <p className="text-xs text-slate-500 font-mono">Multi-Account & Bot Net Detection — WarEra</p>
           </div>
         </div>
