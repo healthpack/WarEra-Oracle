@@ -1103,7 +1103,12 @@ export function WarEraOracle() {
     const baseUrl = route === 'gateway' ? 'https://gateway.warerastats.io/trpc/' : 'https://api2.warera.io/trpc/';
     const activeKey = apiKey.trim();
     try {
-      return await WarEraAPI.fetch(endpoint, payload, activeKey, baseUrl);
+      let result = await WarEraAPI.fetch(endpoint, payload, activeKey, baseUrl);
+      // Gateway wraps responses as an array containing a JSON-encoded string
+      if (Array.isArray(result) && result.length > 0 && typeof result[0] === 'string') {
+        try { result = JSON.parse(result[0]); } catch { }
+      }
+      return result;
     } catch (e) {
       if (e.message.includes('RATE LIMIT')) {
         globalRateLimitRelease.current = Date.now() + 10000;
@@ -1474,8 +1479,8 @@ export function WarEraOracle() {
         }
         const tipperCounts = {};
         tipItems.forEach(tx => {
-          const recipientId = typeof tx.recipient==='object' ? (tx.recipient?._id||tx.recipient?.id) : (tx.recipientId||tx.receiverId||tx.receiver||tx.toId||tx.to);
-          const tipperId = typeof tx.sender==='object' ? (tx.sender?._id||tx.sender?.id) : (tx.senderId||tx.sender||tx.fromId||tx.from||tx.authorId);
+          const recipientId = typeof tx.recipient==='object' ? (tx.recipient?._id||tx.recipient?.id) : (tx.sellerId||tx.recipientId||tx.receiverId||tx.receiver||tx.toId||tx.to);
+          const tipperId = typeof tx.sender==='object' ? (tx.sender?._id||tx.sender?.id) : (tx.buyerId||tx.senderId||tx.sender||tx.fromId||tx.from||tx.authorId);
           if (recipientId===uId && tipperId && tipperId!==uId) {
             tipperCounts[tipperId] = (tipperCounts[tipperId]||0) + 1;
           }
