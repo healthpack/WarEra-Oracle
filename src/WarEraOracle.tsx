@@ -455,7 +455,7 @@ const getWealthAverageExtended = (level) => {
       const e = wealthByLevel[String(l)];
       if (e?.count >= 1) { weightedSum += e.avg * e.count; totalCount += e.count; }
     }
-    if (totalCount >= 5) return { avg: weightedSum / totalCount, radius, totalCount };
+    if (totalCount >= 1) return { avg: weightedSum / totalCount, radius, totalCount };
   }
   return null;
 };
@@ -498,11 +498,13 @@ const detectAgeDateAnomaly = (player, allWorkers, settings) => {
     const level = w.normalizedLevel || 1;
     const coinWealth = w.resolvedUser?.userWealth?.value;
     const levelForWealth = w.resolvedUser?.userLevel?.value ?? level;
-    const avgCoinWealth = getWealthAverageForLevel(levelForWealth);
+    const avgResult = getWealthAverageExtended(levelForWealth);
+    const avgCoinWealth = avgResult ? avgResult.avg : null;
 
     if (coinWealth != null && avgCoinWealth !== null && coinWealth > avgCoinWealth * multiplier) {
       w.accountAgeDays = Math.floor(ageInDays);
-      w.wealthReason = `coin wealth ${coinWealth.toFixed(0)} is ${(coinWealth/avgCoinWealth).toFixed(1)}× the level ${levelForWealth} average (${avgCoinWealth.toFixed(0)}). Account is ${Math.floor(ageInDays)} days old.`;
+      const radiusSuffix = avgResult && avgResult.radius > 1 ? ` (±${avgResult.radius} lvl avg, n=${avgResult.totalCount})` : '';
+      w.wealthReason = `coin wealth ${coinWealth.toFixed(0)} is ${(coinWealth/avgCoinWealth).toFixed(1)}× the level ${levelForWealth} average${radiusSuffix} (${avgCoinWealth.toFixed(0)}). Account is ${Math.floor(ageInDays)} days old.`;
       w.wealthMaxAELevel = 0;
       youngRichWorkers.push(w);
     }
@@ -522,9 +524,11 @@ const detectAgeDateAnomaly = (player, allWorkers, settings) => {
     if (ageDays < 45) {
       const bossCoinWealth = player.userWealth?.value;
       const bossLevel = player.userLevel?.value ?? player.level;
-      const bossAvg = getWealthAverageForLevel(bossLevel);
+      const bossAvgResult = getWealthAverageExtended(bossLevel);
+      const bossAvg = bossAvgResult ? bossAvgResult.avg : null;
       if (bossCoinWealth != null && bossAvg !== null && bossCoinWealth > bossAvg * multiplier) {
-        const bossReason = `coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth/bossAvg).toFixed(1)}× the level ${bossLevel} average (${bossAvg.toFixed(0)}). Account is ${Math.floor(ageDays)} days old.`;
+        const bossRadiusSuffix = bossAvgResult && bossAvgResult.radius > 1 ? ` (±${bossAvgResult.radius} lvl avg, n=${bossAvgResult.totalCount})` : '';
+        const bossReason = `coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth/bossAvg).toFixed(1)}× the level ${bossLevel} average${bossRadiusSuffix} (${bossAvg.toFixed(0)}). Account is ${Math.floor(ageDays)} days old.`;
         suspicions.push({
           type: 'newborn_wealthy', severity: 'high',
           desc: `Boss account may be a recently funded alt: ${bossReason}`,
@@ -652,7 +656,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
 
   // Carry forward tip farming from Phase 1 so Phase 2 replacement doesn't lose the flag
   if (player.tipAbuse) {
-    const { heavyTippers, repeatTippers, tipperCounts, tipperAmounts, tipperSentTotals, totalTipsReceived, totalCoinsReceived } = player.tipAbuse;
+    const { heavyTippers, repeatTippers, tipperCounts, tipperAmounts, tipperSentTotals, tipperMeta, totalTipsReceived, totalCoinsReceived } = player.tipAbuse;
     const coinsStr = totalCoinsReceived > 0 ? ` ${totalCoinsReceived.toFixed(1)} coins earned through tips.` : '';
     allSuspicions.push({
       type: 'tip_farming', severity: 'high',
@@ -661,6 +665,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
       tipperCounts: tipperCounts || {},
       tipperAmounts: tipperAmounts || {},
       tipperSentTotals: tipperSentTotals || {},
+      tipperMeta: tipperMeta || {},
       totalTipsReceived: totalTipsReceived || 0,
       totalCoinsReceived: totalCoinsReceived || 0,
       detectionWeight: heavyTippers * 2 + repeatTippers,
@@ -755,7 +760,7 @@ const analyzePhase1 = (player, settings, globalCache) => {
   }
 
   if (player.tipAbuse) {
-    const { heavyTippers, repeatTippers, tipperCounts, tipperAmounts, tipperSentTotals, totalTipsReceived, totalCoinsReceived } = player.tipAbuse;
+    const { heavyTippers, repeatTippers, tipperCounts, tipperAmounts, tipperSentTotals, tipperMeta, totalTipsReceived, totalCoinsReceived } = player.tipAbuse;
     const coinsStr = totalCoinsReceived > 0 ? ` ${totalCoinsReceived.toFixed(1)} coins earned through tips.` : '';
     allSuspicions.push({
       type: 'tip_farming', severity: 'high',
@@ -764,6 +769,7 @@ const analyzePhase1 = (player, settings, globalCache) => {
       tipperCounts: tipperCounts || {},
       tipperAmounts: tipperAmounts || {},
       tipperSentTotals: tipperSentTotals || {},
+      tipperMeta: tipperMeta || {},
       totalTipsReceived: totalTipsReceived || 0,
       totalCoinsReceived: totalCoinsReceived || 0,
       detectionWeight: heavyTippers * 2 + repeatTippers
@@ -1288,6 +1294,7 @@ export function WarEraOracle() {
         playerObj.userWealth = uData.userWealth || null;
         playerObj.userLevel = uData.userLevel || null;
         if (uData.userWealth?.value != null && uData.userLevel?.value != null) recordWealthBaseline(uData.userLevel.value, uData.userWealth.value);
+        if (foundName && foundName !== 'Unknown') globalCacheRef.current.names[uId] = foundName;
         if (uData.isBanned || uData.banned) { addLog(`[OK] ${foundName} cleared (banned).`, 'info'); return; }
         bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
       }
@@ -1542,15 +1549,18 @@ export function WarEraOracle() {
         if (heavyTippers >= 1 || repeatTippers >= 2) {
           // Resolve names and fetch sent-tip totals for qualifying tippers
           const tipperSentTotals = {};
+          const tipperMeta = {};
           for (const tipperId of Object.keys(tipperCounts)) {
             if (tipperCounts[tipperId] < 5) continue;
-            if (!globalCacheRef.current.names[tipperId]) {
-              try {
-                const td = await smartFetch('user.getUserLite', { userId: tipperId });
-                const tName = td?.username || td?.name || td?.displayName || null;
-                if (tName) globalCacheRef.current.names[tipperId] = tName;
-              } catch { /* best-effort */ }
-            }
+            try {
+              const td = await smartFetch('user.getUserLite', { userId: tipperId });
+              const tName = td?.username || td?.name || td?.displayName || null;
+              if (tName) globalCacheRef.current.names[tipperId] = tName;
+              tipperMeta[tipperId] = {
+                level: td?.leveling?.level ?? td?.userLevel?.value ?? null,
+                isBanned: !!(td?.isBanned || td?.banned || td?.infos?.isBanned),
+              };
+            } catch { /* best-effort */ }
             try {
               const tipperTxData = await smartFetch('transaction.getPaginatedTransactions', { transactionType: 'articleTip', userId: tipperId, limit: 100 });
               const tipperItems = Array.isArray(tipperTxData) ? tipperTxData : (tipperTxData?.items||tipperTxData?.data||tipperTxData?.transactions||[]);
@@ -1562,7 +1572,7 @@ export function WarEraOracle() {
               if (sentCount > 0) tipperSentTotals[tipperId] = sentCount;
             } catch { /* best-effort */ }
           }
-          tipAbuse = { heavyTippers, repeatTippers, tipperCounts, tipperAmounts, tipperSentTotals, totalTipsReceived, totalCoinsReceived };
+          tipAbuse = { heavyTippers, repeatTippers, tipperCounts, tipperAmounts, tipperSentTotals, tipperMeta, totalTipsReceived, totalCoinsReceived };
         }
       } else {
         addLog(`[DEBUG] articleTip fetch failed for ${foundName}: ${tipTxResult.reason?.message}`, 'debug');
@@ -2163,7 +2173,9 @@ export function WarEraOracle() {
     Object.entries(washGroups).forEach(([rootId, members])=>{
       const allMemberIds=new Set(), uniqueEdges=new Set();
       let totalVolume=0, totalDet=0;
-      const ringLeader=members.reduce((p,c)=>p.detections>c.detections?p:c);
+      const getMemberNetProfit=(m)=>Object.values(globalWashPartners.current[m.player.id]||{}).reduce((s,p)=>s+(p.netProfit||0),0);
+      const profitLeader=members.reduce((p,c)=>getMemberNetProfit(c)>getMemberNetProfit(p)?c:p);
+      const ringLeader=getMemberNetProfit(profitLeader)>0?profitLeader:members.reduce((p,c)=>p.detections>c.detections?p:c);
       const trueRootId=ringLeader.player.id;
       let ringNetProfit=0;
       const leaderPartners=globalWashPartners.current[trueRootId]||{};
@@ -2338,6 +2350,7 @@ export function WarEraOracle() {
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
                   {Object.entries(suspicion.tipperCounts).filter(([,c])=>c>=5).sort((a,b)=>b[1]-a[1]).map(([tipperId,count],tIdx)=>{
                     const tipperName=globalCacheRef.current.names?.[tipperId];
+                    const meta=suspicion.tipperMeta?.[tipperId];
                     const receivedPct=suspicion.totalTipsReceived>0?Math.round(count/suspicion.totalTipsReceived*100):null;
                     const sentTotal=suspicion.tipperSentTotals?.[tipperId];
                     const sentPct=sentTotal>0?Math.round(count/sentTotal*100):null;
@@ -2345,7 +2358,11 @@ export function WarEraOracle() {
                     return (
                       <a key={tIdx} href={`https://app.warera.io/user/${tipperId}`} target="_blank" rel="noopener noreferrer" className="bg-slate-950 p-2 rounded border border-slate-800 flex flex-col gap-1 hover:border-amber-500 transition-colors group block">
                         <div className="flex justify-between items-center">
-                          <span className="font-mono text-xs text-blue-300">{tipperName||<span className="text-slate-500">{tipperId}</span>}</span>
+                          <span className="font-mono text-xs text-blue-300 flex items-center gap-1">
+                            {tipperName||<span className="text-slate-500">{tipperId}</span>}
+                            {meta?.level!=null&&<span className="text-slate-500 text-[10px]">Lv.{meta.level}</span>}
+                            {meta?.isBanned&&<span className="bg-red-900/80 text-red-300 px-1 py-0.5 rounded text-[9px] border border-red-700/50 font-bold">[BANNED]</span>}
+                          </span>
                           <span className="text-[10px] bg-amber-900/30 text-amber-400 border border-amber-800/50 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">{count} tips <Star size={8}/></span>
                         </div>
                         <div className="text-[10px] font-mono text-slate-400 flex flex-col gap-0.5 mt-0.5">
