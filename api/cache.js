@@ -13,6 +13,8 @@
  */
 
 const CACHE_TTL_SECONDS = 6 * 60 * 60; // 6 hours
+const WEALTH_BASELINE_KEY = 'wera:wealth_by_level';
+const WEALTH_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
 
 const NO_CACHE = new Set([
   'transaction.getPaginatedTransactions',
@@ -101,6 +103,21 @@ export default async function handler(req, res) {
     body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
   } catch {
     return res.status(400).json({ error: 'Invalid JSON' });
+  }
+
+  // Wealth baseline read/write actions (not API proxy calls)
+  if (body.action === 'get_wealth_baseline') {
+    try {
+      const raw = await redisGet(WEALTH_BASELINE_KEY);
+      return res.status(200).json({ data: raw ? JSON.parse(raw) : {} });
+    } catch (e) { return res.status(500).json({ error: e.message }); }
+  }
+  if (body.action === 'set_wealth_baseline') {
+    if (!body.data || typeof body.data !== 'object') return res.status(400).json({ error: 'Missing data' });
+    try {
+      await redisSet(WEALTH_BASELINE_KEY, JSON.stringify(body.data), WEALTH_TTL_SECONDS);
+      return res.status(200).json({ ok: true });
+    } catch (e) { return res.status(500).json({ error: e.message }); }
   }
 
   const { endpoint, payload = {}, apiKey = '' } = body;

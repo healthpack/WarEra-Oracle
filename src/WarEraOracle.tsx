@@ -424,6 +424,29 @@ const detectShellCompanies = (allWorkers, settings, globalCache) => {
  */
 const levelWealthBaseline = {};
 
+// Per-level coin wealth baseline — populated from Redis at scan start and persisted at scan end.
+// { [levelKey]: { avg: number, count: number } }
+const wealthByLevel = {};
+const recordWealthBaseline = (level, wealth) => {
+  if (level == null || wealth == null || isNaN(wealth)) return;
+  const key = String(Math.round(level));
+  if (!wealthByLevel[key]) { wealthByLevel[key] = { avg: wealth, count: 1 }; return; }
+  const e = wealthByLevel[key];
+  const w = Math.min(e.count, 500); // cap memory at 500 samples so new values aren't drowned out
+  e.avg = (e.avg * w + wealth) / (w + 1);
+  e.count += 1;
+};
+const getWealthAverageForLevel = (level) => {
+  if (level == null) return null;
+  const lvl = Math.round(level);
+  let weightedSum = 0, totalCount = 0;
+  for (const l of [lvl - 1, lvl, lvl + 1]) {
+    const e = wealthByLevel[String(l)];
+    if (e?.count >= 1) { weightedSum += e.avg * e.count; totalCount += e.count; }
+  }
+  return totalCount >= 5 ? weightedSum / totalCount : null;
+};
+
 const recordPlayerWealthBaseline = (level, companyCount, maxAELevel) => {
   const band = Math.floor((level || 1) / 5) * 5;
   if (!levelWealthBaseline[band]) levelWealthBaseline[band] = { companySamples: [], aeSamples: [] };
@@ -496,6 +519,15 @@ const detectAgeDateAnomaly = (player, allWorkers) => {
       }
     }
 
+    // Coin wealth check via Redis-backed per-level baseline
+    const coinWealth = w.resolvedUser?.userWealth?.value;
+    const levelForWealth = w.resolvedUser?.userLevel?.value ?? level;
+    const avgCoinWealth = getWealthAverageForLevel(levelForWealth);
+    if (coinWealth != null && avgCoinWealth !== null && coinWealth > avgCoinWealth * 5) {
+      isSuspicious = true;
+      reason += (reason ? ' Also: ' : '') + `coin wealth ${coinWealth.toFixed(0)} is ${(coinWealth/avgCoinWealth).toFixed(1)}× the level ${levelForWealth} average (${avgCoinWealth.toFixed(0)}).`;
+    }
+
     if (isSuspicious) {
       w.accountAgeDays = Math.floor(ageInDays);
       w.wealthReason = reason;
@@ -538,6 +570,14 @@ const detectAgeDateAnomaly = (player, allWorkers) => {
     } else if (ageDays < 30 && maxAELevel >= 5) {
       bossFlag = true;
       bossReason = `Automated Engine at level ${maxAELevel} on an account only ${Math.floor(ageDays)} days old.`;
+    }
+    // Coin wealth check (applies regardless of company/AE data)
+    const bossCoinWealth = player.userWealth?.value;
+    const bossLevelForWealth = player.userLevel?.value ?? player.level;
+    const bossAvgCoinWealth = getWealthAverageForLevel(bossLevelForWealth);
+    if (bossCoinWealth != null && bossAvgCoinWealth !== null && ageDays < 45 && bossCoinWealth > bossAvgCoinWealth * 5) {
+      bossFlag = true;
+      bossReason = (bossReason ? bossReason + ' Also: ' : '') + `coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth/bossAvgCoinWealth).toFixed(1)}× the level ${bossLevelForWealth} average (${bossAvgCoinWealth.toFixed(0)}).`;
     }
 
     if (bossFlag) {
@@ -983,6 +1023,7 @@ export function WarEraOracle() {
   const phase2DataRef = useRef({});
   const didLogTipPayloadRef = useRef(false);
   const didLogUserLiteShapeRef = useRef(false);
+  const effectiveConcurrencyRef = useRef(50);
   const scanQueueRef = useRef([]);
   // (worker endpoint is now fixed to worker.getWorkers with companyId — no ref needed)
 
@@ -1125,6 +1166,13 @@ export function WarEraOracle() {
       }
       const msg = e.message.toLowerCase();
       const isSchemaErr = msg.includes('no procedure') || msg.includes('too_big') || msg.includes('unrecognized key') || msg.includes('invalid_type');
+      // DB connection pool saturation — reduce concurrency, fall back, don't trip circuit breaker
+      if (route === 'gateway' && (msg.includes('sqlstate 53300') || msg.includes('too many clients'))) {
+        const cur = effectiveConcurrencyRef.current;
+        const next = cur > 25 ? 25 : cur > 12 ? 12 : cur > 6 ? 6 : cur;
+        if (next < cur) { effectiveConcurrencyRef.current = next; addLog(`[GATEWAY] DB saturated — reducing concurrency ${cur} → ${next}`, 'warning'); }
+        return await smartFetch(endpoint, payload, true);
+      }
       if (route === 'gateway' && !isSchemaErr) {
         gatewayFails.current += 1;
         if (gatewayFails.current >= 4 && !isGatewayDead.current) {
@@ -1245,6 +1293,9 @@ export function WarEraOracle() {
         if (foundName==='Unknown'&&!didLogUserLiteShapeRef.current){didLogUserLiteShapeRef.current=true;addLog(`[INFO] getUserLite shape (first Unknown): ${JSON.stringify(uData).substring(0,300)}`, 'info');}
         playerObj.level = uData.leveling?.level || '?';
         playerObj.accountCreatedAt = uData.createdAt || uData.registeredAt || null;
+        playerObj.userWealth = uData.userWealth || null;
+        playerObj.userLevel = uData.userLevel || null;
+        if (uData.userWealth?.value != null && uData.userLevel?.value != null) recordWealthBaseline(uData.userLevel.value, uData.userWealth.value);
         if (uData.isBanned || uData.banned) { addLog(`[OK] ${foundName} cleared (banned).`, 'info'); return; }
         if (!settings.ringOfFireMode) {
           bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
@@ -1560,6 +1611,8 @@ export function WarEraOracle() {
       isHermit, isMutualHermit, mutualHermitPartnerName: isMutualHermit ? (globalCacheRef.current.names[primaryBossId]||primaryBossId) : null,
       centralityPercentage, hermitTxCount, hermitResaleDetails, hermitBossId: primaryBossId, hermitBossName,
       accountCreatedAt: playerObj.accountCreatedAt,
+      userWealth: playerObj.userWealth,
+      userLevel: playerObj.userLevel,
       tipAbuse,
     };
 
@@ -1625,6 +1678,7 @@ export function WarEraOracle() {
                   const uData = w.resolvedUser?.username ? w.resolvedUser : await smartFetch('user.getUserLite', { userId });
                   if (uData) {
                     w.resolvedUser=uData; w.isBanned=!!(uData.isBanned||uData.banned||uData.infos?.isBanned);
+                    if (uData.userWealth?.value!=null&&uData.userLevel?.value!=null) recordWealthBaseline(uData.userLevel.value, uData.userWealth.value);
                     globalCacheRef.current.names[userId]=uData.username||uData.name||userId;
                     let workerMuId=uData.mu?(typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu):(uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
                     w.workerMuId=workerMuId;
@@ -1687,8 +1741,15 @@ export function WarEraOracle() {
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
     globalWashPartners.current={}; globalBans.current={}; globalHermitPrimaries.current={};
     phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false;
+    effectiveConcurrencyRef.current=settings.concurrencyLimit;
     scanQueueRef.current=[];
     // worker endpoint is fixed, no refs to reset
+
+    // Load per-level wealth baseline from Redis
+    try {
+      const wbRes = await fetch('/api/cache', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'get_wealth_baseline' }) });
+      if (wbRes.ok) { const wbJson = await wbRes.json(); const loaded = wbJson.data||{}; Object.assign(wealthByLevel, loaded); addLog(`[INFO] Wealth baseline: ${Object.keys(wealthByLevel).length} level entries loaded.`, 'info'); }
+    } catch(e) { addLog(`[DEBUG] Could not load wealth baseline: ${e.message}`, 'debug'); }
 
     addLog(`Initializing High-Concurrency Oracle Engine...`, 'info');
 
@@ -1776,10 +1837,10 @@ export function WarEraOracle() {
     if (scanQueueRef.current.length===0) { addLog(`[CRITICAL] No targets acquired.`, 'warning'); setIsScanning(false); isScanningRef.current=false; setCurrentTask('Idle'); return; }
 
     const processedIds=new Set(); let playersScanned=0; let activePromises=[];
-    setCurrentTask(`Executing Concurrency Pool (x${settings.concurrencyLimit})...`);
+    setCurrentTask(`Executing Concurrency Pool (x${effectiveConcurrencyRef.current})...`);
     try {
       while (isScanningRef.current&&(scanQueueRef.current.length>0||activePromises.length>0)) {
-        while (scanQueueRef.current.length>0&&activePromises.length<settings.concurrencyLimit) {
+        while (scanQueueRef.current.length>0&&activePromises.length<effectiveConcurrencyRef.current) {
           const player=scanQueueRef.current.shift();
           const pid=player._id||player.id;
           if (processedIds.has(pid)) continue; processedIds.add(pid);
@@ -1795,6 +1856,10 @@ export function WarEraOracle() {
       setIsRateLimited(false);
       if (isScanningRef.current) { setCurrentTask('Scan Complete'); setProgress(100); addLog('Scan sequence terminated.', 'info'); }
       setIsScanning(false); isScanningRef.current=false;
+      // Persist wealth baseline to Redis (fire-and-forget)
+      if (Object.keys(wealthByLevel).length > 0) {
+        fetch('/api/cache', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'set_wealth_baseline', data:wealthByLevel }) }).catch(()=>{});
+      }
     }
   };
 
