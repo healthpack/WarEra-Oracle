@@ -1552,15 +1552,17 @@ export function WarEraOracle() {
           const tipperMeta = {};
           for (const tipperId of Object.keys(tipperCounts)) {
             if (tipperCounts[tipperId] < 5) continue;
-            try {
-              const td = await smartFetch('user.getUserLite', { userId: tipperId });
-              const tName = td?.username || td?.name || td?.displayName || null;
-              if (tName) globalCacheRef.current.names[tipperId] = tName;
-              tipperMeta[tipperId] = {
-                level: td?.leveling?.level ?? td?.userLevel?.value ?? null,
-                isBanned: !!(td?.isBanned || td?.banned || td?.infos?.isBanned),
-              };
-            } catch { /* best-effort */ }
+            if (!globalCacheRef.current.names[tipperId]) {
+              try {
+                const td = await smartFetch('user.getUserLite', { userId: tipperId });
+                const tName = td?.username || td?.name || td?.displayName || null;
+                if (tName) globalCacheRef.current.names[tipperId] = tName;
+                tipperMeta[tipperId] = {
+                  level: td?.leveling?.level ?? td?.userLevel?.value ?? null,
+                  isBanned: !!(td?.isBanned || td?.banned || td?.infos?.isBanned),
+                };
+              } catch { /* best-effort */ }
+            }
             try {
               const tipperTxData = await smartFetch('transaction.getPaginatedTransactions', { transactionType: 'articleTip', userId: tipperId, limit: 100 });
               const tipperItems = Array.isArray(tipperTxData) ? tipperTxData : (tipperTxData?.items||tipperTxData?.data||tipperTxData?.transactions||[]);
@@ -2327,6 +2329,9 @@ export function WarEraOracle() {
             )}
             {result.phase2Status === 'running' && (
               <p className="text-slate-400 text-xs mt-2 animate-pulse flex items-center gap-1"><Activity size={11}/> Fetching companies, workers, and profiles…</p>
+            )}
+            {result.phase2Status === 'error' && (
+              <p className="text-red-400 text-xs mt-2 flex items-center gap-1"><AlertTriangle size={11}/> Worker analysis failed — check log for [CRITICAL] message. Only transaction flags shown.</p>
             )}
           </div>
           <div className="text-xs uppercase font-bold text-slate-500 mb-2">Detected Anomalies</div>
