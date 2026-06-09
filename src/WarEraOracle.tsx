@@ -1092,7 +1092,11 @@ export function WarEraOracle() {
       clearTimeout(timeoutId);
       if (cacheRes.ok) {
         const cacheJson = await cacheRes.json();
-        if (cacheJson?.data !== undefined) return cacheJson.data;
+        if (cacheJson?.data !== undefined) {
+          let d = cacheJson.data;
+          if (Array.isArray(d) && d.length > 0 && typeof d[0] === 'string') { try { d = JSON.parse(d[0]); } catch { } }
+          return d;
+        }
       }
     } catch(e) { /* cache proxy unavailable or timed out — fall through to direct */ }
 
