@@ -5,7 +5,7 @@ import {
   ExternalLink, Settings, Search, Star, Coins,
   Target, Zap, Network, Clock, Download, Filter,
   SortAsc, SortDesc, RefreshCw, BarChart2, Info,
-  Baby, Moon, Heart, Timer, CheckSquare
+  Baby, Moon, Heart, Timer, CheckSquare, Bookmark
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────
@@ -520,9 +520,8 @@ const detectAgeDateAnomaly = (player, allWorkers) => {
       }
     } else {
       // Fallback heuristic when no baseline data: flag high AE or many companies on very new accounts
-      const companyAnomaly = companyCount >= 4 && level < 20;
-      // AE level 5+ on accounts under 45 days is a strong signal regardless of level
-      const aeAnomaly = maxAELevel >= 5 && ageInDays < 30;
+      const companyAnomaly = companyCount >= 3 && ageInDays < 45;
+      const aeAnomaly = maxAELevel >= 5 && ageInDays < 45;
       if (companyAnomaly || aeAnomaly) {
         isSuspicious = true;
         const parts = [];
@@ -577,10 +576,10 @@ const detectAgeDateAnomaly = (player, allWorkers) => {
         if (aeAnomaly) parts.push(`AE level ${maxAELevel}`);
         bossReason = `${parts.join(' and ')} at level ${player.level} (p75 for level: ${baseline.p75Companies} cos, ${baseline.p75AE||0} AE). Account is only ${Math.floor(ageDays)} days old.`;
       }
-    } else if (ageDays < 30 && companyCount >= 6) {
+    } else if (ageDays < 45 && companyCount >= 4) {
       bossFlag = true;
-      bossReason = `${companyCount} companies at only ${Math.floor(ageDays)} days old, without enough baseline data to compare.`;
-    } else if (ageDays < 30 && maxAELevel >= 5) {
+      bossReason = `${companyCount} companies at only ${Math.floor(ageDays)} days old.`;
+    } else if (ageDays < 45 && maxAELevel >= 5) {
       bossFlag = true;
       bossReason = `Automated Engine at level ${maxAELevel} on an account only ${Math.floor(ageDays)} days old.`;
     }
@@ -697,18 +696,16 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   // Run all detection modules
   const automationSuspicions = detectAutomation(player, settings);
   const { suspicions: econSuspicions, totalCoinsWashed } = detectEconomicNetwork(player, allWorkers, settings, globalCache);
-  const ageSuspicions = !settings.ringOfFireMode ? detectAgeDateAnomaly(player, allWorkers) : [];
-  const temporalSuspicions = !settings.ringOfFireMode ? detectTemporalClustering(player, actionTimes) : [];
+  const ageSuspicions = detectAgeDateAnomaly(player, allWorkers);
+  const temporalSuspicions = detectTemporalClustering(player, actionTimes);
 
   let workerSuspicions = [], workerSuspiciousSet = new Set();
   let launderSuspicions = [], launderSuspiciousSet = new Set(), hasLaundering = false, launderingWorkerCount = 0, totalLaunderedCoins = 0;
   let shellSuspicions = [], shellSuspiciousSet = new Set(), zeroBonusCompanyCount = 0, bossNoBonusPercentage = 0;
 
-  if (!settings.ringOfFireMode) {
-    ({ suspicions: workerSuspicions, suspiciousWorkers: workerSuspiciousSet } = detectWorkerPatterns(allWorkers, settings, globalCache));
-    ({ suspicions: launderSuspicions, suspiciousWorkers: launderSuspiciousSet, hasLaundering, launderingWorkerCount, totalLaunderedCoins } = detectLaundering(allWorkers, player, settings, globalCache));
-    ({ suspicions: shellSuspicions, suspiciousWorkers: shellSuspiciousSet, zeroBonusCompanyCount, bossNoBonusPercentage } = detectShellCompanies(allWorkers, settings, globalCache));
-  }
+  ({ suspicions: workerSuspicions, suspiciousWorkers: workerSuspiciousSet } = detectWorkerPatterns(allWorkers, settings, globalCache));
+  ({ suspicions: launderSuspicions, suspiciousWorkers: launderSuspiciousSet, hasLaundering, launderingWorkerCount, totalLaunderedCoins } = detectLaundering(allWorkers, player, settings, globalCache));
+  ({ suspicions: shellSuspicions, suspiciousWorkers: shellSuspiciousSet, zeroBonusCompanyCount, bossNoBonusPercentage } = detectShellCompanies(allWorkers, settings, globalCache));
 
   const allSuspicions = [
     ...automationSuspicions,
@@ -1020,8 +1017,6 @@ export function WarEraOracle() {
   const [settings, setSettings] = useState({
     suspiciousWageThreshold: 0.110,
     concurrencyLimit: 50,
-    ringOfFireMode: false,
-    rofDays: 30,
     sniperThresholdMs: 1000,
     apmWindowMs: 500,
     pacingToleranceMs: 3,
@@ -1066,6 +1061,13 @@ export function WarEraOracle() {
   const [savedSession, setSavedSession] = useState(null);
   const [showRestorePrompt, setShowRestorePrompt] = useState(false);
 
+  // ── Watchlist ──
+  const [watchlist, setWatchlist] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('wera_watchlist') || '{}'); } catch { return {}; }
+  });
+  const [showWatchlist, setShowWatchlist] = useState(false);
+  const watchlistScanRef = useRef(false);
+
   // ── Import / export / clipboard ──
   const fileInputRef = useRef(null);
   const [copiedId, setCopiedId] = useState(null);
@@ -1078,6 +1080,16 @@ export function WarEraOracle() {
   useEffect(() => {
     if (showLogs && logsContainerRef.current) logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
   }, [logs, showLogs]);
+
+  useEffect(() => { localStorage.setItem('wera_watchlist', JSON.stringify(watchlist)); }, [watchlist]);
+
+  const toggleWatchlist = useCallback((playerId, playerName, country) => {
+    setWatchlist(prev => {
+      const next = { ...prev };
+      if (next[playerId]) { delete next[playerId]; } else { next[playerId] = { id: playerId, name: playerName, country: country || 'Unknown' }; }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const ticker = setInterval(() => setTick(t => t+1), 250);
@@ -1333,13 +1345,11 @@ export function WarEraOracle() {
         playerObj.userLevel = uData.userLevel || null;
         if (uData.userWealth?.value != null && uData.userLevel?.value != null) recordWealthBaseline(uData.userLevel.value, uData.userWealth.value);
         if (uData.isBanned || uData.banned) { addLog(`[OK] ${foundName} cleared (banned).`, 'info'); return; }
-        if (!settings.ringOfFireMode) {
-          bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
-        }
+        bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
       }
     } catch(e) { addLog(`[DEBUG] getUserLite failed for ${uId}: ${e.message}`, 'debug'); }
 
-    if (!settings.ringOfFireMode && bossMuId) {
+    if (bossMuId) {
       try {
         const muData = await smartFetch('mu.getById', { muId: bossMuId });
         if (muData) {
@@ -1352,7 +1362,7 @@ export function WarEraOracle() {
 
     // ── Fetch item market transactions ──
     let itemMarketTxs = [];
-    const lookbackDays = settings.ringOfFireMode ? settings.rofDays : 60;
+    const lookbackDays = 60;
     const cutoffTime = Date.now() - lookbackDays * 24 * 60 * 60 * 1000;
     try {
       let nextCursor=null, reachedOld=false;
@@ -1530,7 +1540,7 @@ export function WarEraOracle() {
     let pacingHits=0, pacingAvgMs=0, pacingEdges=[], pacingSingleType=null;
     let tipAbuse = null;
 
-    if (!settings.ringOfFireMode) {
+    {
       // Fetch donations, articleTip (recipient), and pacing actions in parallel
       const [outTxResult, tipTxResult, ...pacingTxResults] = await Promise.allSettled([
         smartFetch('transaction.getPaginatedTransactions', { transactionType: 'donation', userId: uId, limit: 100 }),
@@ -1578,7 +1588,19 @@ export function WarEraOracle() {
         });
         const heavyTippers = Object.values(tipperCounts).filter(c => c >= 10).length;
         const repeatTippers = Object.values(tipperCounts).filter(c => c >= 5).length;
-        if (heavyTippers >= 1 || repeatTippers >= 2) tipAbuse = { heavyTippers, repeatTippers, tipperCounts };
+        if (heavyTippers >= 1 || repeatTippers >= 2) {
+          tipAbuse = { heavyTippers, repeatTippers, tipperCounts };
+          // Resolve names for qualifying tippers not yet in cache
+          for (const tipperId of Object.keys(tipperCounts)) {
+            if (tipperCounts[tipperId] < 5) continue;
+            if (globalCacheRef.current.names[tipperId]) continue;
+            try {
+              const td = await smartFetch('user.getUserLite', { userId: tipperId });
+              const tName = td?.username || td?.name || td?.displayName || null;
+              if (tName) globalCacheRef.current.names[tipperId] = tName;
+            } catch { /* best-effort */ }
+          }
+        }
       } else {
         addLog(`[DEBUG] articleTip fetch failed for ${foundName}: ${tipTxResult.reason?.message}`, 'debug');
       }
@@ -1652,13 +1674,11 @@ export function WarEraOracle() {
       tipAbuse,
     };
 
-    if (!settings.ringOfFireMode) {
-      phase2DataRef.current[uId] = { livePlayer, actionTimes, hasMuLeadership, bossMuId, foundName, country: livePlayer.country };
-    }
+    phase2DataRef.current[uId] = { livePlayer, actionTimes, hasMuLeadership, bossMuId, foundName, country: livePlayer.country };
 
     const phase1Result = analyzePhase1(livePlayer, settings, globalCacheRef.current);
     if (phase1Result) {
-      phase1Result.phase2Status = settings.ringOfFireMode ? 'complete' : 'pending';
+      phase1Result.phase2Status = 'pending';
       addLog(`[WARNING] Phase 1 flags: ${foundName} (score ${phase1Result.detections})`, 'warning');
       setFindings(prev => {
         const newState = { ...prev };
@@ -1666,10 +1686,10 @@ export function WarEraOracle() {
         if (!newState[livePlayer.country].some(r=>r.player.id===phase1Result.player.id)) newState[livePlayer.country].push(phase1Result);
         return newState;
       });
-      if (!settings.ringOfFireMode && (alwaysPhase2Ref.current || phase1Result.detections >= 1)) {
+      if (alwaysPhase2Ref.current || phase1Result.detections >= 1) {
         await processPlayerPhase2(uId, livePlayer.country, true);
       }
-    } else if (!settings.ringOfFireMode && alwaysPhase2Ref.current) {
+    } else if (alwaysPhase2Ref.current) {
       // Single-user targeted scan: run Phase 2 even with no Phase 1 flags
       addLog(`[INFO] ${foundName} — no Phase 1 flags; running worker analysis for targeted scan.`, 'info');
       const placeholder = {
@@ -1837,6 +1857,12 @@ export function WarEraOracle() {
       }
       scanQueueRef.current=[{ _id: actualTargetId, scanContext: 'Targeted User' }];
       alwaysPhase2Ref.current = true;
+    } else if (watchlistScanRef.current) {
+      const wlEntries = Object.values(watchlist);
+      scanQueueRef.current = wlEntries.map(p => ({ _id: p.id, scanContext: p.country || 'Watchlist' }));
+      alwaysPhase2Ref.current = true;
+      watchlistScanRef.current = false;
+      addLog(`Scanning ${wlEntries.length} watchlisted suspect(s)…`, 'info');
     } else if (targetRegionId) {
       let targetRegions = targetRegionId==='ALL' ? availableRegions.map(r=>r._id||r.id) : [targetRegionId];
       let allCitizens=[];
@@ -1897,8 +1923,21 @@ export function WarEraOracle() {
           p.finally(()=>{ activePromises=activePromises.filter(pr=>pr!==p); playersScanned++; const total=playersScanned+activePromises.length+scanQueueRef.current.length; setProgress(Math.floor((playersScanned/total)*100)); });
           activePromises.push(p);
         }
-        if (activePromises.length>0) await Promise.race(activePromises);
-        else await new Promise(r=>setTimeout(r,100));
+        if (activePromises.length>0) {
+          await Promise.race(activePromises);
+          // Gradually recover concurrency if no 53300 errors for 60s
+          const nowR = Date.now();
+          if (concurrencyLastReducedRef.current > 0 && nowR - concurrencyLastReducedRef.current > 60000) {
+            const curR = effectiveConcurrencyRef.current;
+            const maxR = settings.concurrencyLimit;
+            if (curR < maxR) {
+              const nextR = curR >= 25 ? Math.min(curR + 10, maxR) : curR >= 12 ? 25 : curR >= 6 ? 12 : curR;
+              effectiveConcurrencyRef.current = nextR;
+              concurrencyLastReducedRef.current = nowR;
+              addLog(`[GATEWAY] Concurrency recovering: ${curR} → ${nextR}`, 'info');
+            }
+          }
+        } else await new Promise(r=>setTimeout(r,100));
       }
       await Promise.all(activePromises);
     } finally {
@@ -2296,6 +2335,7 @@ export function WarEraOracle() {
             </span>
           )}
           <span className="inline-flex items-center rounded-md border border-slate-700 overflow-hidden text-[10px] font-semibold shrink-0">
+            <button onClick={e=>{e.stopPropagation();toggleWatchlist(result.player.id,result.player.name,country);}} className={`flex items-center gap-1 px-2 py-1 transition-colors border-r border-slate-700 ${watchlist[result.player.id]?'bg-amber-900/40 text-amber-400 hover:bg-amber-900/60':'bg-slate-900 hover:bg-amber-900/20 text-slate-400 hover:text-amber-400'}`} title={watchlist[result.player.id]?'Remove from watchlist':'Add to watchlist'}><Bookmark size={9} fill={watchlist[result.player.id]?'currentColor':'none'}/><span className="hidden sm:inline">{watchlist[result.player.id]?'Watching':'Watch'}</span></button>
             <button onClick={e=>{e.stopPropagation();rescanPlayer(result.player.id,country);}} className="flex items-center gap-1 px-2 py-1 bg-slate-900 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors border-r border-slate-700" title="Re-scan"><RefreshCw size={9}/><span className="hidden sm:inline">Rescan</span></button>
             <button onClick={e=>{e.stopPropagation();exportSinglePlayer(result);}} className="flex items-center gap-1 px-2 py-1 bg-slate-900 hover:bg-blue-900/50 text-slate-400 hover:text-blue-300 transition-colors border-r border-slate-700" title="Export JSON"><Download size={9}/><span className="hidden sm:inline">Export</span></button>
             <button onClick={e=>{e.stopPropagation();copySummaryToClipboard(result);setCopiedId(result.player.id);setTimeout(()=>setCopiedId(null),2500);}} className={`flex items-center gap-1 px-2 py-1 transition-colors ${copiedId===result.player.id?'bg-emerald-900/50 text-emerald-400':'bg-slate-900 hover:bg-emerald-900/30 text-slate-400 hover:text-emerald-400'}`} title="Copy 500-char summary">{copiedId===result.player.id?<CheckSquare size={9}/>:<CheckSquare size={9}/>}<span className="hidden sm:inline">{copiedId===result.player.id?'Copied!':'Summary'}</span></button>
@@ -2333,7 +2373,7 @@ export function WarEraOracle() {
 
               {suspicion.type==='tip_farming'&&suspicion.tipperCounts&&Object.keys(suspicion.tipperCounts).length>0?(
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
-                  {Object.entries(suspicion.tipperCounts).sort((a,b)=>b[1]-a[1]).map(([tipperId,count],tIdx)=>{
+                  {Object.entries(suspicion.tipperCounts).filter(([,c])=>c>=5).sort((a,b)=>b[1]-a[1]).map(([tipperId,count],tIdx)=>{
                     const tipperName=globalCacheRef.current.names?.[tipperId]||tipperId;
                     return (
                       <a key={tIdx} href={`https://app.warera.io/user/${tipperId}`} target="_blank" rel="noopener noreferrer" className="bg-slate-950 p-2 rounded border border-slate-800 flex flex-col gap-1 hover:border-amber-500 transition-colors group block">
@@ -2528,28 +2568,13 @@ export function WarEraOracle() {
               </div>
 
               <div className="border-t border-slate-800 pt-4 mt-2 space-y-4">
-                <label className="flex items-center gap-2 cursor-pointer text-sm font-semibold text-orange-500 hover:text-orange-400 transition-colors">
-                  <input type="checkbox" checked={settings.ringOfFireMode} onChange={e=>setSettings({...settings,ringOfFireMode:e.target.checked})} className="accent-orange-500 w-4 h-4" disabled={isScanning}/>
-                  🔥 Ring of Fire Mode (Wash Trading Only)
-                </label>
-
-                {settings.ringOfFireMode?(
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">History Lookback (Days)</label>
-                    <div className="flex items-center gap-2">
-                      <input type="range" min="1" max="60" step="1" value={settings.rofDays} onChange={e=>setSettings({...settings,rofDays:parseInt(e.target.value)})} className="flex-1 accent-orange-500" disabled={isScanning}/>
-                      <span className="text-sm font-mono bg-slate-950 px-2 py-1 rounded w-16 text-center border border-orange-900/50 text-orange-400">{settings.rofDays}d</span>
-                    </div>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Suspicious Wage Threshold</label>
+                  <div className="flex items-center gap-2">
+                    <input type="range" min="0.01" max="0.15" step="0.001" value={settings.suspiciousWageThreshold} onChange={e=>setSettings({...settings,suspiciousWageThreshold:parseFloat(e.target.value)})} className="flex-1 accent-red-500" disabled={isScanning}/>
+                    <span className="text-sm font-mono bg-slate-950 px-2 py-1 rounded w-16 text-center border border-slate-800">{settings.suspiciousWageThreshold.toFixed(3)}</span>
                   </div>
-                ):(
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">Suspicious Wage Threshold</label>
-                    <div className="flex items-center gap-2">
-                      <input type="range" min="0.01" max="0.15" step="0.001" value={settings.suspiciousWageThreshold} onChange={e=>setSettings({...settings,suspiciousWageThreshold:parseFloat(e.target.value)})} className="flex-1 accent-red-500" disabled={isScanning}/>
-                      <span className="text-sm font-mono bg-slate-950 px-2 py-1 rounded w-16 text-center border border-slate-800">{settings.suspiciousWageThreshold.toFixed(3)}</span>
-                    </div>
-                  </div>
-                )}
+                </div>
 
                 {[
                   {label:'Sniper Threshold (ms)',key:'sniperThresholdMs',min:100,max:5000,step:100,accent:'accent-red-500',fmt:v=>v},
@@ -2575,9 +2600,16 @@ export function WarEraOracle() {
 
             <div className="mt-6 flex gap-2">
               {!isScanning?(
-                <button onClick={startScan} className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded flex items-center justify-center gap-2 font-medium transition-colors">
-                  <Play size={16} fill="currentColor"/> Initialize Scan
-                </button>
+                <>
+                  <button onClick={startScan} className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded flex items-center justify-center gap-2 font-medium transition-colors">
+                    <Play size={16} fill="currentColor"/> Initialize Scan
+                  </button>
+                  {Object.keys(watchlist).length > 0 && (
+                    <button onClick={()=>{watchlistScanRef.current=true;startScan();}} className="flex items-center gap-1.5 px-3 py-2 bg-amber-700 hover:bg-amber-600 text-white rounded font-medium transition-colors text-sm" title={`Scan ${Object.keys(watchlist).length} watchlisted suspects`}>
+                      <Bookmark size={14} fill="currentColor"/> {Object.keys(watchlist).length}
+                    </button>
+                  )}
+                </>
               ):(
                 <button onClick={abortScan} className="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 px-4 rounded flex items-center justify-center gap-2 font-medium transition-colors">
                   <Square size={16} fill="currentColor"/> Abort Scan
@@ -2653,8 +2685,36 @@ export function WarEraOracle() {
                   <Download size={13}/> Export All
                 </button>
               )}
+
+              {/* Watchlist toggle */}
+              {Object.keys(watchlist).length > 0 && (
+                <button onClick={()=>setShowWatchlist(w=>!w)} className={`flex items-center gap-1 px-3 py-1 rounded border text-xs transition-colors ${showWatchlist?'border-amber-500 bg-amber-900/20 text-amber-300':'border-slate-700 bg-slate-900 text-slate-400 hover:border-amber-500 hover:text-amber-400'}`}>
+                  <Bookmark size={12} fill={showWatchlist?'currentColor':'none'}/> Watchlist ({Object.keys(watchlist).length})
+                </button>
+              )}
             </div>
           </div>
+
+          {/* Watchlist panel */}
+          {showWatchlist && Object.keys(watchlist).length > 0 && (
+            <div className="mb-4 bg-slate-900 border border-amber-800/50 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs font-bold text-amber-400 flex items-center gap-1"><Bookmark size={12} fill="currentColor"/> Suspects Watchlist</h3>
+                <button onClick={()=>setShowWatchlist(false)} className="text-slate-500 hover:text-slate-300 text-[10px]">close</button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {Object.values(watchlist).map(p=>(
+                  <div key={p.id} className="flex items-center justify-between bg-slate-950 border border-slate-800 rounded px-2 py-1.5 gap-2">
+                    <div className="flex-1 min-w-0">
+                      <a href={`https://app.warera.io/user/${p.id}`} target="_blank" rel="noopener noreferrer" className="text-xs font-mono text-blue-300 hover:text-blue-200 truncate block">{p.name}</a>
+                      <span className="text-[10px] text-slate-500">{p.country}</span>
+                    </div>
+                    <button onClick={()=>toggleWatchlist(p.id,p.name,p.country)} className="text-slate-600 hover:text-red-400 transition-colors shrink-0" title="Remove"><Star size={10}/></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Filter / Sort bar */}
           {totalFlags>0&&(
