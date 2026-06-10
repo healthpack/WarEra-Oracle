@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   ShieldAlert, Play, Square, Activity, ChevronRight, 
   ChevronDown, AlertTriangle, Users, Database, UserX, 
-  ExternalLink, Settings, Search, Star, Coins,
+  ExternalLink, Settings, Search, Star, Trash2, Coins,
   Target, Zap, Network, Clock, Download, Filter,
   SortAsc, SortDesc, RefreshCw, BarChart2, Info,
   Baby, Moon, Heart, Timer, CheckSquare, Bookmark
@@ -966,7 +966,7 @@ export function WarEraOracle() {
   const [settings, setSettings] = useState({
     suspiciousWageThreshold: 0.110,
     concurrencyLimit: 50,
-    wealthAnomalyMultiplier: 5,
+    wealthAnomalyMultiplier: 1.5,
     sniperThresholdMs: 1000,
     apmWindowMs: 500,
     pacingToleranceMs: 3,
@@ -1177,7 +1177,7 @@ export function WarEraOracle() {
         const cur = effectiveConcurrencyRef.current;
         const now = Date.now();
         if (now - concurrencyLastReducedRef.current > 15000) {
-          const next = cur > 25 ? 25 : cur > 12 ? 12 : cur > 6 ? 6 : cur;
+          const next = cur > 25 ? 25 : cur > 12 ? 12 : cur;
           if (next < cur) {
             effectiveConcurrencyRef.current = next;
             concurrencyLastReducedRef.current = now;
@@ -1715,6 +1715,7 @@ export function WarEraOracle() {
 
     try {
       const parsedCompanies = await fetchUserCompaniesFull(playerId);
+      addLog(`[DEBUG] P2 ${foundName}: ${parsedCompanies.length} compan${parsedCompanies.length===1?'y':'ies'} found.`, 'debug');
 
       if (parsedCompanies.length > 0) {
         await Promise.all(parsedCompanies.map(async company => {
@@ -1793,7 +1794,7 @@ export function WarEraOracle() {
 
   const runPhase2 = (playerId, country) => { processPlayerPhase2(playerId, country, false); };
 
-  const startScan = async () => {
+  const startScan = async (overrideUserId = null) => {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
     globalWashPartners.current={}; globalBans.current={}; globalHermitPrimaries.current={};
@@ -1826,8 +1827,9 @@ export function WarEraOracle() {
       }
     }
 
-    if (targetUserId) {
-      let actualTargetId=targetUserId.trim();
+    const effectiveTargetUserId = overrideUserId || targetUserId;
+    if (effectiveTargetUserId) {
+      let actualTargetId=effectiveTargetUserId.trim();
       if (actualTargetId&&!/^[0-9a-fA-F]{24}$/.test(actualTargetId)) {
         addLog(`Resolving username "${actualTargetId}"...`, 'info');
         try {
@@ -1842,7 +1844,7 @@ export function WarEraOracle() {
             }
           }
           if (foundExactId) { actualTargetId=foundExactId; addLog(`✅ Resolved to ID: ${actualTargetId}`, 'info'); }
-          else { addLog(`[CRITICAL] Could not resolve "${targetUserId}".`, 'warning'); setIsScanning(false); isScanningRef.current=false; setCurrentTask('Idle'); return; }
+          else { addLog(`[CRITICAL] Could not resolve "${effectiveTargetUserId}".`, 'warning'); setIsScanning(false); isScanningRef.current=false; setCurrentTask('Idle'); return; }
         } catch(e) { addLog(`Search failed: ${e.message}`, 'warning'); }
       }
       scanQueueRef.current=[{ _id: actualTargetId, scanContext: 'Targeted User' }];
@@ -2197,7 +2199,7 @@ export function WarEraOracle() {
   const totalFlags = Object.values(findings).flat().length;
   const activeRuleCount = [
     settings.suspiciousWageThreshold !== 0.110,
-    settings.wealthAnomalyMultiplier !== 5,
+    settings.wealthAnomalyMultiplier !== 1.5,
     settings.sniperThresholdMs !== 1000,
     settings.apmWindowMs !== 500,
     settings.pacingToleranceMs !== 3,
@@ -3131,7 +3133,7 @@ export function WarEraOracle() {
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
             {[
               {label:'Suspicious Wage Threshold',key:'suspiciousWageThreshold',min:0.01,max:0.15,step:0.001,fmt:(v: number)=>v.toFixed(3),isFloat:true},
-              {label:'Wealth Anomaly Threshold',key:'wealthAnomalyMultiplier',min:1.5,max:10,step:0.5,fmt:(v: number)=>`${v}x`,isFloat:true},
+              {label:'Wealth Anomaly Threshold',key:'wealthAnomalyMultiplier',min:1,max:10,step:0.5,fmt:(v: number)=>`${v}x`,isFloat:true},
               {label:'Sniper Threshold (ms)',key:'sniperThresholdMs',min:100,max:5000,step:100,fmt:(v: number)=>`${v}`,isFloat:false},
               {label:'Superhuman APM Window (ms)',key:'apmWindowMs',min:100,max:20000,step:100,fmt:(v: number)=>`${v}`,isFloat:false},
               {label:'Pacing Tolerance (ms)',key:'pacingToleranceMs',min:1,max:100,step:1,fmt:(v: number)=>`+/-${v}`,isFloat:false},
@@ -3155,26 +3157,38 @@ export function WarEraOracle() {
         </div>
       )}
 
-      {/* â"€â"€ WATCHLIST PANEL â"€â"€ */}
-      {showWatchlist&&Object.keys(watchlist).length>0&&(
-        <div style={{position:'fixed',top:70,right:configOpen?390:18,zIndex:150,background:'#121b35',border:'1px solid rgba(255,171,61,0.50)',borderRadius:9,padding:16,width:300,maxHeight:380,overflowY:'auto',boxShadow:'0 8px 32px rgba(0,0,0,0.6)'}}>
+      {/* ── WATCHLIST PANEL ── */}
+      {showWatchlist&&Object.keys(watchlist).length>0&&(()=>{
+        const grouped: Record<string,any[]>={};
+        Object.values(watchlist).forEach((p: any)=>{const c=p.country||'Unknown';if(!grouped[c])grouped[c]=[];grouped[c].push(p);});
+        const countries=Object.keys(grouped).sort();
+        return(
+        <div style={{position:'fixed',top:70,right:configOpen?390:18,zIndex:150,background:'#121b35',border:'1px solid rgba(255,171,61,0.50)',borderRadius:9,padding:16,width:300,maxHeight:420,overflowY:'auto',boxShadow:'0 8px 32px rgba(0,0,0,0.6)'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
             <span style={{fontSize:12,fontWeight:700,color:'#ffab3d',display:'flex',alignItems:'center',gap:6}}><Bookmark size={12} fill="currentColor"/> Watchlist</span>
-            <button onClick={()=>setShowWatchlist(false)} style={{background:'none',border:'none',color:'#5d6e96',cursor:'pointer',fontSize:18,lineHeight:1}}>×</button>
+            <button onClick={()=>setShowWatchlist(false)} style={{background:'none',border:'none',color:'#5d6e96',cursor:'pointer',fontSize:18,lineHeight:1}}>&#215;</button>
           </div>
-          <div style={{display:'flex',flexDirection:'column',gap:6}}>
-            {Object.values(watchlist).map((p: any)=>(
-              <div key={p.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',background:'#060a16',border:'1px solid #1f2b4e',borderRadius:6,padding:'6px 10px',gap:8}}>
-                <div style={{minWidth:0,flex:1}}>
-                  <a href={`https://app.warera.io/user/${p.id}`} target="_blank" rel="noopener noreferrer" style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,color:'#4fc3e8',display:'block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',textDecoration:'none'}}>{p.name}</a>
-                  <span style={{fontSize:9.5,color:'#5d6e96'}}>{p.country}</span>
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            {countries.map(country=>(
+              <div key={country}>
+                <div style={{fontSize:10,fontWeight:700,color:'#5d6e96',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:4,paddingBottom:3,borderBottom:'1px solid #1f2b4e'}}>{country}</div>
+                <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                  {grouped[country].map((p: any)=>(
+                    <div key={p.id} style={{display:'flex',alignItems:'center',background:'#060a16',border:'1px solid #1f2b4e',borderRadius:6,padding:'5px 8px',gap:6}}>
+                      <div style={{minWidth:0,flex:1}}>
+                        <a href={`https://app.warera.io/user/${p.id}`} target="_blank" rel="noopener noreferrer" style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,color:'#4fc3e8',display:'block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',textDecoration:'none'}}>{p.name}</a>
+                      </div>
+                      <button onClick={()=>{setShowWatchlist(false);startScan(p.id);}} style={{background:'rgba(79,195,232,0.12)',border:'1px solid rgba(79,195,232,0.25)',borderRadius:4,color:'#4fc3e8',cursor:'pointer',padding:'2px 5px',fontSize:10,display:'flex',alignItems:'center',gap:3,flexShrink:0}} title="Scan now"><Play size={9}/> Scan</button>
+                      <button onClick={()=>toggleWatchlist(p.id,p.name,p.country)} style={{background:'none',border:'none',color:'#5d6e96',cursor:'pointer',padding:'2px',flexShrink:0}} title="Remove"><Trash2 size={11}/></button>
+                    </div>
+                  ))}
                 </div>
-                <button onClick={()=>toggleWatchlist(p.id,p.name,p.country)} style={{background:'none',border:'none',color:'#5d6e96',cursor:'pointer',padding:'2px'}} title="Remove"><Star size={10}/></button>
               </div>
             ))}
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
