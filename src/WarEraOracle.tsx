@@ -995,6 +995,7 @@ export function WarEraOracle() {
   const phase2DataRef = useRef({});
   const didLogTipPayloadRef = useRef(false);
   const didLogUserLiteShapeRef = useRef(false);
+  const didLogWorkerShapeRef = useRef(false);
   const effectiveConcurrencyRef = useRef(50);
   const concurrencyLastReducedRef = useRef(0);
   const alwaysPhase2Ref = useRef(false);
@@ -1723,11 +1724,19 @@ export function WarEraOracle() {
           const cId=company._id||company.id;
           try {
             const rawWorkers=await smartFetch('worker.getWorkers', { companyId: cId });
-            let flatWorkers=Array.isArray(rawWorkers)?rawWorkers:(rawWorkers?.workers||Object.values(rawWorkers||{}));
+            let flatWorkers=Array.isArray(rawWorkers)?rawWorkers:(rawWorkers?.workers||rawWorkers?.data||rawWorkers?.items||Object.values(rawWorkers||{}));
             flatWorkers=flatWorkers.flat(3).filter(w=>typeof w==='object'&&w!==null);
+            // Log raw shape + first worker once per scan
+            if (!didLogWorkerShapeRef.current) {
+              didLogWorkerShapeRef.current=true;
+              const shapeDesc=rawWorkers==null?'null':Array.isArray(rawWorkers)?'array['+rawWorkers.length+']':'obj{'+Object.keys(rawWorkers||{}).slice(0,8).join(',')+'}';
+              addLog(`[DEBUG] worker.getWorkers raw: ${shapeDesc} → ${flatWorkers.length} flat workers`, 'debug');
+              if (flatWorkers.length>0) addLog(`[DEBUG] worker[0] keys: ${Object.keys(flatWorkers[0]).slice(0,12).join(',')} | sample: ${JSON.stringify(flatWorkers[0]).substring(0,300)}`, 'debug');
+            }
+            addLog(`[DEBUG] P2 company ${cId}: ${flatWorkers.length} workers`, 'debug');
             await Promise.all(flatWorkers.map(async w => {
-              const rawUser = w.user;
-              const userId = typeof rawUser === 'string' ? rawUser : (rawUser?._id||rawUser?.id||rawUser?.userId||null);
+              const rawUser = w.user || w.worker;
+              const userId = typeof rawUser === 'string' ? rawUser : (rawUser?._id||rawUser?.id||rawUser?.userId||w.userId||w.playerId||w._id||w.id||null);
               if (typeof rawUser === 'object' && rawUser !== null && (rawUser.username||rawUser.name)) {
                 w.resolvedUser = w.resolvedUser || rawUser;
               }
@@ -1798,7 +1807,7 @@ export function WarEraOracle() {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
     globalWashPartners.current={}; globalBans.current={}; globalHermitPrimaries.current={};
-    phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false;
+    phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false;
     effectiveConcurrencyRef.current=settings.concurrencyLimit; concurrencyLastReducedRef.current=0;
     alwaysPhase2Ref.current=false;
     scanQueueRef.current=[];
