@@ -8,9 +8,9 @@ import {
   Baby, Moon, Heart, Timer, CheckSquare, Bookmark
 } from 'lucide-react';
 
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 //  API LAYER
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 const WarEraAPI = {
   fetch: async (endpoint, payload, activeKey, baseUrl) => {
     const isGateway = baseUrl.includes('gateway');
@@ -52,9 +52,9 @@ const WarEraAPI = {
   }
 };
 
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 //  DETECTION MODULES  (split from monolithic analyzePlayer)
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 
 /** Returns suspicion objects for automation-pattern heuristics */
 const detectAutomation = (player, settings) => {
@@ -422,8 +422,8 @@ const detectShellCompanies = (allWorkers, settings, globalCache) => {
 };
 
 /** Level-relative wealth baseline - updated as players are scanned.
- *  Stores { companiesAtLevel, maxAELevelAtLevel } bucketed per 5-level band.
- *  Exported so processPlayer can call it after resolving each worker.
+ * Stores { companiesAtLevel, maxAELevelAtLevel } bucketed per 5-level band.
+ * Exported so processPlayer can call it after resolving each worker.
  */
 const levelWealthBaseline = {};
 
@@ -507,7 +507,7 @@ const detectAgeDateAnomaly = (player, allWorkers, settings) => {
     if (coinWealth != null && avgCoinWealth !== null && coinWealth > avgCoinWealth * multiplier) {
       w.accountAgeDays = Math.floor(ageInDays);
       const radiusSuffix = avgResult && avgResult.radius > 1 ? ` (±${avgResult.radius} lvl avg, n=${avgResult.totalCount})` : '';
-      w.wealthReason = `coin wealth ${coinWealth.toFixed(0)} is ${(coinWealth/avgCoinWealth).toFixed(1)}× the level ${levelForWealth} average${radiusSuffix} (${avgCoinWealth.toFixed(0)}). Account is ${Math.floor(ageInDays)} days old.`;
+      w.wealthReason = `coin wealth ${coinWealth.toFixed(0)} is ${(coinWealth/avgCoinWealth).toFixed(1)}x the level ${levelForWealth} average${radiusSuffix} (${avgCoinWealth.toFixed(0)}). Account is ${Math.floor(ageInDays)} days old.`;
       w.wealthMaxAELevel = 0;
       youngRichWorkers.push(w);
     }
@@ -531,7 +531,7 @@ const detectAgeDateAnomaly = (player, allWorkers, settings) => {
       const bossAvg = bossAvgResult ? bossAvgResult.avg : null;
       if (bossCoinWealth != null && bossAvg !== null && bossCoinWealth > bossAvg * multiplier) {
         const bossRadiusSuffix = bossAvgResult && bossAvgResult.radius > 1 ? ` (±${bossAvgResult.radius} lvl avg, n=${bossAvgResult.totalCount})` : '';
-        const bossReason = `coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth/bossAvg).toFixed(1)}× the level ${bossLevel} average${bossRadiusSuffix} (${bossAvg.toFixed(0)}). Account is ${Math.floor(ageDays)} days old.`;
+        const bossReason = `coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth/bossAvg).toFixed(1)}x the level ${bossLevel} average${bossRadiusSuffix} (${bossAvg.toFixed(0)}). Account is ${Math.floor(ageDays)} days old.`;
         suspicions.push({
           type: 'newborn_wealthy', severity: 'high',
           desc: `Boss account may be a recently funded alt: ${bossReason}`,
@@ -571,9 +571,9 @@ const detectTemporalClustering = (player, actionTimes) => {
   return suspicions;
 };
 
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 //  MAIN ANALYZER  (orchestrates modules)
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRun = false) => {
   if (!player) return null;
 
@@ -710,7 +710,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   if (abuseSus) summaryParts.push(`Wash Trading ring with ${abuseSus?.partners?.length || 0} partners.`);
 
   allSuspicions.sort((a, b) => {
-    const order = ['coordinated_donation','money_laundering','transaction_abuse','market_automation','superhuman_apm','script_pacing','mutual_hermit','hermit_network','tip_farming','newborn_wealthy'];
+    const order = ['coordinated_donation','money_laundering','transaction_abuse','market_automation','superhuman_apm','script_pacing','mutual_hermit','hermit_network','newborn_wealthy'];
     const ai = order.indexOf(a.type); const bi = order.indexOf(b.type);
     if (ai !== -1 && bi !== -1) return ai - bi;
     if (ai !== -1) return -1; if (bi !== -1) return 1;
@@ -729,9 +729,9 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   };
 };
 
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 //  PHASE 1 ANALYZER  (transaction-derived only, no workers)
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 const analyzePhase1 = (player, settings, globalCache) => {
   if (!player) return null;
 
@@ -822,9 +822,9 @@ const analyzePhase1 = (player, settings, globalCache) => {
   };
 };
 
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 //  UNION FIND
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 class UnionFind {
   constructor() { this.parent = {}; }
   add(id) { if (!this.parent[id]) this.parent[id] = id; }
@@ -832,9 +832,9 @@ class UnionFind {
   union(id1, id2) { this.add(id1); this.add(id2); const r1=this.find(id1),r2=this.find(id2); if(r1!==r2) this.parent[r2]=r1; }
 }
 
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 //  WASH NETWORK TREE
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 const WashNetworkTree = ({ rootId, washPartners, processedNodes, globalBans, globalNames, isRoot=true, edgeFromParent=null }) => {
   if (processedNodes.has(rootId)) return null;
   processedNodes.add(rootId);
@@ -882,9 +882,9 @@ const WashNetworkTree = ({ rootId, washPartners, processedNodes, globalBans, glo
   );
 };
 
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 //  TREE NODE
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 const TreeNode = ({ label, icon: Icon, children, isRoot=false, defaultOpen=false, badge=null, badgeClass=null, extraData=null, linkId=null }) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   return (
@@ -907,9 +907,9 @@ const TreeNode = ({ label, icon: Icon, children, isRoot=false, defaultOpen=false
   );
 };
 
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 //  SCORE BREAKDOWN TOOLTIP
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 const ScoreTooltip = ({ breakdown }) => {
   const [open, setOpen] = useState(false);
   if (!breakdown || breakdown.length === 0) return null;
@@ -936,9 +936,9 @@ const ScoreTooltip = ({ breakdown }) => {
   );
 };
 
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 //  ACTIVITY HEATMAP (for temporal clustering)
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 const ActivityHeatmap = ({ hourBuckets }) => {
   if (!hourBuckets) return null;
   const max = Math.max(...hourBuckets, 1);
@@ -956,9 +956,9 @@ const ActivityHeatmap = ({ hourBuckets }) => {
   );
 };
 
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 //  MAIN APP
-// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─────────────────────────────────────────────
 export function WarEraOracle() {
   const [isScanning, setIsScanning] = useState(false);
   const isScanningRef = useRef(false);
@@ -1003,33 +1003,35 @@ export function WarEraOracle() {
   const concurrencyLastReducedRef = useRef(0);
   const alwaysPhase2Ref = useRef(false);
   const scanQueueRef = useRef([]);
-  // (worker endpoint is now fixed to worker.getWorkers with companyId - no ref needed)
+  const successfulWorkerEndpointRef = useRef(null);
+  const successfulWorkerSchemaRef = useRef(null);
+  const workerEndpointDiscoveryPromiseRef = useRef(null);
 
-  // â"€â"€ Filter / Sort state (legacy - kept for getFilteredFindings compat) â"€â"€
+  // ── Filter / Sort state (legacy - kept for getFilteredFindings compat) ──
   const [filterType, setFilterType] = useState('all');
   const [sortMode, setSortMode] = useState('score_desc');
   const [minScore, setMinScore] = useState(0);
   const [showFilterPanel, setShowFilterPanel] = useState(false);
 
-  // â"€â"€ New Cobalt UI state â"€â"€
-  const [activeSuspectId, setActiveSuspectId] = useState<string|null>(null);
-  const [listFilter, setListFilter] = useState<'all'|'critical'|'high'|'medium'>('all');
+  // ── New Cobalt UI state ──
+  const [activeSuspectId, setActiveSuspectId] = useState(null);
+  const [listFilter, setListFilter] = useState('all');
   const [configOpen, setConfigOpen] = useState(false);
   const [logExpanded, setLogExpanded] = useState(false);
   const [listSearch, setListSearch] = useState('');
 
-  // â"€â"€ Session persistence â"€â"€
+  // ── Session persistence ──
   const [savedSession, setSavedSession] = useState(null);
   const [showRestorePrompt, setShowRestorePrompt] = useState(false);
 
-  // â"€â"€ Watchlist â"€â"€
+  // ── Watchlist ──
   const [watchlist, setWatchlist] = useState(() => {
     try { return JSON.parse(localStorage.getItem('wera_watchlist') || '{}'); } catch { return {}; }
   });
   const [showWatchlist, setShowWatchlist] = useState(false);
   const watchlistScanRef = useRef(false);
 
-  // â"€â"€ Import / export / clipboard â"€â"€
+  // ── Import / export / clipboard ──
   const fileInputRef = useRef(null);
   const [copiedId, setCopiedId] = useState(null);
 
@@ -1185,7 +1187,7 @@ export function WarEraOracle() {
           if (next < cur) {
             effectiveConcurrencyRef.current = next;
             concurrencyLastReducedRef.current = now;
-            addLog(`[GATEWAY] DB saturated - reducing concurrency ${cur} → ${next} (15s cooldown active)`, 'warning');
+            addLog(`[GATEWAY] DB saturated - reducing concurrency ${cur} -> ${next} (15s cooldown active)`, 'warning');
           }
         }
         return await smartFetch(endpoint, payload, true);
@@ -1277,7 +1279,7 @@ export function WarEraOracle() {
 
   const fetchUserCompaniesFull = async (userId) => {
     let parsed = [];
-    for (const ep of ['company.getCompanies']) {
+    for (const ep of ['company.getCompanies', 'company.getUserCompanies', 'company.getCompaniesByUserId']) {
       try {
         const data = await smartFetch(ep, { userId });
         let flat = Array.isArray(data) ? data : (data?.companies || Object.values(data||{}));
@@ -1725,15 +1727,52 @@ export function WarEraOracle() {
         await Promise.all(parsedCompanies.map(async company => {
           if (fromScan && !isScanningRef.current) return;
           const cId=company._id||company.id;
+
+          // ── Worker endpoint discovery (with proper mutex locking) ──
+          if (!successfulWorkerEndpointRef.current) {
+            if (!workerEndpointDiscoveryPromiseRef.current) {
+                workerEndpointDiscoveryPromiseRef.current = (async () => {
+                    addLog(`[DEBUG] Discovering worker endpoint using company ${cId}...`, 'debug');
+                    for (const wep of ['worker.getWorkers','company.getWorkers','company.getEmployees', 'company.getCompanyWorkers']) {
+                      try { 
+                        const res = await smartFetch(wep, { companyId: cId, limit: 10 }); 
+                        if (res) {
+                          successfulWorkerEndpointRef.current=wep; 
+                          successfulWorkerSchemaRef.current='companyId'; 
+                          addLog(`[DEBUG] Worker endpoint found: ${wep} (companyId)`, 'debug');
+                          return; 
+                        }
+                      } catch(e1) {
+                        try { 
+                          const res2 = await smartFetch(wep, { id: cId, limit: 10 }); 
+                          if (res2) {
+                            successfulWorkerEndpointRef.current=wep; 
+                            successfulWorkerSchemaRef.current='id'; 
+                            addLog(`[DEBUG] Worker endpoint found: ${wep} (id)`, 'debug');
+                            return; 
+                          }
+                        } catch(e2) {}
+                      }
+                    }
+                    addLog(`[CRITICAL] Failed to discover valid worker endpoint!`, 'warning');
+                })();
+            }
+            // Safely wait for the discovery task to complete before blasting the endpoint
+            await workerEndpointDiscoveryPromiseRef.current;
+          }
+
+          if (!successfulWorkerEndpointRef.current) return;
+
+          const schema=successfulWorkerSchemaRef.current==='companyId'?{companyId:cId, limit:100}:{id:cId, limit:100};
           try {
-            const rawWorkers=await smartFetch('worker.getWorkers', { companyId: cId });
+            const rawWorkers=await smartFetch(successfulWorkerEndpointRef.current, schema);
             let flatWorkers=Array.isArray(rawWorkers)?rawWorkers:(rawWorkers?.workers||rawWorkers?.data||rawWorkers?.items||Object.values(rawWorkers||{}));
             flatWorkers=flatWorkers.flat(3).filter(w=>typeof w==='object'&&w!==null);
             // Log raw shape + first worker once per scan
             if (!didLogWorkerShapeRef.current) {
               didLogWorkerShapeRef.current=true;
               const shapeDesc=rawWorkers==null?'null':Array.isArray(rawWorkers)?'array['+rawWorkers.length+']':'obj{'+Object.keys(rawWorkers||{}).slice(0,8).join(',')+'}';
-              addLog(`[DEBUG] worker.getWorkers raw: ${shapeDesc} → ${flatWorkers.length} flat workers`, 'debug');
+              addLog(`[DEBUG] worker.getWorkers raw: ${shapeDesc} -> ${flatWorkers.length} flat workers`, 'debug');
               if (flatWorkers.length>0) addLog(`[DEBUG] worker[0] keys: ${Object.keys(flatWorkers[0]).slice(0,12).join(',')} | sample: ${JSON.stringify(flatWorkers[0]).substring(0,300)}`, 'debug');
             }
             addLog(`[DEBUG] P2 company ${cId}: ${flatWorkers.length} workers`, 'debug');
@@ -1814,7 +1853,11 @@ export function WarEraOracle() {
     effectiveConcurrencyRef.current=settings.concurrencyLimit; concurrencyLastReducedRef.current=0;
     alwaysPhase2Ref.current=false;
     scanQueueRef.current=[];
-    // worker endpoint is fixed, no refs to reset
+    
+    // Reset worker endpoint discovery refs for the new scan
+    successfulWorkerEndpointRef.current=null; 
+    successfulWorkerSchemaRef.current=null;
+    workerEndpointDiscoveryPromiseRef.current=null;
 
     // Load per-level wealth baseline from Redis
     try {
@@ -1874,7 +1917,9 @@ export function WarEraOracle() {
         if (!isScanningRef.current) break;
         const rName=availableRegions.find(r=>(r._id||r.id)===regionId)?.name||regionId;
         let success=false;
-        for (const ep of ['user.getUsersByCountry']) {
+        
+        // Added robust fallbacks back into the country scan
+        for (const ep of ['user.getUsersByCountry', 'user.getUsers', 'country.getCitizens']) {
           if (success) break;
           let nextCursor=null, page=1, hasMore=true, loopSeenSet=new Set();
           try {
@@ -1884,16 +1929,24 @@ export function WarEraOracle() {
               const payload={countryId:regionId,limit:100};
               if (nextCursor) payload.cursor=nextCursor; else if (page>1) payload.page=page;
               const res=await smartFetch(ep,payload);
-              // Resolve double-encoded responses (gateway returns array of JSON strings)
+              
               let resolvedRes=res;
               if (Array.isArray(res)&&res.length>0&&typeof res[0]==='string'){try{resolvedRes=JSON.parse(res[0]);}catch{}}
-              let pageData=Array.isArray(resolvedRes)?resolvedRes:(resolvedRes?.data||resolvedRes?.items||resolvedRes?.citizens||resolvedRes?.users||resolvedRes?.members||Object.values(resolvedRes||{}));
-              if (!Array.isArray(pageData)) pageData=Object.values(pageData||{});
+              
+              // Handle various possible response shapes safely
+              let pageData = resolvedRes;
+              if (pageData && !Array.isArray(pageData)) {
+                  pageData = pageData.data || pageData.items || pageData.citizens || pageData.users || pageData.members || pageData.results || [];
+                  if (!Array.isArray(pageData)) pageData = Object.values(pageData);
+              }
+              
               if (page===1&&pageData.flat(3).filter(c=>typeof c==='object'&&c!==null).length===0) addLog(`[WARNING] ${rName} p1 raw shape: ${JSON.stringify(res).substring(0,300)}`, 'warning');
               pageData=pageData.flat(3).filter(c=>typeof c==='object'&&c!==null);
               let newCount=0; const uniqueC=[];
               pageData.forEach(c=>{ const id=c._id||c.id||c.userId; if(!loopSeenSet.has(id)){loopSeenSet.add(id);c.scanContext=rName;uniqueC.push(c);newCount++;} });
+              
               if (uniqueC.length>0) { allCitizens.push(...uniqueC); success=true; }
+              
               if (pageData.length===0||newCount===0) hasMore=false;
               else {
                 const nextC=resolvedRes?.nextCursor||resolvedRes?.meta?.nextCursor||res?.nextCursor||null;
@@ -1938,7 +1991,7 @@ export function WarEraOracle() {
               const nextR = curR >= 25 ? Math.min(curR + 10, maxR) : curR >= 12 ? 25 : curR >= 6 ? 12 : curR;
               effectiveConcurrencyRef.current = nextR;
               concurrencyLastReducedRef.current = nowR;
-              addLog(`[GATEWAY] Concurrency recovering: ${curR} → ${nextR}`, 'info');
+              addLog(`[GATEWAY] Concurrency recovering: ${curR} -> ${nextR}`, 'info');
             }
           }
         } else await new Promise(r=>setTimeout(r,100));
@@ -1957,7 +2010,7 @@ export function WarEraOracle() {
 
   const abortScan = () => { setIsScanning(false); isScanningRef.current=false; setIsRateLimited(false); setCurrentTask('Scan Aborted'); addLog('Scan manually aborted.', 'warning'); };
 
-  // â"€â"€ Export all findings (full-fidelity - can be re-imported) â"€â"€
+  // ── Export all findings (full-fidelity - can be re-imported) ──
   const exportFindings = () => {
     const data = {
       _oracleExport: true,
@@ -1971,7 +2024,7 @@ export function WarEraOracle() {
     URL.revokeObjectURL(url);
   };
 
-  // â"€â"€ Export a single player's findings â"€â"€
+  // ── Export a single player's findings ──
   const exportSinglePlayer = (result) => {
     const data = {
       _oracleExport: true,
@@ -1985,7 +2038,7 @@ export function WarEraOracle() {
     URL.revokeObjectURL(url);
   };
 
-  // â"€â"€ Import JSON file and restore findings â"€â"€
+  // ── Import JSON file and restore findings ──
   const handleImportJson = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -2007,7 +2060,7 @@ export function WarEraOracle() {
     e.target.value = ''; // reset so same file can be re-imported
   };
 
-  // â"€â"€ Build 500-char summary for clipboard â"€â"€
+  // ── Build 500-char summary for clipboard ──
   const buildShortSummary = (result) => {
     const name = result.player.name;
     const parts = [];
@@ -2061,13 +2114,13 @@ export function WarEraOracle() {
     if (paceSus) parts.push(`Script pacing: ${result.player.pacingHits} actions at ~${result.player.pacingAvgMs}ms intervals.`);
 
     // Tip farming
-    const tipSus = result.suspicions.filter((s: any) => s.type === 'tip_farming');
+    const tipSus = result.suspicions.filter((s) => s.type === 'tip_farming');
     if (tipSus.length > 0) {
       parts.push(`Tip farming: ${tipSus.length} coordinated tipping pattern${tipSus.length>1?'s':''} detected.`);
     }
 
     // Hermit network
-    const hermitSus = result.suspicions.find((s: any) => s.type === 'hermit_network' || s.type === 'mutual_hermit');
+    const hermitSus = result.suspicions.find((s) => s.type === 'hermit_network' || s.type === 'mutual_hermit');
     if (hermitSus) parts.push(`Hermit trade network: transactions confined to a closed group of accounts.`);
 
     let summary = parts.join(' ');
@@ -2097,7 +2150,7 @@ export function WarEraOracle() {
     document.body.removeChild(ta);
   };
 
-  // â"€â"€ Re-scan a single player â"€â"€
+  // ── Re-scan a single player ──
   const rescanPlayer = (playerId, country) => {
     delete phase2DataRef.current[playerId];
     setFindings(prev => { const n={...prev}; if(n[country]) n[country]=n[country].filter(r=>r.player.id!==playerId); return n; });
@@ -2125,7 +2178,7 @@ export function WarEraOracle() {
     }
   };
 
-  // â"€â"€ Derived token metrics â"€â"€
+  // ── Derived token metrics ──
   const now = Date.now();
   gatewayTokens.current = gatewayTokens.current.filter(t=>now-t<60000);
   officialTokens.current = officialTokens.current.filter(t=>now-t<60000);
@@ -2137,25 +2190,25 @@ export function WarEraOracle() {
   const gatewayNext=getNextRefill(gatewayTokens.current);
   const officialNext=getNextRefill(officialTokens.current);
 
-  // â"€â"€ Cobalt severity helpers â"€â"€
+  // ── Cobalt severity helpers ──
   const CRIT_TYPES = new Set(['market_automation','superhuman_apm','script_pacing','money_laundering','coordinated_donation','transaction_abuse']);
   const HIGH_TYPES = new Set(['hermit_network','mutual_hermit','newborn_wealthy','fidelity_ring','cloned_progression']);
-  const sevTierOf = (type: string): 'crit'|'high'|'med' => CRIT_TYPES.has(type) ? 'crit' : HIGH_TYPES.has(type) ? 'high' : 'med';
-  const scoreTierOf = (score: number): 'crit'|'high'|'med' => score >= 10 ? 'crit' : score >= 5 ? 'high' : 'med';
+  const sevTierOf = (type) => CRIT_TYPES.has(type) ? 'crit' : HIGH_TYPES.has(type) ? 'high' : 'med';
+  const scoreTierOf = (score) => score >= 10 ? 'crit' : score >= 5 ? 'high' : 'med';
   const T_COLOR = { crit:'#ff5d6c', high:'#ffab3d', med:'#ffd84d' };
   const T_BG    = { crit:'rgba(255,93,108,0.12)', high:'rgba(255,171,61,0.12)', med:'rgba(255,216,77,0.11)' };
   const T_LINE  = { crit:'rgba(255,93,108,0.42)', high:'rgba(255,171,61,0.40)', med:'rgba(255,216,77,0.36)' };
 
-  const FINDING_DETAIL: Record<string,{observed:string,rule:string,note:string}> = {
+  const FINDING_DETAIL = {
     market_automation:    { observed:'Items purchased within milliseconds of listing', rule:`Reaction < ${settings.sniperThresholdMs}ms on 5+ occasions`, note:'Human reaction speed is ~200-400ms; sustained sub-threshold purchase rate is consistent with automated polling.' },
     superhuman_apm:       { observed:'Multiple market listings placed within a narrow window', rule:`>=5 transactions within ${settings.apmWindowMs}ms`, note:'Concurrent market actions are extremely difficult to achieve manually.' },
     script_pacing:        { observed:'Identical inter-action gaps across consecutive trades', rule:`Gap variance <= ±${settings.pacingToleranceMs}ms on ${settings.pacingMinHits}+ consecutive pairs`, note:'Clock-perfect pacing is a strong indicator of timer-driven automation.' },
-    money_laundering:     { observed:'Workers receiving unusually large coin donations', rule:'Donation volume >= 30× expected wage in 30 days', note:'May be profit extraction from a controlled network; legitimate bonuses rarely reach this scale.' },
+    money_laundering:     { observed:'Workers receiving unusually large coin donations', rule:'Donation volume >= 30x expected wage in 30 days', note:'May be profit extraction from a controlled network; legitimate bonuses rarely reach this scale.' },
     coordinated_donation: { observed:'Multiple workers tipping within suspiciously close intervals', rule:'>=3 donations within 60s', note:'Coordinated timing suggests an orchestrated network rather than independent actors.' },
     transaction_abuse:    { observed:'High-volume bilateral trading with the same counterparty', rule:'>=5 trades; significantly imbalanced net profit', note:'Repeated round-trip trades between two accounts are a common wash-trading pattern.' },
     hermit_network:       { observed:'Workers employed nowhere except this account', rule:'All known employment is with this single employer', note:'Exclusive worker networks can indicate account manufacturing, though niche legitimate employers exist.' },
     mutual_hermit:        { observed:'Mutual exclusive employment between boss and worker', rule:'Boss is also exclusively employed by this account', note:'Reciprocal hermit relationships substantially increase the likelihood of coordination.' },
-    newborn_wealthy:      { observed:'Account wealth significantly above level peers', rule:`Coin wealth > ${settings.wealthAnomalyMultiplier}× level average`, note:'New accounts with unusual wealth may be externally funded; compare with account age.' },
+    newborn_wealthy:      { observed:'Account wealth significantly above level peers', rule:`Coin wealth > ${settings.wealthAnomalyMultiplier}x level average`, note:'New accounts with unusual wealth may be externally funded; compare with account age.' },
     fidelity_ring:        { observed:'Workers holding maximum fidelity across the workforce', rule:'Fidelity = 10/10 across workers', note:'Perfect fidelity cluster is unusual - may indicate artificially maintained relationships.' },
     cloned_progression:   { observed:'Progression stats mirror another account', rule:'Level/wealth within 2% of a known clone signature', note:'Near-identical progression curves can indicate copy-cat account farming.' },
     low_wage:             { observed:'Workers paid below suspicious wage threshold', rule:`Wage <= ${settings.suspiciousWageThreshold.toFixed(3)}`, note:'Low wages alone are not conclusive; combine with other signals for stronger inference.' },
@@ -2166,14 +2219,14 @@ export function WarEraOracle() {
     tip_farming:          { observed:'Heavy, concentrated tip traffic from a small set of accounts', rule:'Single tipper accounts for >=50% of all received tips', note:'Tip farming networks route coins through repeated small donations to obscure origin.' },
   };
 
-  // â"€â"€ Flat case list â"€â"€
+  // ── Flat case list ──
   const allResults = Object.entries(findings).flatMap(([country, results]) =>
     (results as any[]).map(r => ({ ...r, country }))
   );
-  const tierOrder: Record<string,number> = { crit: 0, high: 1, med: 2 };
-  const maxSevTierOf = (result: any): 'crit'|'high'|'med' => {
-    if (result.suspicions.some((s: any) => CRIT_TYPES.has(s.type))) return 'crit';
-    if (result.suspicions.some((s: any) => HIGH_TYPES.has(s.type))) return 'high';
+  const tierOrder = { crit: 0, high: 1, med: 2 };
+  const maxSevTierOf = (result) => {
+    if (result.suspicions.some((s) => CRIT_TYPES.has(s.type))) return 'crit';
+    if (result.suspicions.some((s) => HIGH_TYPES.has(s.type))) return 'high';
     return 'med';
   };
   const filteredResults = allResults.filter(r => {
@@ -2190,24 +2243,24 @@ export function WarEraOracle() {
     if (ta !== tb) return ta - tb;
     return (b.adjustedDetections ?? b.detections) - (a.adjustedDetections ?? a.detections);
   });
-  const caseGroups: Record<string, any[]> = {};
+  const caseGroups = {};
   filteredResults.forEach(r => { if (!caseGroups[r.country]) caseGroups[r.country] = []; caseGroups[r.country].push(r); });
 
   const activeResult = allResults.find(r => r.player.id === activeSuspectId) || null;
   const orderedSuspicions = activeResult
-    ? [...activeResult.suspicions].sort((a: any, b: any) => {
+    ? [...activeResult.suspicions].sort((a, b) => {
         const ta = tierOrder[sevTierOf(a.type)], tb = tierOrder[sevTierOf(b.type)];
         if (ta !== tb) return ta - tb;
         return (b.detectionWeight ?? 1) - (a.detectionWeight ?? 1);
       })
     : [];
-  const activeWashPartners: [string, any][] = activeResult && globalWashPartners.current[activeResult.player.id]
-    ? Object.entries(globalWashPartners.current[activeResult.player.id]) as [string, any][]
+  const activeWashPartners = activeResult && globalWashPartners.current[activeResult.player.id]
+    ? Object.entries(globalWashPartners.current[activeResult.player.id])
     : [];
   const ringSize = activeResult ? Object.keys(activeResult.washPartners || {}).length : 0;
   const ringBanned = activeWashPartners.filter(([, p]) => p.isBanned).length;
   const netFlow = activeWashPartners.reduce((s, [, p]) => s + (p.netProfit || 0), 0);
-  const critCount = activeResult ? activeResult.suspicions.filter((s: any) => CRIT_TYPES.has(s.type)).length : 0;
+  const critCount = activeResult ? activeResult.suspicions.filter((s) => CRIT_TYPES.has(s.type)).length : 0;
   const totalFlags = Object.values(findings).flat().length;
   const activeRuleCount = [
     settings.suspiciousWageThreshold !== 0.110,
@@ -2218,391 +2271,6 @@ export function WarEraOracle() {
     settings.pacingMinHits !== 6,
   ].filter(Boolean).length;
 
-  // â"€â"€ Filter + sort findings (legacy helper, kept for compatibility) â"€â"€
-  const getFilteredFindings = (countryFindings) => {
-    let results = [...countryFindings];
-    if (filterType !== 'all') results = results.filter(r => r.suspicions.some(s => s.type === filterType));
-    if (minScore > 0) results = results.filter(r => (r.adjustedDetections ?? r.detections) >= minScore);
-    if (sortMode === 'score_desc') results.sort((a,b) => (b.adjustedDetections??b.detections)-(a.adjustedDetections??a.detections));
-    else if (sortMode === 'score_asc') results.sort((a,b) => (a.adjustedDetections??a.detections)-(b.adjustedDetections??b.detections));
-    else if (sortMode === 'name_asc') results.sort((a,b) => a.player.name.localeCompare(b.player.name));
-    return results;
-  };
-
-  const allSuspicionTypes = [...new Set(Object.values(findings).flat().flatMap(r => r.suspicions.map(s=>s.type)))];
-
-  const suspicionTypeIcon = (type) => {
-    const map = {
-      money_laundering: <Star fill="#ef4444" size={13} className="text-red-500"/>,
-      coordinated_donation: <Timer size={13} className="text-red-400"/>,
-      transaction_abuse: <Star fill="#facc15" size={13} className="text-yellow-400"/>,
-      market_automation: <Target size={13} className="text-red-500"/>,
-      superhuman_apm: <Zap size={13} className="text-purple-500"/>,
-      hermit_network: <Network size={13} className="text-orange-500"/>,
-      mutual_hermit: <Network size={13} className="text-red-400"/>,
-      script_pacing: <Clock size={13} className="text-pink-500"/>,
-      newborn_wealthy: <Baby size={13} className="text-cyan-400"/>,
-      temporal_clustering: <Moon size={13} className="text-indigo-400"/>,
-      fidelity_ring: <Heart size={13} className="text-rose-400"/>,
-      wage_uniformity: <CheckSquare size={13} className="text-amber-400"/>,
-      low_wage: <AlertTriangle size={13} className="text-yellow-500"/>,
-      naming_pattern: <AlertTriangle size={13} className="text-orange-400"/>,
-      cloned_progression: <AlertTriangle size={13} className="text-yellow-400"/>,
-      no_production_bonus: <AlertTriangle size={13} className="text-orange-500"/>,
-      tip_farming: <Star size={13} className="text-amber-400"/>,
-    };
-    return map[type] || <AlertTriangle size={13} className="text-slate-400"/>;
-  };
-
-  // â"€â"€ renderGroupedFindings replaced by Cobalt three-pane UI below â"€â"€
-  const _renderGroupedFindings_UNUSED = (countryFindings) => {
-    const filtered = getFilteredFindings(countryFindings);
-    const uf=new UnionFind();
-    filtered.forEach(f=>{ uf.add(f.player.id); Object.keys(f.washPartners||{}).forEach(pid=>{ uf.add(pid); uf.union(f.player.id,pid); }); });
-
-    const washGroups={}, hermitGroups={}, sniperGroup=[], apmGroup=[], pacingGroup=[], standalone=[];
-    filtered.forEach(f=>{
-      if (f.washPartners&&Object.keys(f.washPartners).length>0) { const root=uf.find(f.player.id); if(!washGroups[root])washGroups[root]=[]; washGroups[root].push(f); }
-      else if ((f.player.isHermit||f.player.isMutualHermit)&&f.player.hermitBossId) { const bId=f.player.hermitBossId; if(!hermitGroups[bId])hermitGroups[bId]=[]; hermitGroups[bId].push(f); }
-      else if (f.player.sniperHits>=5) sniperGroup.push(f);
-      else if (f.player.maxConcurrentTxs>=5) apmGroup.push(f);
-      else if (f.player.pacingHits>=settings.pacingMinHits) pacingGroup.push(f);
-      else standalone.push(f);
-    });
-
-    const getGroupIcons=(membersList)=>{
-      let hasSniper=false,hasApm=false,hasHermit=false,hasPacing=false,hasMutualHermit=false;
-      membersList.forEach(m=>{ if(m.player.sniperHits>=5)hasSniper=true; if(m.player.maxConcurrentTxs>=5)hasApm=true; if(m.player.isHermit)hasHermit=true; if(m.player.pacingHits>=settings.pacingMinHits)hasPacing=true; if(m.player.isMutualHermit)hasMutualHermit=true; });
-      if(!hasSniper&&!hasApm&&!hasHermit&&!hasPacing&&!hasMutualHermit) return null;
-      return <span className="flex items-center font-bold drop-shadow-md mr-1 bg-slate-900/80 px-1.5 py-0.5 rounded border border-slate-700/50">
-        {hasSniper&&<Target size={12} className="text-red-500 mx-0.5" title="Sniper Bot"/>}
-        {hasApm&&<Zap size={12} className="text-purple-500 mx-0.5" title="Superhuman APM"/>}
-        {(hasHermit||hasMutualHermit)&&<Network size={12} className={`mx-0.5 ${hasMutualHermit?'text-red-400':'text-orange-500'}`} title={hasMutualHermit?"Mutual Hermit":"Hermit Network"}/>}
-        {hasPacing&&<Clock size={12} className="text-pink-500 mx-0.5" title="Script Pacing"/>}
-      </span>;
-    };
-
-    const finalNodes=[];
-    const groupStats=[];
-
-    Object.entries(washGroups).forEach(([rootId, members])=>{
-      const allMemberIds=new Set(), uniqueEdges=new Set();
-      let totalVolume=0, totalDet=0;
-      const getMemberNetProfit=(m)=>Object.values(globalWashPartners.current[m.player.id]||{}).reduce((s,p)=>s+(p.netProfit||0),0);
-      const profitLeader=members.reduce((p,c)=>getMemberNetProfit(c)>getMemberNetProfit(p)?c:p);
-      const ringLeader=getMemberNetProfit(profitLeader)>0?profitLeader:members.reduce((p,c)=>p.detections>c.detections?p:c);
-      const trueRootId=ringLeader.player.id;
-      let ringNetProfit=0;
-      const leaderPartners=globalWashPartners.current[trueRootId]||{};
-      Object.values(leaderPartners).forEach(p=>ringNetProfit+=(p.netProfit||0));
-      const isNetZero=Math.abs(ringNetProfit)<0.01;
-      let ringLaunderCount=0, ringLaunderedCoins=0;
-      const uniqueLaunderers=new Set();
-
-      members.forEach(m=>{
-        allMemberIds.add(m.player.id);
-        let mDet=m.detections||0;
-        if (isNetZero) { const ws=m.suspicions.find(s=>s.type==='transaction_abuse'); if(ws) mDet-=(ws.detectionWeight!==undefined?ws.detectionWeight:ws.partners.length); }
-        m.adjustedDetections=mDet; totalDet+=mDet;
-        Object.entries(m.washPartners||{}).forEach(([pid,pData])=>{ allMemberIds.add(pid); const eid=[m.player.id,pid].sort().join('_'); if(!uniqueEdges.has(eid)){uniqueEdges.add(eid);totalVolume+=Math.abs(pData.netProfit!==0?pData.netProfit:pData.volume);} });
-        if (m.hasLaundering) { const ls=m.suspicions.find(s=>s.type==='money_laundering'); if(ls) ls.workers.forEach(w=>{ if(!uniqueLaunderers.has(w.uid)){uniqueLaunderers.add(w.uid);ringLaunderCount++;ringLaunderedCoins+=(w.largeDonations30Days||w.totalDonatedAllTime||0);} }); }
-      });
-      groupStats.push({ rootId, trueRootId, ringLeader, members, allMemberIds, totalVolume, totalDet, ringLaunderCount, ringLaunderedCoins, ringNetProfit });
-    });
-
-    groupStats.sort((a,b)=>b.totalVolume-a.totalVolume).forEach(stats=>{
-      if (stats.allMemberIds.size<=1) { finalNodes.push(...stats.members.map((r,i)=>renderResultNode(r,i))); return; }
-      let ringBannedCount=0; stats.allMemberIds.forEach(id=>{ if(globalBans.current[id])ringBannedCount++; });
-      const rootName=stats.ringLeader.player.name;
-      const profitDisplay=Math.abs(stats.ringNetProfit)<0.01?"0.0 NET":stats.ringNetProfit>0?`+${stats.ringNetProfit.toFixed(1)} NET`:`-${Math.abs(stats.ringNetProfit).toFixed(1)} NET`;
-      finalNodes.push(
-        <TreeNode key={`group_${stats.rootId}`}
-          label={<span className="flex items-center gap-1">Trading Ring ({stats.allMemberIds.size} <Users size={12}/>{ringBannedCount>0?`, ${ringBannedCount} BANNED`:''}) - <span className="font-bold text-yellow-500 ml-1">{rootName}</span></span>}
-          icon={Activity} defaultOpen={false}
-          badge={<span className="flex items-center gap-1">{getGroupIcons(stats.members)}<span>Score: {stats.totalDet}</span></span>}
-          badgeClass={getBadgeClass(stats.totalDet)}
-          extraData={<span className="flex items-center gap-2 font-bold ml-2"><span className="text-yellow-400 flex items-center gap-1">| {profitDisplay} <Coins size={12}/></span>{stats.ringLaunderCount>0&&<span className="text-red-500 flex items-center gap-1">| {stats.ringLaunderCount}x <Star fill="#ef4444" size={12}/> {stats.ringLaunderedCoins.toFixed(1)} <Coins size={12}/></span>}</span>}
-        >
-          <div className="ml-6 my-2 space-y-2 border-l border-slate-800 pl-4 py-2">
-            <div className="bg-slate-900 border border-slate-700/50 rounded p-3 text-sm mb-4">
-              <div className="text-xs font-bold text-slate-400 mb-2 uppercase tracking-wider">WASH TRADING NETWORK MAP</div>
-              <WashNetworkTree rootId={stats.trueRootId} washPartners={globalWashPartners.current} processedNodes={new Set()} globalBans={globalBans.current} globalNames={globalCacheRef.current.names}/>
-            </div>
-            {stats.members.sort((a,b)=>(b.adjustedDetections??b.detections)-(a.adjustedDetections??a.detections)).map((r,i)=>renderResultNode(r,i,true))}
-          </div>
-        </TreeNode>
-      );
-    });
-
-    Object.entries(hermitGroups).sort((a,b)=>b[1].length-a[1].length).forEach(([bossId,members])=>{
-      const bossName=globalCacheRef.current.names[bossId]||members[0].player.hermitBossName||bossId;
-      const totalDet=members.reduce((s,m)=>s+(m.adjustedDetections??m.detections),0);
-      const hasMutualInGroup=members.some(m=>m.player.isMutualHermit);
-      finalNodes.push(
-        <TreeNode key={`hermit_${bossId}`}
-          label={<span className="flex items-center gap-1">{hasMutualInGroup?'Mutual ':''}Hermit Network ({members.length} <Network size={12}/>) - Boss: <span className={`font-bold ml-1 ${hasMutualInGroup?'text-red-400':'text-orange-400'}`}>{String(bossName)}</span></span>}
-          icon={Network} defaultOpen={false}
-          badge={<span className="flex items-center gap-1">{getGroupIcons(members)}<span>Score: {totalDet}</span></span>}
-          badgeClass={getBadgeClass(totalDet)}
-          extraData={<a href={`https://app.warera.io/user/${bossId}`} target="_blank" rel="noopener noreferrer" className="hover:text-blue-400 hover:underline flex items-center gap-1" onClick={e=>e.stopPropagation()}><ExternalLink size={10}/></a>}
-        >
-          <div className="ml-6 my-2 space-y-2 border-l border-slate-800 pl-4 py-2">
-            {members.sort((a,b)=>b.detections-a.detections).map((r,i)=>renderResultNode(r,i,true))}
-          </div>
-        </TreeNode>
-      );
-    });
-
-    if (sniperGroup.length>0) {
-      const totalDet=sniperGroup.reduce((s,m)=>s+m.detections,0);
-      finalNodes.push(<TreeNode key="sniperGroup" label={`Market Automation: Snipers (${sniperGroup.length})`} icon={Target} defaultOpen={false} badge={<span className="flex items-center gap-1">{getGroupIcons(sniperGroup)}<span>Score: {totalDet}</span></span>} badgeClass={getBadgeClass(totalDet)}><div className="ml-6 my-2 space-y-2 border-l border-slate-800 pl-4 py-2">{sniperGroup.sort((a,b)=>b.detections-a.detections).map((r,i)=>renderResultNode(r,i,true))}</div></TreeNode>);
-    }
-    if (apmGroup.length>0) {
-      const totalDet=apmGroup.reduce((s,m)=>s+m.detections,0);
-      finalNodes.push(<TreeNode key="apmGroup" label={`API Automation: Superhuman APM (${apmGroup.length})`} icon={Zap} defaultOpen={false} badge={<span className="flex items-center gap-1">{getGroupIcons(apmGroup)}<span>Score: {totalDet}</span></span>} badgeClass={getBadgeClass(totalDet)}><div className="ml-6 my-2 space-y-2 border-l border-slate-800 pl-4 py-2">{apmGroup.sort((a,b)=>b.detections-a.detections).map((r,i)=>renderResultNode(r,i,true))}</div></TreeNode>);
-    }
-    if (pacingGroup.length>0) {
-      const totalDet=pacingGroup.reduce((s,m)=>s+m.detections,0);
-      finalNodes.push(<TreeNode key="pacingGroup" label={`Action Automation: Script Pacing (${pacingGroup.length})`} icon={Clock} defaultOpen={false} badge={<span className="flex items-center gap-1">{getGroupIcons(pacingGroup)}<span>Score: {totalDet}</span></span>} badgeClass={getBadgeClass(totalDet)}><div className="ml-6 my-2 space-y-2 border-l border-slate-800 pl-4 py-2">{pacingGroup.sort((a,b)=>b.detections-a.detections).map((r,i)=>renderResultNode(r,i,true))}</div></TreeNode>);
-    }
-    standalone.sort((a,b)=>(b.adjustedDetections??b.detections)-(a.adjustedDetections??a.detections)).forEach((r,i)=>finalNodes.push(renderResultNode(r,i)));
-    return finalNodes;
-  };
-
-  const renderResultNode = (result, idx, forceOpen=false) => {
-    let redStars=0, yellowStars=0;
-    if (result.hasLaundering) redStars=result.launderingWorkerCount;
-    if (result.washPartners&&Object.keys(result.washPartners).length>0) yellowStars=Object.keys(result.washPartners).length;
-    const activeDetections=result.adjustedDetections??result.detections;
-    const hasSniper=result.player.sniperHits>=5, hasApm=result.player.maxConcurrentTxs>=5;
-    const hasHermit=result.player.isHermit, hasMutualHermit=result.player.isMutualHermit;
-    const hasPacing=result.player.pacingHits>=settings.pacingMinHits;
-    const country=result.player.country;
-
-    return (
-      <TreeNode key={result.player.id}
-        label={<>{(() => {
-          const coinWealth = result.player.userWealth?.value;
-          const lvl = result.player.userLevel?.value ?? result.player.level;
-          const avgData = lvl != null ? getWealthAverageExtended(lvl) : null;
-          const pct = (coinWealth != null && avgData) ? ((coinWealth - avgData.avg) / avgData.avg * 100) : null;
-          return (
-            <span className="relative group/wtooltip inline-block">
-              <span className="truncate cursor-default">{String(result.player.name)}</span>
-              {coinWealth != null && (
-                <div className="absolute left-0 top-full mt-1 hidden group-hover/wtooltip:block bg-slate-800 text-slate-300 text-[10px] p-2 rounded shadow-xl border border-slate-600 z-[60] whitespace-nowrap min-w-[190px] pointer-events-none">
-                  <div className="font-bold text-amber-300 mb-1">Wealth: {coinWealth.toFixed(1)} coins</div>
-                  {avgData ? (
-                    <>
-                      <div className="text-slate-400">Lvl {lvl} avg: {avgData.avg.toFixed(1)} coins ({avgData.totalCount} samples, ±{avgData.radius} lvl)</div>
-                      <div className={`font-semibold mt-0.5 ${pct >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>{pct >= 0 ? '+' : ''}{pct.toFixed(1)}% {pct >= 0 ? 'above' : 'below'} level average</div>
-                    </>
-                  ) : <div className="text-slate-500">No level comparison data yet</div>}
-                </div>
-              )}
-            </span>
-          );
-        })()}{result.player.isBanned&&<span className="ml-2 bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] border border-red-700/50 font-bold tracking-wider align-middle shrink-0">BANNED</span>}</>}
-        icon={UserX} defaultOpen={forceOpen&&idx===0}
-        badge={
-          <span className="flex items-center gap-1">
-            {(redStars>0||yellowStars>0)&&<span className="flex items-center font-bold drop-shadow-md mr-1 bg-purple-900/40 px-1.5 py-0.5 rounded border border-purple-800/50">{redStars>0&&<span className="flex items-center text-red-500 mr-2">{redStars>1?`${redStars}x`:''}<Star fill="#ef4444" size={12} className="mx-1"/>{result.totalLaunderedCoins?.toFixed(1)||'0'}<Coins size={10} className="ml-0.5"/></span>}{yellowStars>0&&<span className="flex items-center text-yellow-400">{yellowStars>1?`${yellowStars}x`:''}<Star fill="#facc15" size={12} className="ml-0.5"/></span>}</span>}
-            {(hasSniper||hasApm||hasHermit||hasMutualHermit||hasPacing)&&<span className="flex items-center font-bold drop-shadow-md mr-1 bg-slate-900/80 px-1.5 py-0.5 rounded border border-slate-700/50">{hasSniper&&<Target size={12} className="text-red-500 mx-0.5"/>}{hasApm&&<Zap size={12} className="text-purple-500 mx-0.5"/>}{(hasHermit||hasMutualHermit)&&<Network size={12} className={`mx-0.5 ${hasMutualHermit?'text-red-400':'text-orange-500'}`}/>}{hasPacing&&<Clock size={12} className="text-pink-500 mx-0.5"/>}</span>}
-            <span>{result.zeroBonusCompanyCount>0?`(${result.zeroBonusCompanyCount} No-Prod, ${result.bossNoBonusPercentage}%) `:''}Score: {activeDetections}</span>
-            <ScoreTooltip breakdown={result.scoreBreakdown}/>
-          </span>
-        }
-        badgeClass={getBadgeClass(activeDetections)}
-        extraData={<span className="flex items-center gap-1 ml-2">
-          {result.phase2Status === 'pending' && (
-            <button onClick={e=>{e.stopPropagation();runPhase2(result.player.id,country);}} className="flex items-center gap-1 px-2 py-1 bg-indigo-900/60 hover:bg-indigo-700/80 text-indigo-300 hover:text-indigo-100 rounded border border-indigo-700/60 text-[10px] font-semibold transition-colors shrink-0" title="Fetch companies & workers and run full detection">
-              <Users size={9}/><span>Load Worker Analysis</span>
-            </button>
-          )}
-          {result.phase2Status === 'running' && (
-            <span className="flex items-center gap-1 px-2 py-1 bg-slate-800 text-slate-400 rounded border border-slate-700 text-[10px] font-semibold animate-pulse shrink-0">
-              <Activity size={9}/><span>Analyzing...</span>
-            </span>
-          )}
-          <span className="inline-flex items-center rounded-md border border-slate-700 overflow-hidden text-[10px] font-semibold shrink-0">
-            <button onClick={e=>{e.stopPropagation();toggleWatchlist(result.player.id,result.player.name,country);}} className={`flex items-center gap-1 px-2 py-1 transition-colors border-r border-slate-700 ${watchlist[result.player.id]?'bg-amber-900/40 text-amber-400 hover:bg-amber-900/60':'bg-slate-900 hover:bg-amber-900/20 text-slate-400 hover:text-amber-400'}`} title={watchlist[result.player.id]?'Remove from watchlist':'Add to watchlist'}><Bookmark size={9} fill={watchlist[result.player.id]?'currentColor':'none'}/><span className="hidden sm:inline">{watchlist[result.player.id]?'Watching':'Watch'}</span></button>
-            <button onClick={e=>{e.stopPropagation();rescanPlayer(result.player.id,country);}} className="flex items-center gap-1 px-2 py-1 bg-slate-900 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors border-r border-slate-700" title="Re-scan"><RefreshCw size={9}/><span className="hidden sm:inline">Rescan</span></button>
-            <button onClick={e=>{e.stopPropagation();exportSinglePlayer(result);}} className="flex items-center gap-1 px-2 py-1 bg-slate-900 hover:bg-blue-900/50 text-slate-400 hover:text-blue-300 transition-colors border-r border-slate-700" title="Export JSON"><Download size={9}/><span className="hidden sm:inline">Export</span></button>
-            <button onClick={e=>{e.stopPropagation();copySummaryToClipboard(result);setCopiedId(result.player.id);setTimeout(()=>setCopiedId(null),2500);}} className={`flex items-center gap-1 px-2 py-1 transition-colors ${copiedId===result.player.id?'bg-emerald-900/50 text-emerald-400':'bg-slate-900 hover:bg-emerald-900/30 text-slate-400 hover:text-emerald-400'}`} title="Copy 500-char summary">{copiedId===result.player.id?<CheckSquare size={9}/>:<CheckSquare size={9}/>}<span className="hidden sm:inline">{copiedId===result.player.id?'Copied!':'Summary'}</span></button>
-          </span>
-        </span>}
-        linkId={result.player.id}
-      >
-        <div className="ml-2 md:ml-6 my-2 space-y-2 border-l border-slate-800 pl-2 md:pl-4 py-2">
-          <div className="bg-slate-900 border border-slate-700/50 rounded p-3 text-sm mb-4">
-            <div className="text-xs font-bold text-slate-400 mb-1 flex items-center gap-1"><Activity size={12}/> Analysis Summary</div>
-            <p className="text-slate-300 leading-relaxed">{String(result.summary)}</p>
-            {result.phase2Status === 'pending' && (
-              <p className="text-indigo-400 text-xs mt-2 flex items-center gap-1"><Users size={11}/> Worker analysis pending - click <strong>Load Worker Analysis</strong> to run full analysis.</p>
-            )}
-            {result.phase2Status === 'running' && (
-              <p className="text-slate-400 text-xs mt-2 animate-pulse flex items-center gap-1"><Activity size={11}/> Fetching companies, workers, and profiles...</p>
-            )}
-            {result.phase2Status === 'error' && (
-              <p className="text-red-400 text-xs mt-2 flex items-center gap-1"><AlertTriangle size={11}/> Worker analysis failed - check log for [CRITICAL] message. Only transaction flags shown.</p>
-            )}
-          </div>
-          <div className="text-xs uppercase font-bold text-slate-500 mb-2">Detected Anomalies</div>
-          {result.suspicions.map((suspicion, sIdx) => (
-            <div key={sIdx} className="bg-slate-900 border border-slate-800 rounded p-2 text-sm">
-              <div className="flex items-center gap-2 font-semibold text-slate-200 mb-1">
-                {suspicionTypeIcon(suspicion.type)}
-                {String(suspicion.type).replace(/_/g,' ').toUpperCase()}
-                <span className={`text-[10px] px-1.5 py-0.5 rounded border font-bold ml-auto ${suspicion.severity==='critical'?'bg-red-900/50 text-red-400 border-red-800':suspicion.severity==='high'?'bg-orange-900/50 text-orange-400 border-orange-800':'bg-yellow-900/50 text-yellow-500 border-yellow-800'}`}>{suspicion.severity.toUpperCase()}</span>
-              </div>
-              <p className="text-slate-400 text-xs mb-2 flex items-center gap-1 flex-wrap">
-                {String(suspicion.desc).split('Coins').map((part,i,arr)=>(
-                  <React.Fragment key={i}>{part}{i!==arr.length-1&&<Coins size={10} className="text-yellow-400 inline -mt-0.5"/>}</React.Fragment>
-                ))}
-              </p>
-
-              {/* Temporal clustering heatmap */}
-              {suspicion.type==='temporal_clustering'&&suspicion.hourBuckets&&<ActivityHeatmap hourBuckets={suspicion.hourBuckets}/>}
-
-              {suspicion.type==='tip_farming'&&suspicion.tipperCounts&&Object.keys(suspicion.tipperCounts).length>0?(
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
-                  {Object.entries(suspicion.tipperCounts).filter(([,c])=>c>=5).sort((a,b)=>b[1]-a[1]).map(([tipperId,count],tIdx)=>{
-                    const tipperName=globalCacheRef.current.names?.[tipperId];
-                    const meta=suspicion.tipperMeta?.[tipperId];
-                    const receivedPct=suspicion.totalTipsReceived>0?Math.round(count/suspicion.totalTipsReceived*100):null;
-                    const sentTotal=suspicion.tipperSentTotals?.[tipperId];
-                    const sentPct=sentTotal>0?Math.round(count/sentTotal*100):null;
-                    const coinsFromTipper=suspicion.tipperAmounts?.[tipperId];
-                    return (
-                      <a key={tIdx} href={`https://app.warera.io/user/${tipperId}`} target="_blank" rel="noopener noreferrer" className="bg-slate-950 p-2 rounded border border-slate-800 flex flex-col gap-1 hover:border-amber-500 transition-colors group block">
-                        <div className="flex justify-between items-center">
-                          <span className="font-mono text-xs text-blue-300 flex items-center gap-1">
-                            {tipperName||<span className="text-slate-500">{tipperId}</span>}
-                            {meta?.level!=null&&<span className="text-slate-500 text-[10px]">Lv.{meta.level}</span>}
-                            {meta?.isBanned&&<span className="bg-red-900/80 text-red-300 px-1 py-0.5 rounded text-[9px] border border-red-700/50 font-bold">[BANNED]</span>}
-                          </span>
-                          <span className="text-[10px] bg-amber-900/30 text-amber-400 border border-amber-800/50 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">{count} tips <Star size={8}/></span>
-                        </div>
-                        <div className="text-[10px] font-mono text-slate-400 flex flex-col gap-0.5 mt-0.5">
-                          {receivedPct!==null&&<span className="text-slate-400">{receivedPct}% of all tips received by target</span>}
-                          {sentPct!==null&&<span className="text-amber-500">{sentPct}% of all tips ever sent by this user</span>}
-                          {coinsFromTipper>0&&<span className="text-emerald-500 flex items-center gap-0.5">{coinsFromTipper.toFixed(1)} coins donated <Coins size={8}/></span>}
-                        </div>
-                      </a>
-                    );
-                  })}
-                </div>
-              ):suspicion.type==='transaction_abuse'?(
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
-                  {suspicion.partners.map((p,pIdx)=>{
-                    const partnerProfit=-(p.netProfit||0);
-                    let badgeColors="bg-slate-800 text-slate-300 border-slate-700", profitText="";
-                    if (Math.abs(partnerProfit)<0.01){badgeColors="bg-slate-800 text-slate-300 border-slate-700";profitText=`0.0 NET (${(p.volume||0).toFixed(1)} VOL)`;}
-                    else if (partnerProfit>0){badgeColors="bg-green-900/40 text-green-400 border-green-700/50";profitText=`+${partnerProfit.toFixed(1)} GAINED`;}
-                    else{badgeColors="bg-red-900/40 text-red-400 border-red-700/50";profitText=`-${Math.abs(partnerProfit).toFixed(1)} LOST`;}
-                    return (
-                      <a key={pIdx} href={`https://app.warera.io/user/${p.id}`} target="_blank" rel="noopener noreferrer" className="bg-slate-950 p-2 rounded border border-slate-800 flex flex-col gap-1 hover:border-blue-500 transition-colors group block">
-                        <div className="flex justify-between items-center">
-                          <span className="font-mono text-xs text-blue-300 flex items-center flex-wrap gap-0">
-                            {String(p.name)}{p.isBanned&&<span className="bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] ml-1 border border-red-700/50 font-bold tracking-wider">[BANNED]</span>}
-                            <span className={`${badgeColors} px-1.5 py-0.5 rounded text-[9px] ml-1 border font-bold tracking-wider flex items-center gap-1`}>[WASH: {p.txCount} | {profitText} <Coins size={8} className="inline -mt-0.5"/>]</span>
-                            {p.isWorker&&<span className="bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] ml-1 border border-red-700/50 font-bold tracking-wider">WORKER (2x)</span>}
-                          </span>
-                          <span className="text-[10px] bg-slate-800 px-1 rounded text-slate-400 group-hover:bg-blue-900 group-hover:text-blue-200 transition-colors whitespace-nowrap">Lvl {p.level} <ExternalLink size={8} className="inline ml-0.5 opacity-50"/></span>
-                        </div>
-                        <div className="text-[10px] font-mono mt-1 text-slate-500">Latest: {p.latestTrade?new Date(p.latestTrade).toLocaleDateString():'Unknown'}</div>
-                      </a>
-                    );
-                  })}
-                </div>
-              ):(
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-2">
-                  {(suspicion.workers||[]).map((w,wIdx)=>{
-                    let dispName=String(w.normalizedName), isSelf=false, isHermitNode=false;
-                    if (dispName.includes('(SELF)')){isSelf=true;dispName=dispName.replace(' (SELF)','');}
-                    if (dispName.includes('(HERMIT NODE)')){isHermitNode=true;dispName=dispName.replace(' (HERMIT NODE)','');}
-                    return (
-                      <a key={wIdx} href={`https://app.warera.io/user/${w.resolvedUser?._id||w.uid}`} target="_blank" rel="noopener noreferrer" className="bg-slate-950 p-2 rounded border border-slate-800 flex flex-col gap-1 hover:border-blue-500 transition-colors group block">
-                        <div className="flex justify-between items-start">
-                          <span className="font-mono text-xs text-blue-300 flex flex-col gap-1 w-full">
-                            <div className="flex flex-wrap items-center gap-1">
-                              <span>
-                                {suspicion.type==='naming_pattern'?(
-                                  dispName.split(new RegExp(`(${suspicion.overlapString})`, 'gi')).map((part,i)=>part.toLowerCase()===suspicion.overlapString.toLowerCase()?<span key={i} className="text-yellow-400 font-bold">{part}</span>:<span key={i}>{part}</span>)
-                                ):dispName}
-                              </span>
-                              {/* APM tooltip */}
-                              {suspicion.type==='superhuman_apm'&&suspicion.apmDetails&&isSelf&&(
-                                <span className="relative group/tooltip inline-block text-purple-400 cursor-help font-bold text-[10px] bg-purple-900/30 px-1.5 py-0.5 rounded border border-purple-800/50 ml-1">
-                                  [AVG GAP: {suspicion.apmDetails.avgGapMs}ms]
-                                  <div className="absolute left-0 top-full mt-2 hidden group-hover/tooltip:block bg-slate-800 text-slate-300 text-[10px] p-2 rounded shadow-xl border border-slate-600 z-[60] whitespace-nowrap min-w-[150px]">
-                                    <div className="font-bold text-slate-400 mb-1 border-b border-slate-700 pb-1">Listed Items (Window: {settings.apmWindowMs}ms)</div>
-                                    {(suspicion.apmDetails.txs||[]).slice(0,15).map((t,i)=><div key={i} className="flex justify-between gap-4 py-0.5 border-b border-slate-700/50 last:border-0"><span className="text-slate-400 font-mono">{new Date(t.offerTimeMs).toISOString().replace('T',' ').substring(0,23)}</span><span className="text-purple-300 font-mono text-right">{t.itemCode}</span></div>)}
-                                    {(suspicion.apmDetails.txs||[]).length>15&&<div className="text-slate-500 mt-1 italic">...and {(suspicion.apmDetails.txs||[]).length-15} more</div>}
-                                  </div>
-                                </span>
-                              )}
-                              {/* Pacing tooltip */}
-                              {suspicion.type==='script_pacing'&&suspicion.pacingDetails&&isSelf&&(
-                                <span className="relative group/tooltip inline-block text-pink-400 cursor-help font-bold text-[10px] bg-pink-900/30 px-1.5 py-0.5 rounded border border-pink-800/50 ml-1">
-                                  [PACING: {suspicion.pacingDetails.avgGapMs}ms{suspicion.pacingDetails.singleType?` / ${suspicion.pacingDetails.singleType}`:''}]
-                                  <div className="absolute left-0 top-full mt-2 hidden group-hover/tooltip:block bg-slate-800 text-slate-300 text-[10px] p-2 rounded shadow-xl border border-slate-600 z-[60] whitespace-nowrap min-w-[250px]">
-                                    <div className="font-bold text-slate-400 mb-1 border-b border-slate-700 pb-1">Identical Gaps (±{settings.pacingToleranceMs}ms)</div>
-                                    {(suspicion.pacingDetails.edges||[]).slice(0,15).map((edge,i)=><div key={i} className="flex justify-between items-center gap-4 py-0.5 border-b border-slate-700/50 last:border-0"><span className="text-pink-300 font-mono font-bold w-12">{edge.delta}ms</span><span className="text-slate-500 font-mono text-[9px]">{new Date(edge.end).toISOString().replace('T',' ').substring(0,23)}</span><span className="text-slate-400 font-mono text-right truncate max-w-[80px] capitalize">{edge.type}</span></div>)}
-                                    {(suspicion.pacingDetails.edges||[]).length>15&&<div className="text-slate-500 mt-1 italic">...and {(suspicion.pacingDetails.edges||[]).length-15} more</div>}
-                                  </div>
-                                </span>
-                              )}
-                              {/* Sniper tooltip */}
-                              {suspicion.type==='market_automation'&&suspicion.sniperDetails&&isSelf&&(
-                                <span className="relative group/tooltip inline-block text-red-400 cursor-help font-bold text-[10px] bg-red-900/30 px-1.5 py-0.5 rounded border border-red-800/50 ml-1">
-                                  [AVG: {Math.round((suspicion.sniperDetails||[]).reduce((a,b)=>a+b.timeMs,0)/Math.max(1,(suspicion.sniperDetails||[]).length))}ms]
-                                  <div className="absolute left-0 top-full mt-2 hidden group-hover/tooltip:block bg-slate-800 text-slate-300 text-[10px] p-2 rounded shadow-xl border border-slate-600 z-[60] whitespace-nowrap min-w-[250px]">
-                                    <div className="font-bold text-slate-400 mb-1 border-b border-slate-700 pb-1">Sniped Items (Fastest First)</div>
-                                    {[...(suspicion.sniperDetails||[])].sort((a,b)=>a.timeMs-b.timeMs).slice(0,15).map((t,i)=><div key={i} className="flex justify-between items-center gap-4 py-0.5 border-b border-slate-700/50 last:border-0"><span className="text-red-300 font-mono font-bold w-12">{t.timeMs}ms</span><span className="text-slate-500 font-mono text-[9px]">{new Date(t.offerTimeMs+t.timeMs).toISOString().replace('T',' ').substring(0,23)}</span><span className="text-slate-400 font-mono text-right truncate max-w-[80px]">{t.itemCode}</span></div>)}
-                                    {(suspicion.sniperDetails||[]).length>15&&<div className="text-slate-500 mt-1 italic">...and {(suspicion.sniperDetails||[]).length-15} more</div>}
-                                  </div>
-                                </span>
-                              )}
-                              {/* Hermit badge */}
-                              {suspicion.type==='hermit_network'&&isHermitNode&&<span className="text-orange-500 font-bold text-[10px] bg-orange-900/30 px-1.5 py-0.5 rounded border border-orange-800/50 ml-1">[HERMIT NODE]</span>}
-                              {/* Account age badge */}
-                              {suspicion.type==='newborn_wealthy'&&w.accountAgeDays!==undefined&&(
-                                <span className="text-cyan-400 font-bold text-[10px] bg-cyan-900/30 px-1.5 py-0.5 rounded border border-cyan-800/50 ml-1">
-                                  [{w.accountAgeDays}d OLD{w.wealthMaxAELevel>0?` | AE Lvl ${w.wealthMaxAELevel}`:''}]
-                                </span>
-                              )}
-                              {suspicion.type==='newborn_wealthy'&&w.wealthReason&&(
-                                <span className="text-slate-500 text-[9px] block mt-0.5 normal-case font-normal">{w.wealthReason}</span>
-                              )}
-                              {/* Status badges */}
-                              {w.isBanned&&<span className="bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] border border-red-700/50 font-bold tracking-wider">[BANNED]</span>}
-                              {w.isActive===false&&!w.isBanned&&<span className="bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] border border-red-700/50 font-bold tracking-wider">[INACTIVE]</span>}
-                              {w.noBonusPercentage>0&&suspicion.type==='no_production_bonus'&&<span className="bg-orange-900/80 text-orange-300 px-1.5 py-0.5 rounded text-[9px] border border-orange-700/50 font-bold tracking-wider">[{w.noBonusPercentage}% NO-PROD, {w.noBonusCount}/{w.totalOwnedCount}]</span>}
-                              {w.isLaundering&&suspicion.type==='money_laundering'&&<span className="bg-red-900/80 text-red-300 px-1.5 py-0.5 rounded text-[9px] border border-red-700/50 font-bold tracking-wider flex items-center gap-1">[{w.largeDonations30Days.toFixed(1)} <Coins size={8} className="inline -mt-0.5"/> IN LARGE DONATIONS]</span>}
-                              {suspicion.type==='fidelity_ring'&&<span className="text-rose-400 font-bold text-[10px] bg-rose-900/30 px-1.5 py-0.5 rounded border border-rose-800/50 ml-1">[FIDELITY 10/10]</span>}
-                            </div>
-                          </span>
-                          <span className="text-[10px] bg-slate-800 px-1 rounded text-slate-400 group-hover:bg-blue-900 group-hover:text-blue-200 transition-colors whitespace-nowrap shrink-0 ml-2 mt-0.5">Lvl {w.normalizedLevel} <ExternalLink size={8} className="inline ml-0.5 opacity-50"/></span>
-                        </div>
-                        {(w.normalizedWage!==undefined||w.normalizedFidelity!==undefined)&&(
-                          <div className="flex justify-between items-center text-[10px] font-mono mt-1">
-                            {w.normalizedWage!==undefined?<span className={w.normalizedWage<=settings.suspiciousWageThreshold?'text-red-400':'text-green-400'}>Wage: {Number(w.normalizedWage).toFixed(3)}</span>:<span/>}
-                            {w.normalizedFidelity!==undefined&&<span className="text-slate-500">Fid: <span className={w.normalizedFidelity===10?'text-blue-400 font-bold':'text-slate-300'}>{w.normalizedFidelity}</span>/10</span>}
-                          </div>
-                        )}
-                      </a>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </TreeNode>
-    );
-  };
-
   return (
     <div style={{height:'100vh',display:'flex',flexDirection:'column',overflow:'hidden',background:'#070b18',color:'#eaf0ff',fontFamily:"IBM Plex Sans, system-ui, sans-serif"}}>
 
@@ -2612,14 +2280,14 @@ export function WarEraOracle() {
       </div>
       {isRateLimited&&(
         <div style={{flexShrink:0,background:'rgba(255,171,61,0.12)',borderBottom:'1px solid rgba(255,171,61,0.40)',padding:'4px 18px',textAlign:'center',fontSize:11,color:'#ffab3d',fontFamily:"IBM Plex Mono, monospace",fontWeight:700,letterSpacing:'0.08em'}}>
-          PAUSED: API COOLDOWN — {limitTimer}s REMAINING
+          PAUSED: API COOLDOWN - {limitTimer}s REMAINING
         </div>
       )}
 
       {/* Session restore prompt */}
       {showRestorePrompt&&savedSession&&(
         <div style={{flexShrink:0,background:'rgba(255,171,61,0.10)',borderBottom:'1px solid rgba(255,171,61,0.40)',padding:'8px 18px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-          <span style={{color:'#ffab3d',fontSize:13,fontWeight:500}}>Previous scan — {Object.values(savedSession.findings).flat().length} flags, saved {new Date(savedSession.savedAt).toLocaleTimeString()}</span>
+          <span style={{color:'#ffab3d',fontSize:13,fontWeight:500}}>Previous scan - {Object.values(savedSession.findings).flat().length} flags, saved {new Date(savedSession.savedAt).toLocaleTimeString()}</span>
           <div style={{display:'flex',gap:8}}>
             <button onClick={()=>{setFindings(savedSession.findings);setShowRestorePrompt(false);}} style={{padding:'4px 10px',background:'rgba(255,171,61,0.25)',border:'1px solid rgba(255,171,61,0.50)',borderRadius:6,color:'#ffab3d',fontSize:11,fontWeight:600,cursor:'pointer'}}>Restore</button>
             <button onClick={()=>{setShowRestorePrompt(false);sessionStorage.removeItem('warera_oracle_session');}} style={{padding:'4px 10px',background:'#121b35',border:'1px solid #1f2b4e',borderRadius:6,color:'#9fb0d4',fontSize:11,fontWeight:600,cursor:'pointer'}}>Dismiss</button>
@@ -2659,16 +2327,16 @@ export function WarEraOracle() {
               disabled={isScanning||!!targetUserId||availableRegions.length===0||!apiKey.startsWith('wae_')}>
               {availableRegions.length===0&&<option value="">{!apiKey.startsWith('wae_')?'Awaiting API key...':'Pinging...'}</option>}
               {availableRegions.length>0&&<option value="ALL">Global (All Regions)</option>}
-              {availableRegions.map((r: any)=><option key={r._id||r.id} value={r._id||r.id}>{r.name}</option>)}
+              {availableRegions.map((r)=><option key={r._id||r.id} value={r._id||r.id}>{r.name}</option>)}
             </select>
           </div>
           {!isScanning?(
             <div style={{display:'flex',gap:4}}>
-              <button onClick={startScan} style={{padding:'5px 14px',background:'#ff5d6c',border:'none',borderRadius:5,color:'#070b18',fontSize:11.5,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap'}}>
+              <button onClick={() => startScan(null)} style={{padding:'5px 14px',background:'#ff5d6c',border:'none',borderRadius:5,color:'#070b18',fontSize:11.5,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap'}}>
                 <Play size={11} fill="currentColor"/> Scan
               </button>
               {Object.keys(watchlist).length>0&&(
-                <button onClick={()=>{watchlistScanRef.current=true;startScan();}} style={{padding:'5px 9px',background:'rgba(255,171,61,0.20)',border:'1px solid rgba(255,171,61,0.50)',borderRadius:5,color:'#ffab3d',fontSize:11,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
+                <button onClick={()=>{watchlistScanRef.current=true;startScan(null);}} style={{padding:'5px 9px',background:'rgba(255,171,61,0.20)',border:'1px solid rgba(255,171,61,0.50)',borderRadius:5,color:'#ffab3d',fontSize:11,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
                   <Bookmark size={10} fill="currentColor"/> {Object.keys(watchlist).length}
                 </button>
               )}
@@ -2717,7 +2385,7 @@ export function WarEraOracle() {
         )}
       </header>
 
-      {/* â"€â"€ THREE-PANE BODY â"€â"€ */}
+      {/* ── THREE-PANE BODY ── */}
       <div style={{flex:1,display:'flex',flexDirection:'row',overflow:'hidden',minHeight:0}}>
 
         {/* LEFT: Case List 300px */}
@@ -2726,14 +2394,14 @@ export function WarEraOracle() {
           <div style={{padding:'12px 14px 8px',borderBottom:'1px solid #1f2b4e',flexShrink:0}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
               <span style={{fontSize:12,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase'}}>Case List</span>
-              <span style={{fontSize:10.5,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96'}}>{filteredResults.length} · by score</span>
+              <span style={{fontSize:10.5,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96'}}>{filteredResults.length} - by score</span>
             </div>
             <div style={{display:'flex',alignItems:'center',gap:6,background:'#060a16',border:'1px solid #2e3f6a',borderRadius:6,padding:'5px 8px',marginBottom:8}}>
               <Search size={11} style={{color:'#5d6e96',flexShrink:0}}/>
               <input value={listSearch} onChange={e=>setListSearch(e.target.value)} placeholder="Filter suspects..." style={{background:'transparent',border:'none',outline:'none',color:'#eaf0ff',fontSize:12,flex:1,fontFamily:"IBM Plex Sans, system-ui, sans-serif"}}/>
             </div>
             <div style={{display:'flex',gap:4}}>
-              {(['all','critical','high','medium'] as const).map(f=>(
+              {['all','critical','high','medium'].map(f=>(
                 <button key={f} onClick={()=>setListFilter(f)} style={{padding:'3px 8px',borderRadius:99,fontSize:10,fontWeight:600,cursor:'pointer',background:listFilter===f?'rgba(79,195,232,0.12)':'#121b35',border:`1px solid ${listFilter===f?'#2e3f6a':'#1f2b4e'}`,color:listFilter===f?'#4fc3e8':'#5d6e96'}}>
                   {f==='all'?'All':f.charAt(0).toUpperCase()+f.slice(1)}
                 </button>
@@ -2757,7 +2425,7 @@ export function WarEraOracle() {
                     <span style={{fontSize:10.5,fontWeight:700,color:'#9fb0d4',letterSpacing:'0.04em',textTransform:'uppercase'}}>{country}</span>
                     <span style={{fontSize:9.5,fontFamily:"IBM Plex Mono, monospace",background:'rgba(255,93,108,0.11)',color:'#ff5d6c',border:'1px solid rgba(255,93,108,0.42)',borderRadius:4,padding:'1px 6px',fontWeight:700}}>{results.length}</span>
                   </div>
-                  {results.map((r: any)=>{
+                  {results.map((r)=>{
                     const tier=maxSevTierOf(r);
                     const score=r.adjustedDetections??r.detections;
                     const isActive=r.player.id===activeSuspectId;
@@ -2776,7 +2444,7 @@ export function WarEraOracle() {
                             {r.player.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px',flexShrink:0}}>BANNED</span>}
                           </div>
                           <div style={{fontSize:10,color:'#5d6e96',display:'flex',gap:5,alignItems:'center'}}>
-                            <span>{ringCount>0?`Ring · ${ringCount+1}`:'Solo'}</span>
+                            <span>{ringCount>0?`Ring - ${ringCount+1}`:'Solo'}</span>
                             {watchlist[r.player.id]&&<span style={{fontSize:9,fontWeight:700,color:'#ffab3d'}}>WATCH</span>}
                           </div>
                         </div>
@@ -2813,7 +2481,7 @@ export function WarEraOracle() {
                       <a href={`https://app.warera.io/user/${activeResult.player.id}`} target="_blank" rel="noopener noreferrer" style={{color:'#4fc3e8',flexShrink:0}}><ExternalLink size={13}/></a>
                     </div>
                     <div style={{fontSize:12,color:'#9fb0d4',marginBottom:10}}>
-                      · {activeResult.country}{activeResult.player.level&&<span style={{fontFamily:"IBM Plex Mono, monospace"}}> · Lv.{activeResult.player.level}</span>}
+                      - {activeResult.country}{activeResult.player.level&&<span style={{fontFamily:"IBM Plex Mono, monospace"}}> - Lv.{activeResult.player.level}</span>}
                     </div>
                     <p style={{fontSize:12.5,lineHeight:1.55,color:'#9fb0d4',maxWidth:660}}>{String(activeResult.summary)}</p>
                     {activeResult.phase2Status==='pending'&&<p style={{marginTop:8,fontSize:11.5,color:'#4fc3e8',display:'flex',alignItems:'center',gap:6}}><Users size={11}/> Worker analysis pending - click Load Worker Analysis in the rail.</p>}
@@ -2833,7 +2501,7 @@ export function WarEraOracle() {
                         {activeResult.scoreBreakdown&&activeResult.scoreBreakdown.length>0&&(
                           <div className="hidden group-hover:block" style={{position:'absolute',right:0,top:'110%',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:8,padding:12,zIndex:50,minWidth:220,boxShadow:'0 8px 24px rgba(0,0,0,0.6)'}}>
                             <div style={{fontSize:10,fontWeight:700,color:'#9fb0d4',marginBottom:8,letterSpacing:'0.06em',textTransform:'uppercase'}}>Score Breakdown</div>
-                            {activeResult.scoreBreakdown.map((item: any,i: number)=>{
+                            {activeResult.scoreBreakdown.map((item,i)=>{
                               const sv=item.severity||'medium';
                               const tc=sv==='critical'?'#ff5d6c':sv==='high'?'#ffab3d':'#ffd84d';
                               return <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',paddingBottom:4,marginBottom:4,borderBottom:i<activeResult.scoreBreakdown.length-1?'1px solid #1f2b4e':'none'}}>
@@ -2854,10 +2522,10 @@ export function WarEraOracle() {
                 <div style={{fontSize:11,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase',marginBottom:20}}>
                   Observed Signals - {orderedSuspicions.length}, ordered by strength
                 </div>
-                {orderedSuspicions.map((suspicion: any, sIdx: number)=>{
+                {orderedSuspicions.map((suspicion, sIdx)=>{
                   const tier=sevTierOf(suspicion.type);
                   const detail=FINDING_DETAIL[suspicion.type];
-                  const friendlyTitle=String(suspicion.type).replace(/_/g,' ').replace(/\b\w/g,(c: string)=>c.toUpperCase());
+                  const friendlyTitle=String(suspicion.type).replace(/_/g,' ').replace(/\b\w/g,(c)=>c.toUpperCase());
                   return (
                     <div key={sIdx} style={{display:'flex',gap:14,marginBottom:28,alignItems:'flex-start'}}>
                       {/* Number circle + connector */}
@@ -2882,7 +2550,7 @@ export function WarEraOracle() {
                           )}
                         </div>
                         <p style={{fontSize:13,lineHeight:1.55,color:'#9fb0d4',maxWidth:600,marginBottom:8}}>
-                          {String(suspicion.desc).split('Coins').map((part: string,i: number,arr: string[])=>(
+                          {String(suspicion.desc).split('Coins').map((part,i,arr)=>(
                             <React.Fragment key={i}>{part}{i!==arr.length-1&&<Coins size={10} style={{display:'inline',color:'#ffd84d',verticalAlign:'middle',marginBottom:1}}/>}</React.Fragment>
                           ))}
                         </p>
@@ -2890,7 +2558,7 @@ export function WarEraOracle() {
                         {/* Tip farming cards */}
                         {suspicion.type==='tip_farming'&&suspicion.tipperCounts&&Object.keys(suspicion.tipperCounts).length>0&&(
                           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:8}}>
-                            {Object.entries(suspicion.tipperCounts).filter(([,c]: any)=>c>=5).sort((a: any,b: any)=>b[1]-a[1]).map(([tipperId,count]: any,tIdx: number)=>{
+                            {Object.entries(suspicion.tipperCounts).filter(([,c])=>c>=5).sort((a,b)=>b[1]-a[1]).map(([tipperId,count],tIdx)=>{
                               const tipperName=globalCacheRef.current.names?.[tipperId];
                               const meta=suspicion.tipperMeta?.[tipperId];
                               const receivedPct=suspicion.totalTipsReceived>0?Math.round(count/suspicion.totalTipsReceived*100):null;
@@ -2920,7 +2588,7 @@ export function WarEraOracle() {
                         {/* Transaction abuse cards */}
                         {suspicion.type==='transaction_abuse'&&(suspicion.partners||[]).length>0&&(
                           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:8}}>
-                            {(suspicion.partners||[]).map((p: any,pIdx: number)=>{
+                            {(suspicion.partners||[]).map((p,pIdx)=>{
                               const partnerProfit=-(p.netProfit||0);
                               const profitColor=Math.abs(partnerProfit)<0.01?'#5d6e96':partnerProfit>0?'#3fd0a3':'#ff5d6c';
                               const profitText=Math.abs(partnerProfit)<0.01?`0.0 NET (${(p.volume||0).toFixed(1)} VOL)`:partnerProfit>0?`+${partnerProfit.toFixed(1)} gained`:`-${Math.abs(partnerProfit).toFixed(1)} lost`;
@@ -2936,7 +2604,7 @@ export function WarEraOracle() {
                                     <span style={{fontSize:10,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace",flexShrink:0}}>Lv.{p.level}</span>
                                   </div>
                                   <div style={{display:'flex',justifyContent:'space-between',fontSize:10,fontFamily:"IBM Plex Mono, monospace"}}>
-                                    <span style={{color:'#5d6e96'}}>{p.txCount} trades · {p.latestTrade?new Date(p.latestTrade).toLocaleDateString():'?'}</span>
+                                    <span style={{color:'#5d6e96'}}>{p.txCount} trades - {p.latestTrade?new Date(p.latestTrade).toLocaleDateString():'?'}</span>
                                     <span style={{color:profitColor,fontWeight:700}}>{profitText}</span>
                                   </div>
                                 </a>
@@ -2947,7 +2615,7 @@ export function WarEraOracle() {
                         {/* Worker cards for all other types */}
                         {!['tip_farming','transaction_abuse','temporal_clustering'].includes(suspicion.type)&&(suspicion.workers||[]).length>0&&(
                           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:8}}>
-                            {(suspicion.workers||[]).map((w: any,wIdx: number)=>{
+                            {(suspicion.workers||[]).map((w,wIdx)=>{
                               let dispName=String(w.normalizedName), isSelf=false, isHermitNode=false;
                               if(dispName.includes('(SELF)')){isSelf=true;dispName=dispName.replace(' (SELF)','');}
                               if(dispName.includes('(HERMIT NODE)')){isHermitNode=true;dispName=dispName.replace(' (HERMIT NODE)','');}
@@ -2958,7 +2626,7 @@ export function WarEraOracle() {
                                     <div style={{minWidth:0,flex:1}}>
                                       <div style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,color:'#4fc3e8',display:'flex',flexWrap:'wrap',alignItems:'center',gap:4}}>
                                         {suspicion.type==='naming_pattern'
-                                          ?dispName.split(new RegExp(`(${suspicion.overlapString})`, 'gi')).map((part: string,i: number)=>
+                                          ?dispName.split(new RegExp(`(${suspicion.overlapString})`, 'gi')).map((part,i)=>
                                               part.toLowerCase()===suspicion.overlapString?.toLowerCase()?<span key={i} style={{color:'#ffd84d',fontWeight:700}}>{part}</span>:<span key={i}>{part}</span>)
                                           :dispName}
                                         {suspicion.type==='superhuman_apm'&&suspicion.apmDetails&&isSelf&&(
@@ -2966,7 +2634,7 @@ export function WarEraOracle() {
                                             AVG {suspicion.apmDetails.avgGapMs}ms
                                             <div className="hidden group-hover/tooltip:block" style={{position:'absolute',left:0,top:'120%',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:8,padding:10,zIndex:60,minWidth:260,fontSize:10,boxShadow:'0 8px 24px rgba(0,0,0,0.6)'}}>
                                               <div style={{fontWeight:700,color:'#9fb0d4',marginBottom:6}}>Listed Items (Window: {settings.apmWindowMs}ms)</div>
-                                              {(suspicion.apmDetails.txs||[]).slice(0,15).map((t: any,i: number)=><div key={i} style={{display:'flex',justifyContent:'space-between',gap:10,paddingBottom:3,marginBottom:3,borderBottom:'1px solid #1f2b4e',color:'#9fb0d4'}}><span>{new Date(t.offerTimeMs).toISOString().substring(0,19).replace('T',' ')}</span><span style={{color:'#4fc3e8'}}>{t.itemCode}</span></div>)}
+                                              {(suspicion.apmDetails.txs||[]).slice(0,15).map((t,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',gap:10,paddingBottom:3,marginBottom:3,borderBottom:'1px solid #1f2b4e',color:'#9fb0d4'}}><span>{new Date(t.offerTimeMs).toISOString().substring(0,19).replace('T',' ')}</span><span style={{color:'#4fc3e8'}}>{t.itemCode}</span></div>)}
                                               {(suspicion.apmDetails.txs||[]).length>15&&<div style={{color:'#5d6e96',fontStyle:'italic'}}>+{(suspicion.apmDetails.txs||[]).length-15} more</div>}
                                             </div>
                                           </span>
@@ -2976,17 +2644,17 @@ export function WarEraOracle() {
                                             {suspicion.pacingDetails.avgGapMs}ms gap{suspicion.pacingDetails.singleType?` / ${suspicion.pacingDetails.singleType}`:''}
                                             <div className="hidden group-hover/tooltip:block" style={{position:'absolute',left:0,top:'120%',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:8,padding:10,zIndex:60,minWidth:280,fontSize:10,boxShadow:'0 8px 24px rgba(0,0,0,0.6)'}}>
                                               <div style={{fontWeight:700,color:'#9fb0d4',marginBottom:6}}>Identical Gaps (±{settings.pacingToleranceMs}ms)</div>
-                                              {(suspicion.pacingDetails.edges||[]).slice(0,15).map((edge: any,i: number)=><div key={i} style={{display:'flex',justifyContent:'space-between',gap:10,paddingBottom:3,marginBottom:3,borderBottom:'1px solid #1f2b4e',color:'#9fb0d4'}}><span style={{color:'#ff5d6c',fontWeight:700}}>{edge.delta}ms</span><span>{new Date(edge.end).toISOString().substring(0,19).replace('T',' ')}</span><span style={{textTransform:'capitalize'}}>{edge.type}</span></div>)}
+                                              {(suspicion.pacingDetails.edges||[]).slice(0,15).map((edge,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',gap:10,paddingBottom:3,marginBottom:3,borderBottom:'1px solid #1f2b4e',color:'#9fb0d4'}}><span style={{color:'#ff5d6c',fontWeight:700}}>{edge.delta}ms</span><span>{new Date(edge.end).toISOString().substring(0,19).replace('T',' ')}</span><span style={{textTransform:'capitalize'}}>{edge.type}</span></div>)}
                                               {(suspicion.pacingDetails.edges||[]).length>15&&<div style={{color:'#5d6e96',fontStyle:'italic'}}>+{(suspicion.pacingDetails.edges||[]).length-15} more</div>}
                                             </div>
                                           </span>
                                         )}
                                         {suspicion.type==='market_automation'&&suspicion.sniperDetails&&isSelf&&(
                                           <span className="group/tooltip" style={{position:'relative',fontSize:9,color:'#ff5d6c',background:'rgba(255,93,108,0.10)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:4,padding:'1px 5px',cursor:'help',fontWeight:700}}>
-                                            AVG {Math.round((suspicion.sniperDetails||[]).reduce((a: number,b: any)=>a+b.timeMs,0)/Math.max(1,(suspicion.sniperDetails||[]).length))}ms
+                                            AVG {Math.round((suspicion.sniperDetails||[]).reduce((a,b)=>a+b.timeMs,0)/Math.max(1,(suspicion.sniperDetails||[]).length))}ms
                                             <div className="hidden group-hover/tooltip:block" style={{position:'absolute',left:0,top:'120%',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:8,padding:10,zIndex:60,minWidth:280,fontSize:10,boxShadow:'0 8px 24px rgba(0,0,0,0.6)'}}>
                                               <div style={{fontWeight:700,color:'#9fb0d4',marginBottom:6}}>Sniped Items (Fastest First)</div>
-                                              {[...(suspicion.sniperDetails||[])].sort((a: any,b: any)=>a.timeMs-b.timeMs).slice(0,15).map((t: any,i: number)=><div key={i} style={{display:'flex',justifyContent:'space-between',gap:10,paddingBottom:3,marginBottom:3,borderBottom:'1px solid #1f2b4e',color:'#9fb0d4'}}><span style={{color:'#ff5d6c',fontWeight:700}}>{t.timeMs}ms</span><span>{new Date(t.offerTimeMs+t.timeMs).toISOString().substring(0,19).replace('T',' ')}</span><span>{t.itemCode}</span></div>)}
+                                              {[...(suspicion.sniperDetails||[])].sort((a,b)=>a.timeMs-b.timeMs).slice(0,15).map((t,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',gap:10,paddingBottom:3,marginBottom:3,borderBottom:'1px solid #1f2b4e',color:'#9fb0d4'}}><span style={{color:'#ff5d6c',fontWeight:700}}>{t.timeMs}ms</span><span>{new Date(t.offerTimeMs+t.timeMs).toISOString().substring(0,19).replace('T',' ')}</span><span>{t.itemCode}</span></div>)}
                                               {(suspicion.sniperDetails||[]).length>15&&<div style={{color:'#5d6e96',fontStyle:'italic'}}>+{(suspicion.sniperDetails||[]).length-15} more</div>}
                                             </div>
                                           </span>
@@ -3050,14 +2718,14 @@ export function WarEraOracle() {
               {/* CASE FACTS */}
               <div style={{marginBottom:20}}>
                 <div style={{fontSize:10.5,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase',marginBottom:8}}>Case Facts</div>
-                {([
+                {[
                   {label:'Region', value:activeResult.country, mono:false},
                   activeResult.player.level?{label:'Level', value:`Lv. ${activeResult.player.level}`, mono:true}:null,
                   activeResult.player.accountAgeDays!=null?{label:'Account age', value:`${Math.floor(activeResult.player.accountAgeDays)} days`, mono:true}:null,
-                  ringSize>0?{label:'Ring size', value:`${ringSize+1}${ringBanned>0?` · ${ringBanned} banned`:''}`, mono:true, color:ringBanned>0?'#ff5d6c':undefined}:null,
+                  ringSize>0?{label:'Ring size', value:`${ringSize+1}${ringBanned>0?` - ${ringBanned} banned`:''}`, mono:true, color:ringBanned>0?'#ff5d6c':undefined}:null,
                   activeWashPartners.length>0?{label:'Net coin flow', value:Math.abs(netFlow)<0.01?'0.0':netFlow>0?`+${netFlow.toFixed(1)}`:`-${Math.abs(netFlow).toFixed(1)}`, mono:true, color:Math.abs(netFlow)<0.01?'#5d6e96':netFlow>0?'#3fd0a3':'#ff5d6c'}:null,
                   critCount>0?{label:'Critical signals', value:`${critCount}`, mono:true, color:'#ff5d6c'}:null,
-                ] as any[]).filter(Boolean).map((row: any,i: number,arr: any[])=>(
+                ].filter(Boolean).map((row,i,arr)=>(
                   <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'5px 0',borderBottom:i<arr.length-1?'1px solid #1f2b4e':'none'}}>
                     <span style={{fontSize:11.5,color:'#5d6e96'}}>{row.label}</span>
                     <span style={{fontSize:11.5,fontFamily:row.mono?"'IBM Plex Mono', monospace":undefined,color:row.color||'#eaf0ff',fontWeight:row.color?600:400}}>{row.value}</span>
@@ -3069,7 +2737,7 @@ export function WarEraOracle() {
                 <div style={{marginBottom:20}}>
                   <div style={{fontSize:10.5,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase',marginBottom:8}}>Ring - Coin Flow</div>
                   <div style={{display:'flex',flexDirection:'column',gap:8}}>
-                    {activeWashPartners.map(([partnerId, pData]: [string, any])=>{
+                    {activeWashPartners.map(([partnerId, pData])=>{
                       const profit=pData.netProfit||0;
                       const profitColor=Math.abs(profit)<0.01?'#5d6e96':profit>0?'#3fd0a3':'#ff5d6c';
                       const profitText=Math.abs(profit)<0.01?'0.0 NET':profit>0?`+${profit.toFixed(1)}`:`-${Math.abs(profit).toFixed(1)}`;
@@ -3099,7 +2767,7 @@ export function WarEraOracle() {
                 </div>
               )}
               <div style={{fontSize:10.5,color:'#5d6e96',paddingBottom:16,borderTop:'1px solid #1f2b4e',paddingTop:10}}>
-                Generated {new Date().toLocaleDateString()} · {totalFlags} flagged
+                Generated {new Date().toLocaleDateString()} - {totalFlags} flagged
               </div>
             </div>
           ):(
@@ -3110,7 +2778,7 @@ export function WarEraOracle() {
         </div>
       </div>
 
-      {/* â"€â"€ FOOTER: LogBar â"€â"€ */}
+      {/* ── FOOTER: LogBar ── */}
       <div style={{flexShrink:0,background:'#0c1226',borderTop:'1px solid #1f2b4e',overflow:'hidden'}}>
         <div onClick={()=>setLogExpanded(e=>!e)} style={{height:40,display:'flex',alignItems:'center',padding:'0 18px',cursor:'pointer',userSelect:'none',justifyContent:'space-between'}}>
           <div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -3124,7 +2792,7 @@ export function WarEraOracle() {
         </div>
         {logExpanded&&(
           <div style={{height:200,background:'#060a16',borderTop:'1px solid #1f2b4e',padding:'8px 12px',overflowY:'auto',fontFamily:"IBM Plex Mono, monospace",fontSize:11,display:'flex',flexDirection:'column',gap:2}}>
-            {logs.map((log: any,i: number)=>(
+            {logs.map((log,i)=>(
               <div key={i} style={{color:log.type==='warning'?'#ff5d6c':log.type==='debug'?'#2e3f6a':'#5d6e96',display:'flex',gap:8}}>
                 <span style={{color:'#1f2b4e',flexShrink:0}}>[{log.time}]</span>
                 <span style={{wordBreak:'break-all'}}>{log.msg}</span>
@@ -3135,7 +2803,7 @@ export function WarEraOracle() {
         )}
       </div>
 
-      {/* â"€â"€ CONFIG POPOVER â"€â"€ */}
+      {/* ── CONFIG POPOVER ── */}
       {configOpen&&(
         <div style={{position:'fixed',top:74,right:18,zIndex:200,background:'#121b35',border:'1px solid #2e3f6a',borderRadius:9,padding:20,width:330,boxShadow:'0 12px 40px rgba(0,0,0,0.75)',maxHeight:'calc(100vh - 88px)',overflowY:'auto'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
@@ -3144,12 +2812,12 @@ export function WarEraOracle() {
           </div>
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
             {[
-              {label:'Suspicious Wage Threshold',key:'suspiciousWageThreshold',min:0.01,max:0.15,step:0.001,fmt:(v: number)=>v.toFixed(3),isFloat:true},
-              {label:'Wealth Anomaly Threshold',key:'wealthAnomalyMultiplier',min:1,max:10,step:0.5,fmt:(v: number)=>`${v}x`,isFloat:true},
-              {label:'Sniper Threshold (ms)',key:'sniperThresholdMs',min:100,max:5000,step:100,fmt:(v: number)=>`${v}`,isFloat:false},
-              {label:'Superhuman APM Window (ms)',key:'apmWindowMs',min:100,max:20000,step:100,fmt:(v: number)=>`${v}`,isFloat:false},
-              {label:'Pacing Tolerance (ms)',key:'pacingToleranceMs',min:1,max:100,step:1,fmt:(v: number)=>`+/-${v}`,isFloat:false},
-              {label:'Pacing Min Hits',key:'pacingMinHits',min:4,max:20,step:1,fmt:(v: number)=>`${v}`,isFloat:false},
+              {label:'Suspicious Wage Threshold',key:'suspiciousWageThreshold',min:0.01,max:0.15,step:0.001,fmt:(v)=>v.toFixed(3),isFloat:true},
+              {label:'Wealth Anomaly Threshold',key:'wealthAnomalyMultiplier',min:1,max:10,step:0.5,fmt:(v)=>`${v}x`,isFloat:true},
+              {label:'Sniper Threshold (ms)',key:'sniperThresholdMs',min:100,max:5000,step:100,fmt:(v)=>`${v}`,isFloat:false},
+              {label:'Superhuman APM Window (ms)',key:'apmWindowMs',min:100,max:20000,step:100,fmt:(v)=>`${v}`,isFloat:false},
+              {label:'Pacing Tolerance (ms)',key:'pacingToleranceMs',min:1,max:100,step:1,fmt:(v)=>`+/-${v}`,isFloat:false},
+              {label:'Pacing Min Hits',key:'pacingMinHits',min:4,max:20,step:1,fmt:(v)=>`${v}`,isFloat:false},
             ].map(({label,key,min,max,step,fmt,isFloat})=>(
               <div key={key}>
                 <div style={{display:'flex',justifyContent:'space-between',marginBottom:3}}>
@@ -3171,8 +2839,8 @@ export function WarEraOracle() {
 
       {/* ── WATCHLIST PANEL ── */}
       {showWatchlist&&Object.keys(watchlist).length>0&&(()=>{
-        const grouped: Record<string,any[]>={};
-        Object.values(watchlist).forEach((p: any)=>{const c=p.country||'Unknown';if(!grouped[c])grouped[c]=[];grouped[c].push(p);});
+        const grouped={};
+        Object.values(watchlist).forEach((p)=>{const c=p.country||'Unknown';if(!grouped[c])grouped[c]=[];grouped[c].push(p);});
         const countries=Object.keys(grouped).sort();
         return(
         <div style={{position:'fixed',top:70,right:configOpen?390:18,zIndex:150,background:'#121b35',border:'1px solid rgba(255,171,61,0.50)',borderRadius:9,padding:16,width:300,maxHeight:420,overflowY:'auto',boxShadow:'0 8px 32px rgba(0,0,0,0.6)'}}>
@@ -3185,7 +2853,7 @@ export function WarEraOracle() {
               <div key={country}>
                 <div style={{fontSize:10,fontWeight:700,color:'#5d6e96',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:4,paddingBottom:3,borderBottom:'1px solid #1f2b4e'}}>{country}</div>
                 <div style={{display:'flex',flexDirection:'column',gap:4}}>
-                  {grouped[country].map((p: any)=>(
+                  {grouped[country].map((p)=>(
                     <div key={p.id} style={{display:'flex',alignItems:'center',background:'#060a16',border:'1px solid #1f2b4e',borderRadius:6,padding:'5px 8px',gap:6}}>
                       <div style={{minWidth:0,flex:1}}>
                         <a href={`https://app.warera.io/user/${p.id}`} target="_blank" rel="noopener noreferrer" style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,color:'#4fc3e8',display:'block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',textDecoration:'none'}}>{p.name}</a>
