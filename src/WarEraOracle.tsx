@@ -19,13 +19,16 @@ const WarEraAPI = {
     if (activeKey && activeKey.trim() !== '') headers['X-API-Key'] = activeKey.trim();
     let res;
     try {
+      const ctrl = new AbortController();
+      const tId = setTimeout(() => ctrl.abort(), 25000);
       if (isGateway) {
-        res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+        res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal: ctrl.signal });
       } else {
         const input = encodeURIComponent(JSON.stringify({ "0": payload }));
-        res = await fetch(`${url}?batch=1&input=${input}`, { headers });
+        res = await fetch(`${url}?batch=1&input=${input}`, { headers, signal: ctrl.signal });
       }
-    } catch (e) { throw new Error(`Network Error: ${e.message}`); }
+      clearTimeout(tId);
+    } catch (e) { throw new Error(e.name === 'AbortError' ? `Request timed out (25s): ${endpoint}` : `Network Error: ${e.message}`); }
     const text = await res.text();
     if (res.status === 429 || text.includes('Rate limit exceeded') || text.includes('"status":429')) throw new Error("RATE LIMIT TRIGGERED");
     if (!res.ok) {
