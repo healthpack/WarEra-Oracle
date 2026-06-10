@@ -8,9 +8,9 @@ import {
   Baby, Moon, Heart, Timer, CheckSquare, Bookmark
 } from 'lucide-react';
 
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //  API LAYER
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 const WarEraAPI = {
   fetch: async (endpoint, payload, activeKey, baseUrl) => {
     const isGateway = baseUrl.includes('gateway');
@@ -49,9 +49,9 @@ const WarEraAPI = {
   }
 };
 
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //  DETECTION MODULES  (split from monolithic analyzePlayer)
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 /** Returns suspicion objects for automation-pattern heuristics */
 const detectAutomation = (player, settings) => {
@@ -66,7 +66,7 @@ const detectAutomation = (player, settings) => {
     });
     const maxHour = Object.entries(hourCounts).sort((a,b)=>b[1]-a[1])[0];
     const concentrationNote = maxHour && maxHour[1] >= Math.ceil(player.sniperHits * 0.6)
-      ? ` All ${maxHour[1]} snipes concentrated in UTC hour ${maxHour[0]}:00 — strongly indicates automated scheduling.`
+      ? ` All ${maxHour[1]} snipes concentrated in UTC hour ${maxHour[0]}:00 - strongly indicates automated scheduling.`
       : '';
     suspicions.push({
       type: 'market_automation', severity: 'critical',
@@ -88,7 +88,7 @@ const detectAutomation = (player, settings) => {
   if (player.pacingHits >= settings.pacingMinHits) {
     // NEW: flag if pacing is within a single action type (stronger signal)
     const singleTypePacing = player.pacingSingleType
-      ? ` All paced actions are of type "${player.pacingSingleType}" — single-action-type pacing is a near-certain script indicator.`
+      ? ` All paced actions are of type "${player.pacingSingleType}" - single-action-type pacing is a near-certain script indicator.`
       : '';
     suspicions.push({
       type: 'script_pacing', severity: 'critical',
@@ -151,7 +151,7 @@ const detectEconomicNetwork = (player, allWorkers, settings, globalCache) => {
 
       suspicions.push({
         type: 'transaction_abuse', severity: isNetZero ? 'high' : 'critical',
-        desc: `Item Market Wash Trading detected with ${descParts.join(' and ')}.${isNetZero ? ' Net profit is zero — possible technique testing or practice ring.' : ''}`,
+        desc: `Item Market Wash Trading detected with ${descParts.join(' and ')}.${isNetZero ? ' Net profit is zero - possible technique testing or practice ring.' : ''}`,
         partners: partnerList, detectionWeight: isNetZero ? Math.max(1, Math.floor(detectionWeight * 0.5)) : detectionWeight
       });
     }
@@ -170,7 +170,7 @@ const detectWorkerPatterns = (allWorkers, settings, globalCache) => {
   if (lowWageWorkers.length >= 2) {
     suspicions.push({
       type: 'low_wage', severity: lowWageWorkers.length > 4 ? 'high' : 'medium',
-      desc: `Found ${lowWageWorkers.length} workers with wages ≤ ${settings.suspiciousWageThreshold}`,
+      desc: `Found ${lowWageWorkers.length} workers with wages <= ${settings.suspiciousWageThreshold}`,
       workers: lowWageWorkers
     });
     lowWageWorkers.forEach(w => suspiciousWorkers.add(w));
@@ -225,7 +225,7 @@ const detectWorkerPatterns = (allWorkers, settings, globalCache) => {
     }
   });
 
-  // Symmetric wage — only consider active workers with fidelity >= 7 (loyal, invested workers)
+  // Symmetric wage - only consider active workers with fidelity >= 7 (loyal, invested workers)
   const highFidelityWorkers = allWorkers.filter(w => w.isActive !== false && w.normalizedFidelity >= 7 && w.normalizedWage > settings.suspiciousWageThreshold && w.normalizedWage < 0.128);
   const activeWages = highFidelityWorkers.map(w => w.normalizedWage);
   if (activeWages.length >= 4) {
@@ -235,7 +235,7 @@ const detectWorkerPatterns = (allWorkers, settings, globalCache) => {
     if (stdDev < 0.005) {
       suspicions.push({
         type: 'wage_uniformity', severity: 'high',
-        desc: `Wage Uniformity: All ${activeWages.length} high-fidelity workers (≥7/10) paid identical wages of ${mean.toFixed(3)} coins (std dev: ${stdDev.toFixed(4)}). While wage negotiation is uncommon, perfectly identical wages across all long-term workers may indicate a single operator managing alts.`,
+        desc: `Wage Uniformity: All ${activeWages.length} high-fidelity workers (>=7/10) paid identical wages of ${mean.toFixed(3)} coins (std dev: ${stdDev.toFixed(4)}). While wage negotiation is uncommon, perfectly identical wages across all long-term workers may indicate a single operator managing alts.`,
         workers: highFidelityWorkers,
         detectionWeight: activeWages.length
       });
@@ -297,7 +297,7 @@ const detectLaundering = (allWorkers, player, settings, globalCache) => {
     if (w.isLaundering) launderingWorkers.push(w);
   });
 
-  // NEW: MU Donation Timing Correlation — check if workers donated within same 10-min window
+  // NEW: MU Donation Timing Correlation - check if workers donated within same 10-min window
   if (launderingWorkers.length >= 2) {
     const windowMs = 10 * 60 * 1000;
     const correlatedGroups = [];
@@ -418,13 +418,13 @@ const detectShellCompanies = (allWorkers, settings, globalCache) => {
   return { suspicions, suspiciousWorkers, zeroBonusCompanyCount, bossNoBonusPercentage };
 };
 
-/** Level-relative wealth baseline — updated as players are scanned.
+/** Level-relative wealth baseline - updated as players are scanned.
  *  Stores { companiesAtLevel, maxAELevelAtLevel } bucketed per 5-level band.
  *  Exported so processPlayer can call it after resolving each worker.
  */
 const levelWealthBaseline = {};
 
-// Per-level coin wealth baseline — populated from Redis at scan start and persisted at scan end.
+// Per-level coin wealth baseline - populated from Redis at scan start and persisted at scan end.
 // { [levelKey]: { avg: number, count: number } }
 const wealthByLevel = {};
 const recordWealthBaseline = (level, wealth) => {
@@ -483,7 +483,7 @@ const getBaselineForLevel = (level) => {
   return null;
 };
 
-/** Account age vs wealth disparity detection — uses dynamic level baseline where available */
+/** Account age vs wealth disparity detection - uses dynamic level baseline where available */
 const detectAgeDateAnomaly = (player, allWorkers, settings) => {
   const multiplier = settings?.wealthAnomalyMultiplier ?? 5;
   const suspicions = [];
@@ -568,9 +568,9 @@ const detectTemporalClustering = (player, actionTimes) => {
   return suspicions;
 };
 
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //  MAIN ANALYZER  (orchestrates modules)
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRun = false) => {
   if (!player) return null;
 
@@ -726,9 +726,9 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   };
 };
 
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //  PHASE 1 ANALYZER  (transaction-derived only, no workers)
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 const analyzePhase1 = (player, settings, globalCache) => {
   if (!player) return null;
 
@@ -802,7 +802,7 @@ const analyzePhase1 = (player, settings, globalCache) => {
 
   return {
     player,
-    summary: summaryParts.join(' ') || 'Phase 1 transaction flags — load worker analysis for full details.',
+    summary: summaryParts.join(' ') || 'Phase 1 transaction flags - load worker analysis for full details.',
     suspicions: allSuspicions,
     detections,
     phase2Status: 'pending',
@@ -819,9 +819,9 @@ const analyzePhase1 = (player, settings, globalCache) => {
   };
 };
 
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //  UNION FIND
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 class UnionFind {
   constructor() { this.parent = {}; }
   add(id) { if (!this.parent[id]) this.parent[id] = id; }
@@ -829,9 +829,9 @@ class UnionFind {
   union(id1, id2) { this.add(id1); this.add(id2); const r1=this.find(id1),r2=this.find(id2); if(r1!==r2) this.parent[r2]=r1; }
 }
 
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //  WASH NETWORK TREE
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 const WashNetworkTree = ({ rootId, washPartners, processedNodes, globalBans, globalNames, isRoot=true, edgeFromParent=null }) => {
   if (processedNodes.has(rootId)) return null;
   processedNodes.add(rootId);
@@ -879,9 +879,9 @@ const WashNetworkTree = ({ rootId, washPartners, processedNodes, globalBans, glo
   );
 };
 
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //  TREE NODE
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 const TreeNode = ({ label, icon: Icon, children, isRoot=false, defaultOpen=false, badge=null, badgeClass=null, extraData=null, linkId=null }) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   return (
@@ -904,9 +904,9 @@ const TreeNode = ({ label, icon: Icon, children, isRoot=false, defaultOpen=false
   );
 };
 
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //  SCORE BREAKDOWN TOOLTIP
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 const ScoreTooltip = ({ breakdown }) => {
   const [open, setOpen] = useState(false);
   if (!breakdown || breakdown.length === 0) return null;
@@ -933,29 +933,29 @@ const ScoreTooltip = ({ breakdown }) => {
   );
 };
 
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //  ACTIVITY HEATMAP (for temporal clustering)
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 const ActivityHeatmap = ({ hourBuckets }) => {
   if (!hourBuckets) return null;
   const max = Math.max(...hourBuckets, 1);
   return (
     <div className="mt-2">
-      <div className="text-[10px] text-slate-500 mb-1">UTC Hour Activity (0–23)</div>
+      <div className="text-[10px] text-slate-500 mb-1">UTC Hour Activity (0-23)</div>
       <div className="flex gap-0.5">
         {hourBuckets.map((v, h) => {
           const intensity = v / max;
           const bg = intensity === 0 ? 'bg-slate-900' : intensity < 0.3 ? 'bg-pink-900/40' : intensity < 0.6 ? 'bg-pink-700/60' : 'bg-pink-500';
-          return <div key={h} className={`h-6 flex-1 rounded-sm ${bg} relative group`} title={`UTC ${h}:00 — ${v} actions`}><div className="hidden group-hover:block absolute bottom-full left-1/2 -translate-x-1/2 bg-slate-800 text-slate-200 text-[9px] px-1 rounded whitespace-nowrap">{h}:00 ({v})</div></div>;
+          return <div key={h} className={`h-6 flex-1 rounded-sm ${bg} relative group`} title={`UTC ${h}:00 - ${v} actions`}><div className="hidden group-hover:block absolute bottom-full left-1/2 -translate-x-1/2 bg-slate-800 text-slate-200 text-[9px] px-1 rounded whitespace-nowrap">{h}:00 ({v})</div></div>;
         })}
       </div>
     </div>
   );
 };
 
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //  MAIN APP
-// ─────────────────────────────────────────────
+// â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 export function WarEraOracle() {
   const [isScanning, setIsScanning] = useState(false);
   const isScanningRef = useRef(false);
@@ -999,26 +999,33 @@ export function WarEraOracle() {
   const concurrencyLastReducedRef = useRef(0);
   const alwaysPhase2Ref = useRef(false);
   const scanQueueRef = useRef([]);
-  // (worker endpoint is now fixed to worker.getWorkers with companyId — no ref needed)
+  // (worker endpoint is now fixed to worker.getWorkers with companyId - no ref needed)
 
-  // ── Filter / Sort state ──
+  // â"€â"€ Filter / Sort state (legacy - kept for getFilteredFindings compat) â"€â"€
   const [filterType, setFilterType] = useState('all');
-  const [sortMode, setSortMode] = useState('score_desc'); // score_desc, score_asc, name_asc
+  const [sortMode, setSortMode] = useState('score_desc');
   const [minScore, setMinScore] = useState(0);
   const [showFilterPanel, setShowFilterPanel] = useState(false);
 
-  // ── Session persistence ──
+  // â"€â"€ New Cobalt UI state â"€â"€
+  const [activeSuspectId, setActiveSuspectId] = useState<string|null>(null);
+  const [listFilter, setListFilter] = useState<'all'|'critical'|'high'|'medium'>('all');
+  const [configOpen, setConfigOpen] = useState(false);
+  const [logExpanded, setLogExpanded] = useState(false);
+  const [listSearch, setListSearch] = useState('');
+
+  // â"€â"€ Session persistence â"€â"€
   const [savedSession, setSavedSession] = useState(null);
   const [showRestorePrompt, setShowRestorePrompt] = useState(false);
 
-  // ── Watchlist ──
+  // â"€â"€ Watchlist â"€â"€
   const [watchlist, setWatchlist] = useState(() => {
     try { return JSON.parse(localStorage.getItem('wera_watchlist') || '{}'); } catch { return {}; }
   });
   const [showWatchlist, setShowWatchlist] = useState(false);
   const watchlistScanRef = useRef(false);
 
-  // ── Import / export / clipboard ──
+  // â"€â"€ Import / export / clipboard â"€â"€
   const fileInputRef = useRef(null);
   const [copiedId, setCopiedId] = useState(null);
 
@@ -1028,10 +1035,18 @@ export function WarEraOracle() {
   }, [settings.verboseDebug]);
 
   useEffect(() => {
-    if (showLogs && logsContainerRef.current) logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
-  }, [logs, showLogs]);
+    if ((showLogs || logExpanded) && logsContainerRef.current) logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+  }, [logs, showLogs, logExpanded]);
 
   useEffect(() => { localStorage.setItem('wera_watchlist', JSON.stringify(watchlist)); }, [watchlist]);
+
+  // Auto-select first suspect when results arrive and nothing is selected
+  useEffect(() => {
+    if (activeSuspectId === null) {
+      const first = Object.values(findings).flat()[0];
+      if (first) setActiveSuspectId(first.player.id);
+    }
+  }, [findings]);
 
   const toggleWatchlist = useCallback((playerId, playerName, country) => {
     setWatchlist(prev => {
@@ -1111,7 +1126,7 @@ export function WarEraOracle() {
   };
 
   const smartFetch = async (endpoint, payload, forceOfficial=false) => {
-    // Try the Vercel Redis cache proxy first (1.5s timeout — fall through on any failure)
+    // Try the Vercel Redis cache proxy first (1.5s timeout - fall through on any failure)
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 1500);
@@ -1130,7 +1145,7 @@ export function WarEraOracle() {
           return d;
         }
       }
-    } catch(e) { /* cache proxy unavailable or timed out — fall through to direct */ }
+    } catch(e) { /* cache proxy unavailable or timed out - fall through to direct */ }
 
     // Direct path (used when running outside Vercel, or proxy failed)
     let route;
@@ -1157,7 +1172,7 @@ export function WarEraOracle() {
       }
       const msg = e.message.toLowerCase();
       const isSchemaErr = msg.includes('no procedure') || msg.includes('too_big') || msg.includes('unrecognized key') || msg.includes('invalid_type');
-      // DB connection pool saturation — reduce concurrency, fall back, don't trip circuit breaker
+      // DB connection pool saturation - reduce concurrency, fall back, don't trip circuit breaker
       if (route === 'gateway' && (msg.includes('sqlstate 53300') || msg.includes('too many clients'))) {
         const cur = effectiveConcurrencyRef.current;
         const now = Date.now();
@@ -1166,7 +1181,7 @@ export function WarEraOracle() {
           if (next < cur) {
             effectiveConcurrencyRef.current = next;
             concurrencyLastReducedRef.current = now;
-            addLog(`[GATEWAY] DB saturated — reducing concurrency ${cur} → ${next} (15s cooldown active)`, 'warning');
+            addLog(`[GATEWAY] DB saturated - reducing concurrency ${cur} → ${next} (15s cooldown active)`, 'warning');
           }
         }
         return await smartFetch(endpoint, payload, true);
@@ -1190,7 +1205,7 @@ export function WarEraOracle() {
 
   const fetchRegions = async () => {
     addLog('Pinging WarEra API for regions...', 'info');
-    // Use the official API directly — this runs outside a scan so smartFetch
+    // Use the official API directly - this runs outside a scan so smartFetch
     // would route through the cache proxy which may not be available locally.
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey && apiKey.trim()) headers['X-API-Key'] = apiKey.trim();
@@ -1241,7 +1256,7 @@ export function WarEraOracle() {
       addLog(`✅ ${countries.length} countries loaded.`, 'info');
 
       // Step 2: region map (used for production bonus checks)
-      // region.getRegionsObject returns { regionId: regionObj, ... } — an object, not array
+      // region.getRegionsObject returns { regionId: regionObj, ... } - an object, not array
       try {
         const regData = await directFetch('region.getRegionsObject');
         const regMap = regData && typeof regData === 'object' && !Array.isArray(regData) ? regData : {};
@@ -1278,7 +1293,7 @@ export function WarEraOracle() {
     return unique;
   };
 
-  // ── PHASE 1: transaction-derived analysis (runs for every player) ──
+  // â"€â"€ PHASE 1: transaction-derived analysis (runs for every player) â"€â"€
   const processPlayerPhase1 = async (playerObj) => {
     const uId = playerObj._id || playerObj.id;
     let foundName = playerObj.username || playerObj.name || playerObj.displayName || playerObj.nickname || playerObj.profile?.username || playerObj.profile?.name || 'Unknown';
@@ -1311,7 +1326,7 @@ export function WarEraOracle() {
       } catch(e) {}
     }
 
-    // ── Fetch item market transactions ──
+    // â"€â"€ Fetch item market transactions â"€â"€
     let itemMarketTxs = [];
     const lookbackDays = 60;
     const cutoffTime = Date.now() - lookbackDays * 24 * 60 * 60 * 1000;
@@ -1333,7 +1348,7 @@ export function WarEraOracle() {
       } while (nextCursor);
     } catch(e) { addLog(`[DEBUG] itemMarket fetch failed for ${foundName}: ${e.message}`, 'debug'); }
 
-    // ── Compute automation metrics ──
+    // â"€â"€ Compute automation metrics â"€â"€
     const actionTimes = [];
     let sniperHits=0, sniperDetails=[];
     const apmWindowMap = new Map();
@@ -1384,7 +1399,7 @@ export function WarEraOracle() {
       apmAvgGapMs = Math.round(tg/(worstApmWindow.length-1));
     }
 
-    // ── Wash trading ──
+    // â"€â"€ Wash trading â"€â"€
     const washPartners = {};
     const itemGroups = {};
     itemMarketTxs.forEach(tx => {
@@ -1456,7 +1471,7 @@ export function WarEraOracle() {
       if (!playerObj.isSecondaryScan) scanQueueRef.current.push({ _id: partnerId, scanContext: playerObj.scanContext, isSecondaryScan: true });
     }
 
-    // ── Hermit centrality ──
+    // â"€â"€ Hermit centrality â"€â"€
     let highestVolumeWithSinglePartner=0, hermitTxCount=0, primaryBossId=null;
     partnerVolumes.forEach((vol,pId) => { if (vol>highestVolumeWithSinglePartner) { highestVolumeWithSinglePartner=vol; hermitTxCount=partnerTxCounts.get(pId)||0; primaryBossId=pId; } });
     const centralityPercentage = totalMarketVolume>0?(highestVolumeWithSinglePartner/totalMarketVolume)*100:0;
@@ -1521,7 +1536,7 @@ export function WarEraOracle() {
         if (maxSingleOutbound>25||weeklyOutbound>60) isDirectLaunderer=true;
       }
 
-      // ── articleTip: log payload shape, then detect tip farming ──
+      // â"€â"€ articleTip: log payload shape, then detect tip farming â"€â"€
       if (tipTxResult.status === 'fulfilled') {
         const tipItems = Array.isArray(tipTxResult.value) ? tipTxResult.value : (tipTxResult.value?.items||tipTxResult.value?.data||tipTxResult.value?.transactions||[]);
         if (!didLogTipPayloadRef.current) {
@@ -1593,7 +1608,7 @@ export function WarEraOracle() {
 
       playerObj.isDirectLaunderer=isDirectLaunderer; playerObj.directLaunderAmount=directLaunderAmount;
 
-      // ── Pacing detection ──
+      // â"€â"€ Pacing detection â"€â"€
       const PACING_ACTION_TYPES = new Set(['Donation', 'Market List', 'Market Buy']);
       const pacingTimes = actionTimes.filter(a => PACING_ACTION_TYPES.has(a.type));
       pacingTimes.sort((a,b)=>a.time-b.time);
@@ -1626,7 +1641,7 @@ export function WarEraOracle() {
       playerObj.pacingHits=pacingHits; playerObj.pacingAvgMs=pacingAvgMs; playerObj.pacingEdges=pacingEdges; playerObj.pacingSingleType=pacingSingleType;
     }
 
-    // ── Early return: no phase-1 signals ──
+    // â"€â"€ Early return: no phase-1 signals â"€â"€
     const hasP1Flags = Object.keys(washPartners).length > 0 || isDirectLaunderer ||
       sniperHits >= 5 || maxConcurrentTxs >= 5 || isHermit || isMutualHermit ||
       pacingHits >= settings.pacingMinHits || tipAbuse !== null;
@@ -1666,9 +1681,9 @@ export function WarEraOracle() {
       }
     } else if (alwaysPhase2Ref.current) {
       // Single-user targeted scan: run Phase 2 even with no Phase 1 flags
-      addLog(`[INFO] ${foundName} — no Phase 1 flags; running worker analysis for targeted scan.`, 'info');
+      addLog(`[INFO] ${foundName} - no Phase 1 flags; running worker analysis for targeted scan.`, 'info');
       const placeholder = {
-        player: livePlayer, summary: 'No transaction flags — running worker analysis…', suspicions: [],
+        player: livePlayer, summary: 'No transaction flags - running worker analysis...', suspicions: [],
         detections: 0, phase2Status: 'running', washPartners: {}, washPartnerCount: 0,
         totalCoinsWashed: 0, zeroBonusCompanyCount: 0, bossNoBonusPercentage: 0,
         hasLaundering: false, launderingWorkerCount: 0, totalLaunderedCoins: 0, scoreBreakdown: []
@@ -1680,7 +1695,7 @@ export function WarEraOracle() {
     }
   };
 
-  // ── PHASE 2: worker analysis (runs on-demand or when phase-1 score >= threshold) ──
+  // â"€â"€ PHASE 2: worker analysis (runs on-demand or when phase-1 score >= threshold) â"€â"€
   const processPlayerPhase2 = async (playerId, country, fromScan = false) => {
     const phase2Data = phase2DataRef.current[playerId];
     if (!phase2Data) { addLog(`[DEBUG] Phase 2 triggered for ${playerId} but no phase 1 data found.`, 'debug'); return; }
@@ -1837,7 +1852,7 @@ export function WarEraOracle() {
       scanQueueRef.current = wlEntries.map(p => ({ _id: p.id, scanContext: p.country || 'Watchlist' }));
       alwaysPhase2Ref.current = true;
       watchlistScanRef.current = false;
-      addLog(`Scanning ${wlEntries.length} watchlisted suspect(s)…`, 'info');
+      addLog(`Scanning ${wlEntries.length} watchlisted suspect(s)...`, 'info');
     } else if (targetRegionId) {
       let targetRegions = targetRegionId==='ALL' ? availableRegions.map(r=>r._id||r.id) : [targetRegionId];
       let allCitizens=[];
@@ -1928,7 +1943,7 @@ export function WarEraOracle() {
 
   const abortScan = () => { setIsScanning(false); isScanningRef.current=false; setIsRateLimited(false); setCurrentTask('Scan Aborted'); addLog('Scan manually aborted.', 'warning'); };
 
-  // ── Export all findings (full-fidelity — can be re-imported) ──
+  // â"€â"€ Export all findings (full-fidelity - can be re-imported) â"€â"€
   const exportFindings = () => {
     const data = {
       _oracleExport: true,
@@ -1942,7 +1957,7 @@ export function WarEraOracle() {
     URL.revokeObjectURL(url);
   };
 
-  // ── Export a single player's findings ──
+  // â"€â"€ Export a single player's findings â"€â"€
   const exportSinglePlayer = (result) => {
     const data = {
       _oracleExport: true,
@@ -1956,7 +1971,7 @@ export function WarEraOracle() {
     URL.revokeObjectURL(url);
   };
 
-  // ── Import JSON file and restore findings ──
+  // â"€â"€ Import JSON file and restore findings â"€â"€
   const handleImportJson = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1968,7 +1983,7 @@ export function WarEraOracle() {
           alert('Invalid Oracle export file. Make sure you exported from WarEra Oracle.');
           return;
         }
-        setFindings(parsed.findings); // clear and replace — import is authoritative
+        setFindings(parsed.findings); // clear and replace - import is authoritative
         addLog(`✅ Imported ${Object.values(parsed.findings).flat().length} findings from ${file.name}`, 'info');
       } catch(err) {
         alert(`Failed to parse file: ${err.message}`);
@@ -1978,7 +1993,7 @@ export function WarEraOracle() {
     e.target.value = ''; // reset so same file can be re-imported
   };
 
-  // ── Build 500-char summary for clipboard ──
+  // â"€â"€ Build 500-char summary for clipboard â"€â"€
   const buildShortSummary = (result) => {
     const name = result.player.name;
     const parts = [];
@@ -1988,7 +2003,7 @@ export function WarEraOracle() {
     if (launderSus) {
       const workerNames = launderSus.workers.filter(w => !w.normalizedName.includes('(SELF)')).map(w => w.normalizedName);
       const total = result.totalLaunderedCoins?.toFixed(1) || '?';
-      if (workerNames.length > 0) parts.push(`${workerNames.length} worker(s) (${workerNames.slice(0,3).join(', ')}${workerNames.length>3?'…':''}) donated ${total} coins to ${name}'s MU in large transactions.`);
+      if (workerNames.length > 0) parts.push(`${workerNames.length} worker(s) (${workerNames.slice(0,3).join(', ')}${workerNames.length>3?'...':''}) donated ${total} coins to ${name}'s MU in large transactions.`);
       else parts.push(`${name} sent ${total} coins to their MU in large outbound donations.`);
     }
 
@@ -2031,10 +2046,19 @@ export function WarEraOracle() {
     const paceSus = result.suspicions.find(s => s.type === 'script_pacing');
     if (paceSus) parts.push(`Script pacing: ${result.player.pacingHits} actions at ~${result.player.pacingAvgMs}ms intervals.`);
 
+    // Tip farming
+    const tipSus = result.suspicions.filter((s: any) => s.type === 'tip_farming');
+    if (tipSus.length > 0) {
+      parts.push(`Tip farming: ${tipSus.length} coordinated tipping pattern${tipSus.length>1?'s':''} detected.`);
+    }
+
+    // Hermit network
+    const hermitSus = result.suspicions.find((s: any) => s.type === 'hermit_network' || s.type === 'mutual_hermit');
+    if (hermitSus) parts.push(`Hermit trade network: transactions confined to a closed group of accounts.`);
+
     let summary = parts.join(' ');
-    // Trim to 500 chars, breaking at a word boundary
     if (summary.length > 500) {
-      summary = summary.substring(0, 497).replace(/\s\S*$/, '') + '…';
+      summary = summary.substring(0, 497).replace(/\s\S*$/, '') + '...';
     }
     return summary;
   };
@@ -2059,7 +2083,7 @@ export function WarEraOracle() {
     document.body.removeChild(ta);
   };
 
-  // ── Re-scan a single player ──
+  // â"€â"€ Re-scan a single player â"€â"€
   const rescanPlayer = (playerId, country) => {
     delete phase2DataRef.current[playerId];
     setFindings(prev => { const n={...prev}; if(n[country]) n[country]=n[country].filter(r=>r.player.id!==playerId); return n; });
@@ -2087,7 +2111,7 @@ export function WarEraOracle() {
     }
   };
 
-  // ── Derived token metrics ──
+  // â"€â"€ Derived token metrics â"€â"€
   const now = Date.now();
   gatewayTokens.current = gatewayTokens.current.filter(t=>now-t<60000);
   officialTokens.current = officialTokens.current.filter(t=>now-t<60000);
@@ -2099,14 +2123,88 @@ export function WarEraOracle() {
   const gatewayNext=getNextRefill(gatewayTokens.current);
   const officialNext=getNextRefill(officialTokens.current);
 
-  const getBadgeClass = (detections) => {
-    if (detections>=15) return 'bg-fuchsia-900/50 text-fuchsia-400 border-fuchsia-800';
-    if (detections>=10) return 'bg-red-900/50 text-red-400 border-red-800';
-    if (detections>=5) return 'bg-yellow-900/50 text-yellow-400 border-yellow-800';
-    return 'bg-slate-800 text-slate-400 border-slate-700';
+  // â"€â"€ Cobalt severity helpers â"€â"€
+  const CRIT_TYPES = new Set(['market_automation','superhuman_apm','script_pacing','money_laundering','coordinated_donation','transaction_abuse']);
+  const HIGH_TYPES = new Set(['hermit_network','mutual_hermit','newborn_wealthy','fidelity_ring','cloned_progression']);
+  const sevTierOf = (type: string): 'crit'|'high'|'med' => CRIT_TYPES.has(type) ? 'crit' : HIGH_TYPES.has(type) ? 'high' : 'med';
+  const scoreTierOf = (score: number): 'crit'|'high'|'med' => score >= 10 ? 'crit' : score >= 5 ? 'high' : 'med';
+  const T_COLOR = { crit:'#ff5d6c', high:'#ffab3d', med:'#ffd84d' };
+  const T_BG    = { crit:'rgba(255,93,108,0.12)', high:'rgba(255,171,61,0.12)', med:'rgba(255,216,77,0.11)' };
+  const T_LINE  = { crit:'rgba(255,93,108,0.42)', high:'rgba(255,171,61,0.40)', med:'rgba(255,216,77,0.36)' };
+
+  const FINDING_DETAIL: Record<string,{observed:string,rule:string,note:string}> = {
+    market_automation:    { observed:'Items purchased within milliseconds of listing', rule:`Reaction < ${settings.sniperThresholdMs}ms on 5+ occasions`, note:'Human reaction speed is ~200-400ms; sustained sub-threshold purchase rate is consistent with automated polling.' },
+    superhuman_apm:       { observed:'Multiple market listings placed within a narrow window', rule:`>=5 transactions within ${settings.apmWindowMs}ms`, note:'Concurrent market actions are extremely difficult to achieve manually.' },
+    script_pacing:        { observed:'Identical inter-action gaps across consecutive trades', rule:`Gap variance <= ±${settings.pacingToleranceMs}ms on ${settings.pacingMinHits}+ consecutive pairs`, note:'Clock-perfect pacing is a strong indicator of timer-driven automation.' },
+    money_laundering:     { observed:'Workers receiving unusually large coin donations', rule:'Donation volume >= 30× expected wage in 30 days', note:'May be profit extraction from a controlled network; legitimate bonuses rarely reach this scale.' },
+    coordinated_donation: { observed:'Multiple workers tipping within suspiciously close intervals', rule:'>=3 donations within 60s', note:'Coordinated timing suggests an orchestrated network rather than independent actors.' },
+    transaction_abuse:    { observed:'High-volume bilateral trading with the same counterparty', rule:'>=5 trades; significantly imbalanced net profit', note:'Repeated round-trip trades between two accounts are a common wash-trading pattern.' },
+    hermit_network:       { observed:'Workers employed nowhere except this account', rule:'All known employment is with this single employer', note:'Exclusive worker networks can indicate account manufacturing, though niche legitimate employers exist.' },
+    mutual_hermit:        { observed:'Mutual exclusive employment between boss and worker', rule:'Boss is also exclusively employed by this account', note:'Reciprocal hermit relationships substantially increase the likelihood of coordination.' },
+    newborn_wealthy:      { observed:'Account wealth significantly above level peers', rule:`Coin wealth > ${settings.wealthAnomalyMultiplier}× level average`, note:'New accounts with unusual wealth may be externally funded; compare with account age.' },
+    fidelity_ring:        { observed:'Workers holding maximum fidelity across the workforce', rule:'Fidelity = 10/10 across workers', note:'Perfect fidelity cluster is unusual - may indicate artificially maintained relationships.' },
+    cloned_progression:   { observed:'Progression stats mirror another account', rule:'Level/wealth within 2% of a known clone signature', note:'Near-identical progression curves can indicate copy-cat account farming.' },
+    low_wage:             { observed:'Workers paid below suspicious wage threshold', rule:`Wage <= ${settings.suspiciousWageThreshold.toFixed(3)}`, note:'Low wages alone are not conclusive; combine with other signals for stronger inference.' },
+    naming_pattern:       { observed:'Workers share a name substring or systematic pattern', rule:'>=3 workers share an overlapping name fragment', note:'Bot farms sometimes use systematic naming. May also be coincidence in small regions.' },
+    temporal_clustering:  { observed:'Activity concentrated in a narrow UTC window', rule:'Majority of actions in <=3 contiguous hours', note:'Timezone-consistent clustering is expected - combined with other flags it may indicate automation.' },
+    wage_uniformity:      { observed:'All workers paid identical wages', rule:'Wage variance across workforce is zero', note:'Uniform wages may suggest batch configuration rather than individual negotiation.' },
+    no_production_bonus:  { observed:'Companies issuing no production bonuses', rule:'>=1 company with 0% bonus rate', note:'Bonus suppression can reduce worker incentive to audit their employment.' },
+    tip_farming:          { observed:'Heavy, concentrated tip traffic from a small set of accounts', rule:'Single tipper accounts for >=50% of all received tips', note:'Tip farming networks route coins through repeated small donations to obscure origin.' },
   };
 
-  // ── Filter + sort findings ──
+  // â"€â"€ Flat case list â"€â"€
+  const allResults = Object.entries(findings).flatMap(([country, results]) =>
+    (results as any[]).map(r => ({ ...r, country }))
+  );
+  const tierOrder: Record<string,number> = { crit: 0, high: 1, med: 2 };
+  const maxSevTierOf = (result: any): 'crit'|'high'|'med' => {
+    if (result.suspicions.some((s: any) => CRIT_TYPES.has(s.type))) return 'crit';
+    if (result.suspicions.some((s: any) => HIGH_TYPES.has(s.type))) return 'high';
+    return 'med';
+  };
+  const filteredResults = allResults.filter(r => {
+    if (listSearch && !String(r.player.name).toLowerCase().includes(listSearch.toLowerCase())) return false;
+    if (listFilter !== 'all') {
+      const tier = maxSevTierOf(r);
+      if (listFilter === 'critical' && tier !== 'crit') return false;
+      if (listFilter === 'high' && tier !== 'high') return false;
+      if (listFilter === 'medium' && tier !== 'med') return false;
+    }
+    return true;
+  }).sort((a, b) => {
+    const ta = tierOrder[maxSevTierOf(a)], tb = tierOrder[maxSevTierOf(b)];
+    if (ta !== tb) return ta - tb;
+    return (b.adjustedDetections ?? b.detections) - (a.adjustedDetections ?? a.detections);
+  });
+  const caseGroups: Record<string, any[]> = {};
+  filteredResults.forEach(r => { if (!caseGroups[r.country]) caseGroups[r.country] = []; caseGroups[r.country].push(r); });
+
+  const activeResult = allResults.find(r => r.player.id === activeSuspectId) || null;
+  const orderedSuspicions = activeResult
+    ? [...activeResult.suspicions].sort((a: any, b: any) => {
+        const ta = tierOrder[sevTierOf(a.type)], tb = tierOrder[sevTierOf(b.type)];
+        if (ta !== tb) return ta - tb;
+        return (b.detectionWeight ?? 1) - (a.detectionWeight ?? 1);
+      })
+    : [];
+  const activeWashPartners: [string, any][] = activeResult && globalWashPartners.current[activeResult.player.id]
+    ? Object.entries(globalWashPartners.current[activeResult.player.id]) as [string, any][]
+    : [];
+  const ringSize = activeResult ? Object.keys(activeResult.washPartners || {}).length : 0;
+  const ringBanned = activeWashPartners.filter(([, p]) => p.isBanned).length;
+  const netFlow = activeWashPartners.reduce((s, [, p]) => s + (p.netProfit || 0), 0);
+  const critCount = activeResult ? activeResult.suspicions.filter((s: any) => CRIT_TYPES.has(s.type)).length : 0;
+  const totalFlags = Object.values(findings).flat().length;
+  const activeRuleCount = [
+    settings.suspiciousWageThreshold !== 0.110,
+    settings.wealthAnomalyMultiplier !== 5,
+    settings.sniperThresholdMs !== 1000,
+    settings.apmWindowMs !== 500,
+    settings.pacingToleranceMs !== 3,
+    settings.pacingMinHits !== 6,
+  ].filter(Boolean).length;
+
+  // â"€â"€ Filter + sort findings (legacy helper, kept for compatibility) â"€â"€
   const getFilteredFindings = (countryFindings) => {
     let results = [...countryFindings];
     if (filterType !== 'all') results = results.filter(r => r.suspicions.some(s => s.type === filterType));
@@ -2142,7 +2240,8 @@ export function WarEraOracle() {
     return map[type] || <AlertTriangle size={13} className="text-slate-400"/>;
   };
 
-  const renderGroupedFindings = (countryFindings) => {
+  // â"€â"€ renderGroupedFindings replaced by Cobalt three-pane UI below â"€â"€
+  const _renderGroupedFindings_UNUSED = (countryFindings) => {
     const filtered = getFilteredFindings(countryFindings);
     const uf=new UnionFind();
     filtered.forEach(f=>{ uf.add(f.player.id); Object.keys(f.washPartners||{}).forEach(pid=>{ uf.add(pid); uf.union(f.player.id,pid); }); });
@@ -2204,7 +2303,7 @@ export function WarEraOracle() {
       const profitDisplay=Math.abs(stats.ringNetProfit)<0.01?"0.0 NET":stats.ringNetProfit>0?`+${stats.ringNetProfit.toFixed(1)} NET`:`-${Math.abs(stats.ringNetProfit).toFixed(1)} NET`;
       finalNodes.push(
         <TreeNode key={`group_${stats.rootId}`}
-          label={<span className="flex items-center gap-1">Trading Ring ({stats.allMemberIds.size} <Users size={12}/>{ringBannedCount>0?`, ${ringBannedCount} BANNED`:''}) — <span className="font-bold text-yellow-500 ml-1">{rootName}</span></span>}
+          label={<span className="flex items-center gap-1">Trading Ring ({stats.allMemberIds.size} <Users size={12}/>{ringBannedCount>0?`, ${ringBannedCount} BANNED`:''}) - <span className="font-bold text-yellow-500 ml-1">{rootName}</span></span>}
           icon={Activity} defaultOpen={false}
           badge={<span className="flex items-center gap-1">{getGroupIcons(stats.members)}<span>Score: {stats.totalDet}</span></span>}
           badgeClass={getBadgeClass(stats.totalDet)}
@@ -2227,7 +2326,7 @@ export function WarEraOracle() {
       const hasMutualInGroup=members.some(m=>m.player.isMutualHermit);
       finalNodes.push(
         <TreeNode key={`hermit_${bossId}`}
-          label={<span className="flex items-center gap-1">{hasMutualInGroup?'Mutual ':''}Hermit Network ({members.length} <Network size={12}/>) — Boss: <span className={`font-bold ml-1 ${hasMutualInGroup?'text-red-400':'text-orange-400'}`}>{String(bossName)}</span></span>}
+          label={<span className="flex items-center gap-1">{hasMutualInGroup?'Mutual ':''}Hermit Network ({members.length} <Network size={12}/>) - Boss: <span className={`font-bold ml-1 ${hasMutualInGroup?'text-red-400':'text-orange-400'}`}>{String(bossName)}</span></span>}
           icon={Network} defaultOpen={false}
           badge={<span className="flex items-center gap-1">{getGroupIcons(members)}<span>Score: {totalDet}</span></span>}
           badgeClass={getBadgeClass(totalDet)}
@@ -2308,7 +2407,7 @@ export function WarEraOracle() {
           )}
           {result.phase2Status === 'running' && (
             <span className="flex items-center gap-1 px-2 py-1 bg-slate-800 text-slate-400 rounded border border-slate-700 text-[10px] font-semibold animate-pulse shrink-0">
-              <Activity size={9}/><span>Analyzing…</span>
+              <Activity size={9}/><span>Analyzing...</span>
             </span>
           )}
           <span className="inline-flex items-center rounded-md border border-slate-700 overflow-hidden text-[10px] font-semibold shrink-0">
@@ -2325,13 +2424,13 @@ export function WarEraOracle() {
             <div className="text-xs font-bold text-slate-400 mb-1 flex items-center gap-1"><Activity size={12}/> Analysis Summary</div>
             <p className="text-slate-300 leading-relaxed">{String(result.summary)}</p>
             {result.phase2Status === 'pending' && (
-              <p className="text-indigo-400 text-xs mt-2 flex items-center gap-1"><Users size={11}/> Worker analysis pending — click <strong>Load Worker Analysis</strong> to run full analysis.</p>
+              <p className="text-indigo-400 text-xs mt-2 flex items-center gap-1"><Users size={11}/> Worker analysis pending - click <strong>Load Worker Analysis</strong> to run full analysis.</p>
             )}
             {result.phase2Status === 'running' && (
-              <p className="text-slate-400 text-xs mt-2 animate-pulse flex items-center gap-1"><Activity size={11}/> Fetching companies, workers, and profiles…</p>
+              <p className="text-slate-400 text-xs mt-2 animate-pulse flex items-center gap-1"><Activity size={11}/> Fetching companies, workers, and profiles...</p>
             )}
             {result.phase2Status === 'error' && (
-              <p className="text-red-400 text-xs mt-2 flex items-center gap-1"><AlertTriangle size={11}/> Worker analysis failed — check log for [CRITICAL] message. Only transaction flags shown.</p>
+              <p className="text-red-400 text-xs mt-2 flex items-center gap-1"><AlertTriangle size={11}/> Worker analysis failed - check log for [CRITICAL] message. Only transaction flags shown.</p>
             )}
           </div>
           <div className="text-xs uppercase font-bold text-slate-500 mb-2">Detected Anomalies</div>
@@ -2490,273 +2589,592 @@ export function WarEraOracle() {
     );
   };
 
-  const totalFlags = Object.values(findings).flat().length;
-
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-300 font-sans flex flex-col">
+    <div style={{height:'100vh',display:'flex',flexDirection:'column',overflow:'hidden',background:'#070b18',color:'#eaf0ff',fontFamily:"IBM Plex Sans, system-ui, sans-serif"}}>
 
-      {/* Progress bar */}
-      <div className="w-full bg-slate-900 h-5 overflow-hidden relative border-b border-slate-800">
-        <div className={`h-5 transition-all duration-300 ${isRateLimited?'bg-yellow-500/80':'bg-blue-600'}`} style={{width:`${progress}%`}}></div>
-        {isRateLimited&&(
-          <div className="absolute inset-0 flex items-center justify-center">
-            <span className="text-[12px] font-bold text-white tracking-widest drop-shadow-md">PAUSED: API COOLDOWN ({limitTimer}s REMAINING)</span>
-          </div>
-        )}
+      {/* Slim progress bar */}
+      <div style={{height:3,background:'#0c1226',flexShrink:0,position:'relative'}}>
+        <div style={{height:'100%',width:`${progress}%`,background:isRateLimited?'#ffab3d':'#4fc3e8',transition:'width 0.3s'}}/>
       </div>
+      {isRateLimited&&(
+        <div style={{flexShrink:0,background:'rgba(255,171,61,0.12)',borderBottom:'1px solid rgba(255,171,61,0.40)',padding:'4px 18px',textAlign:'center',fontSize:11,color:'#ffab3d',fontFamily:"IBM Plex Mono, monospace",fontWeight:700,letterSpacing:'0.08em'}}>
+          PAUSED: API COOLDOWN — {limitTimer}s REMAINING
+        </div>
+      )}
 
       {/* Session restore prompt */}
       {showRestorePrompt&&savedSession&&(
-        <div className="bg-amber-900/30 border-b border-amber-700/50 px-4 py-2 flex items-center justify-between text-sm">
-          <span className="text-amber-300 font-medium">Previous scan found ({Object.values(savedSession.findings).flat().length} flags, saved {new Date(savedSession.savedAt).toLocaleTimeString()})</span>
-          <div className="flex gap-2">
-            <button onClick={()=>{setFindings(savedSession.findings);setShowRestorePrompt(false);}} className="px-3 py-1 bg-amber-700 hover:bg-amber-600 text-white rounded text-xs font-medium">Restore</button>
-            <button onClick={()=>{setShowRestorePrompt(false);sessionStorage.removeItem('warera_oracle_session');}} className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-xs font-medium">Dismiss</button>
+        <div style={{flexShrink:0,background:'rgba(255,171,61,0.10)',borderBottom:'1px solid rgba(255,171,61,0.40)',padding:'8px 18px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <span style={{color:'#ffab3d',fontSize:13,fontWeight:500}}>Previous scan — {Object.values(savedSession.findings).flat().length} flags, saved {new Date(savedSession.savedAt).toLocaleTimeString()}</span>
+          <div style={{display:'flex',gap:8}}>
+            <button onClick={()=>{setFindings(savedSession.findings);setShowRestorePrompt(false);}} style={{padding:'4px 10px',background:'rgba(255,171,61,0.25)',border:'1px solid rgba(255,171,61,0.50)',borderRadius:6,color:'#ffab3d',fontSize:11,fontWeight:600,cursor:'pointer'}}>Restore</button>
+            <button onClick={()=>{setShowRestorePrompt(false);sessionStorage.removeItem('warera_oracle_session');}} style={{padding:'4px 10px',background:'#121b35',border:'1px solid #1f2b4e',borderRadius:6,color:'#9fb0d4',fontSize:11,fontWeight:600,cursor:'pointer'}}>Dismiss</button>
           </div>
         </div>
       )}
 
-      <header className="bg-slate-900 border-b border-slate-800 p-4 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <ShieldAlert className="text-red-500" size={28}/>
+      {/* TOP BAR */}
+      <header style={{height:68,flexShrink:0,background:'#0c1226',borderBottom:'1px solid #1f2b4e',padding:'0 16px',display:'flex',alignItems:'center',gap:10,overflow:'hidden'}}>
+        {/* Brand */}
+        <div style={{display:'flex',alignItems:'center',gap:9,flexShrink:0}}>
+          <ShieldAlert size={19} style={{color:'#ff5d6c'}}/>
           <div>
-            <h1 className="text-xl font-bold text-slate-100 leading-tight tracking-tight">Palantirish</h1>
-            <p className="text-xs text-slate-500 font-mono">Multi-Account & Bot Net Detection — WarEra</p>
+            <div style={{fontSize:16,fontWeight:700,color:'#eaf0ff',lineHeight:1.2}}>Palantirish</div>
+            <div style={{fontSize:9.5,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace",whiteSpace:'nowrap'}}>Multi-Account & Bot Detection</div>
           </div>
         </div>
-        <a href="https://warerastats.io/" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 hover:underline font-mono px-3 py-1 bg-blue-900/20 border border-blue-900/50 rounded-full transition-colors hidden sm:block">Powered by warerastats.io</a>
-      </header>
-
-      <main className="flex-1 flex flex-col md:flex-row overflow-hidden overflow-y-auto md:overflow-hidden">
-
-        {/* ── LEFT PANEL ── */}
-        <div className="w-full md:w-1/3 bg-slate-900/50 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col p-4 gap-4 overflow-y-visible md:overflow-y-auto shrink-0">
-
-          <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 shrink-0">
-            <h2 className="text-sm font-semibold text-slate-200 mb-4 flex items-center gap-2"><Settings size={16}/> Target & Parameters</h2>
-            <div className="space-y-4">
-
-              <div>
-                <label className="text-xs text-slate-400 block mb-1">Your WarEra API Key</label>
-                <input type="text" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="Required API Key"
-                  className={`w-full bg-slate-950 border rounded p-2 text-sm outline-none font-mono transition-colors ${apiKey&&!apiKey.startsWith('wae_')?'border-red-500 text-red-400 focus:border-red-400':'border-slate-800 text-slate-200 focus:border-blue-500'}`} disabled={isScanning}/>
-                {apiKey&&!apiKey.startsWith('wae_')&&<span className="text-[10px] text-red-500 font-bold mt-1 block">Must start with "wae_"</span>}
-              </div>
-
-              <div>
-                <label className="text-xs text-slate-400 block mb-1">Specific User</label>
-                <input type="text" value={targetUserId} onChange={e=>setTargetUserId(e.target.value)} placeholder="(Optional)"
-                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-sm text-slate-200 outline-none focus:border-blue-500 font-mono disabled:opacity-50" disabled={isScanning||(!apiKey||!apiKey.startsWith('wae_'))}/>
-              </div>
-
-              <div>
-                <label className="text-xs text-slate-400 block mb-1">Target Region</label>
-                <select value={targetRegionId} onChange={e=>setTargetRegionId(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-sm text-slate-200 outline-none focus:border-blue-500 disabled:opacity-50"
-                  disabled={isScanning||!!targetUserId||availableRegions.length===0||(!apiKey||!apiKey.startsWith('wae_'))}>
-                  {availableRegions.length===0&&<option value="">{(!apiKey||!apiKey.startsWith('wae_'))?'Awaiting Valid API Key...':'Pending Network Ping...'}</option>}
-                  {availableRegions.length>0&&<option value="ALL">🌍 Global Scan (All Regions)</option>}
-                  {availableRegions.map(r=><option key={r._id||r.id} value={r._id||r.id}>{r.name}</option>)}
-                </select>
-              </div>
-
-              <div className="border-t border-slate-800 pt-4 mt-2 space-y-4">
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">Suspicious Wage Threshold</label>
-                  <div className="flex items-center gap-2">
-                    <input type="range" min="0.01" max="0.15" step="0.001" value={settings.suspiciousWageThreshold} onChange={e=>setSettings({...settings,suspiciousWageThreshold:parseFloat(e.target.value)})} className="flex-1 accent-red-500" disabled={isScanning}/>
-                    <span className="text-sm font-mono bg-slate-950 px-2 py-1 rounded w-16 text-center border border-slate-800">{settings.suspiciousWageThreshold.toFixed(3)}</span>
-                  </div>
-                </div>
-
-                {[
-                  {label:'Wealth Anomaly Threshold (× avg)',key:'wealthAnomalyMultiplier',min:1.5,max:10,step:0.5,accent:'accent-cyan-500',fmt:v=>`${v}×`},
-                  {label:'Sniper Threshold (ms)',key:'sniperThresholdMs',min:100,max:5000,step:100,accent:'accent-red-500',fmt:v=>v},
-                  {label:'Superhuman APM Window (ms)',key:'apmWindowMs',min:100,max:20000,step:100,accent:'accent-purple-500',fmt:v=>v},
-                  {label:'Pacing Tolerance (ms)',key:'pacingToleranceMs',min:1,max:100,step:1,accent:'accent-pink-500',fmt:v=>`±${v}`},
-                  {label:'Pacing Min Hits',key:'pacingMinHits',min:4,max:20,step:1,accent:'accent-pink-500',fmt:v=>v},
-                ].map(({label,key,min,max,step,accent,fmt})=>(
-                  <div key={key}>
-                    <label className="text-xs text-slate-400 block mb-1">{label}</label>
-                    <div className="flex items-center gap-2">
-                      <input type="range" min={min} max={max} step={step} value={settings[key]} onChange={e=>setSettings({...settings,[key]:key==='wealthAnomalyMultiplier'?parseFloat(e.target.value):parseInt(e.target.value)})} className={`flex-1 ${accent}`} disabled={isScanning}/>
-                      <span className="text-sm font-mono bg-slate-950 px-2 py-1 rounded w-16 text-center border border-slate-800">{fmt(settings[key])}</span>
-                    </div>
-                  </div>
-                ))}
-
-                <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-400 hover:text-slate-300 transition-colors">
-                  <input type="checkbox" checked={settings.verboseDebug} onChange={e=>setSettings({...settings,verboseDebug:e.target.checked})} className="accent-slate-400 w-4 h-4" disabled={isScanning}/>
-                  Verbose Debug Logging
-                </label>
-              </div>
-            </div>
-
-            <div className="mt-6 flex gap-2">
-              {!isScanning?(
-                <>
-                  <button onClick={startScan} className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded flex items-center justify-center gap-2 font-medium transition-colors">
-                    <Play size={16} fill="currentColor"/> Initialize Scan
-                  </button>
-                  {Object.keys(watchlist).length > 0 && (
-                    <button onClick={()=>{watchlistScanRef.current=true;startScan();}} className="flex items-center gap-1.5 px-3 py-2 bg-amber-700 hover:bg-amber-600 text-white rounded font-medium transition-colors text-sm" title={`Scan ${Object.keys(watchlist).length} watchlisted suspects`}>
-                      <Bookmark size={14} fill="currentColor"/> {Object.keys(watchlist).length}
-                    </button>
-                  )}
-                </>
-              ):(
-                <button onClick={abortScan} className="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 px-4 rounded flex items-center justify-center gap-2 font-medium transition-colors">
-                  <Square size={16} fill="currentColor"/> Abort Scan
+        <div style={{width:1,height:34,background:'#1f2b4e',flexShrink:0}}/>
+        {/* Scan controls */}
+        <div style={{display:'flex',alignItems:'flex-end',gap:6,flex:1,minWidth:0}}>
+          <div style={{display:'flex',flexDirection:'column',gap:2}}>
+            <label style={{fontSize:8,color:'#5d6e96',letterSpacing:'0.07em',textTransform:'uppercase',lineHeight:1}}>API Key</label>
+            <input type="text" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="wae_..."
+              style={{width:162,background:'#060a16',border:`1px solid ${apiKey&&!apiKey.startsWith('wae_')?'#ff5d6c':'#1f2b4e'}`,borderRadius:5,padding:'5px 8px',fontSize:11,color:apiKey&&!apiKey.startsWith('wae_')?'#ff5d6c':'#eaf0ff',outline:'none',fontFamily:"IBM Plex Mono, monospace"}}
+              disabled={isScanning}/>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:2}}>
+            <label style={{fontSize:8,color:'#5d6e96',letterSpacing:'0.07em',textTransform:'uppercase',lineHeight:1}}>User ID <span style={{color:'#2e3f6a',textTransform:'none',letterSpacing:0}}>(opt.)</span></label>
+            <input type="text" value={targetUserId} onChange={e=>setTargetUserId(e.target.value)} placeholder="leave blank for all"
+              style={{width:130,background:'#060a16',border:'1px solid #1f2b4e',borderRadius:5,padding:'5px 8px',fontSize:11,color:'#eaf0ff',outline:'none',fontFamily:"IBM Plex Mono, monospace"}}
+              disabled={isScanning||!apiKey.startsWith('wae_')}/>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:2}}>
+            <label style={{fontSize:8,color:'#5d6e96',letterSpacing:'0.07em',textTransform:'uppercase',lineHeight:1}}>Region</label>
+            <select value={targetRegionId} onChange={e=>setTargetRegionId(e.target.value)}
+              style={{width:148,background:'#060a16',border:'1px solid #1f2b4e',borderRadius:5,padding:'5px 8px',fontSize:11,color:'#eaf0ff',outline:'none'}}
+              disabled={isScanning||!!targetUserId||availableRegions.length===0||!apiKey.startsWith('wae_')}>
+              {availableRegions.length===0&&<option value="">{!apiKey.startsWith('wae_')?'Awaiting API key...':'Pinging...'}</option>}
+              {availableRegions.length>0&&<option value="ALL">Global (All Regions)</option>}
+              {availableRegions.map((r: any)=><option key={r._id||r.id} value={r._id||r.id}>{r.name}</option>)}
+            </select>
+          </div>
+          {!isScanning?(
+            <div style={{display:'flex',gap:4}}>
+              <button onClick={startScan} style={{padding:'5px 14px',background:'#ff5d6c',border:'none',borderRadius:5,color:'#070b18',fontSize:11.5,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap'}}>
+                <Play size={11} fill="currentColor"/> Scan
+              </button>
+              {Object.keys(watchlist).length>0&&(
+                <button onClick={()=>{watchlistScanRef.current=true;startScan();}} style={{padding:'5px 9px',background:'rgba(255,171,61,0.20)',border:'1px solid rgba(255,171,61,0.50)',borderRadius:5,color:'#ffab3d',fontSize:11,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
+                  <Bookmark size={10} fill="currentColor"/> {Object.keys(watchlist).length}
                 </button>
               )}
             </div>
+          ):(
+            <button onClick={abortScan} style={{padding:'5px 14px',background:'#1b2748',border:'1px solid #2e3f6a',borderRadius:5,color:'#9fb0d4',fontSize:11.5,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap'}}>
+              <Square size={11} fill="currentColor"/> Abort
+            </button>
+          )}
+        </div>
+        <div style={{width:1,height:34,background:'#1f2b4e',flexShrink:0}}/>
+        {/* Flag count */}
+        <div style={{textAlign:'center',lineHeight:1,flexShrink:0}}>
+          <div style={{fontSize:18,fontWeight:700,color:'#ff5d6c',fontFamily:"IBM Plex Mono, monospace"}}>{totalFlags}</div>
+          <div style={{fontSize:9.5,color:'#5d6e96',letterSpacing:'0.08em',textTransform:'uppercase'}}>Flags</div>
+        </div>
+        {/* Rate bars */}
+        <div style={{display:'flex',flexDirection:'column',gap:3,padding:'4px 10px',background:'#121b35',border:'1px solid #1f2b4e',borderRadius:6,minWidth:118,flexShrink:0}}>
+          <div style={{display:'flex',alignItems:'center',gap:5}}>
+            <span style={{fontSize:8.5,color:'#5d6e96',width:52,textAlign:'right',whiteSpace:'nowrap',flexShrink:0}}>Stats cache</span>
+            <div style={{flex:1,height:3,background:'#060a16',borderRadius:99,overflow:'hidden'}}><div style={{width:`${gatewayPercent}%`,height:'100%',background:gatewayPercent<20?'#ff5d6c':gatewayPercent<50?'#ffab3d':'#4fc3e8',transition:'width 0.3s'}}/></div>
           </div>
+          <div style={{display:'flex',alignItems:'center',gap:5,opacity:isOfficialEnabled?1:0.35}}>
+            <span style={{fontSize:8.5,color:'#5d6e96',width:52,textAlign:'right',whiteSpace:'nowrap',flexShrink:0}}>Live API</span>
+            <div style={{flex:1,height:3,background:'#060a16',borderRadius:99,overflow:'hidden'}}><div style={{width:`${!isOfficialEnabled?0:officialPercent}%`,height:'100%',background:officialPercent<20?'#ff5d6c':officialPercent<50?'#ffab3d':'#3fd0a3',transition:'width 0.3s'}}/></div>
+          </div>
+        </div>
+        {/* Thresholds */}
+        <button onClick={()=>setConfigOpen(o=>!o)} style={{display:'flex',alignItems:'center',gap:5,padding:'5px 10px',background:configOpen?'#1b2748':'#121b35',border:`1px solid ${configOpen?'#4fc3e8':'#2e3f6a'}`,borderRadius:6,color:configOpen?'#4fc3e8':'#9fb0d4',fontSize:11.5,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}}>
+          <Settings size={12}/> Thresholds{activeRuleCount>0&&<span style={{background:'rgba(79,195,232,0.20)',color:'#4fc3e8',borderRadius:99,padding:'1px 6px',fontSize:9,fontWeight:700}}>{activeRuleCount}</span>}
+        </button>
+        {/* Import */}
+        <button onClick={()=>fileInputRef.current?.click()} style={{display:'flex',alignItems:'center',gap:5,padding:'5px 10px',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:6,color:'#9fb0d4',fontSize:11.5,fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>
+          <Download size={11} style={{transform:'rotate(180deg)'}}/> Import
+        </button>
+        <input ref={fileInputRef} type="file" accept=".json" onChange={handleImportJson} style={{display:'none'}}/>
+        {totalFlags>0&&(
+          <button onClick={exportFindings} style={{display:'flex',alignItems:'center',gap:5,padding:'5px 10px',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:6,color:'#9fb0d4',fontSize:11.5,fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>
+            <Download size={11}/> Export all
+          </button>
+        )}
+        {Object.keys(watchlist).length>0&&(
+          <button onClick={()=>setShowWatchlist(w=>!w)} style={{display:'flex',alignItems:'center',gap:5,padding:'5px 10px',background:showWatchlist?'rgba(255,171,61,0.15)':'#121b35',border:`1px solid ${showWatchlist?'rgba(255,171,61,0.50)':'#2e3f6a'}`,borderRadius:6,color:showWatchlist?'#ffab3d':'#9fb0d4',fontSize:11.5,fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>
+            <Bookmark size={11} fill={showWatchlist?'currentColor':'none'}/> Watchlist {Object.keys(watchlist).length}
+          </button>
+        )}
+      </header>
 
-          {/* Telemetry */}
-          <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex flex-col shrink-0">
-            <div className="flex justify-between items-center cursor-pointer hover:bg-slate-800 p-1 -m-1 rounded transition-colors" onClick={()=>setShowLogs(!showLogs)}>
-              <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2"><Activity size={16}/> Scanner Telemetry</h2>
-              <div className="flex items-center gap-2 text-xs font-mono">
-                <span className={isRateLimited?"text-yellow-400 font-bold animate-pulse":"text-blue-400 truncate max-w-[150px]"}>{currentTask}</span>
-                <span className="text-slate-500">[{progress}%]</span>
-                {showLogs?<ChevronDown size={14} className="text-slate-500"/>:<ChevronRight size={14} className="text-slate-500"/>}
-              </div>
+      {/* â"€â"€ THREE-PANE BODY â"€â"€ */}
+      <div style={{flex:1,display:'flex',flexDirection:'row',overflow:'hidden',minHeight:0}}>
+
+        {/* LEFT: Case List 300px */}
+        <div style={{width:300,flexShrink:0,background:'#0c1226',borderRight:'1px solid #1f2b4e',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+          {/* Header */}
+          <div style={{padding:'12px 14px 8px',borderBottom:'1px solid #1f2b4e',flexShrink:0}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
+              <span style={{fontSize:12,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase'}}>Case List</span>
+              <span style={{fontSize:10.5,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96'}}>{filteredResults.length} · by score</span>
             </div>
-            {showLogs&&(
-              <div className="mt-3 h-64 bg-slate-950 border border-slate-800 rounded p-3 overflow-y-auto font-mono text-xs flex flex-col gap-1">
-                {logs.map((log,i)=>(
-                  <div key={i} className={`${log.type==='warning'?'text-red-400':log.type==='debug'?'text-slate-600':'text-slate-400'} flex gap-2`}>
-                    <span className="text-slate-600 opacity-50 shrink-0">[{log.time}]</span>
-                    <span className="break-all">{log.msg}</span>
-                  </div>
-                ))}
-                <div ref={logsContainerRef}/>
+            <div style={{display:'flex',alignItems:'center',gap:6,background:'#060a16',border:'1px solid #2e3f6a',borderRadius:6,padding:'5px 8px',marginBottom:8}}>
+              <Search size={11} style={{color:'#5d6e96',flexShrink:0}}/>
+              <input value={listSearch} onChange={e=>setListSearch(e.target.value)} placeholder="Filter suspects..." style={{background:'transparent',border:'none',outline:'none',color:'#eaf0ff',fontSize:12,flex:1,fontFamily:"IBM Plex Sans, system-ui, sans-serif"}}/>
+            </div>
+            <div style={{display:'flex',gap:4}}>
+              {(['all','critical','high','medium'] as const).map(f=>(
+                <button key={f} onClick={()=>setListFilter(f)} style={{padding:'3px 8px',borderRadius:99,fontSize:10,fontWeight:600,cursor:'pointer',background:listFilter===f?'rgba(79,195,232,0.12)':'#121b35',border:`1px solid ${listFilter===f?'#2e3f6a':'#1f2b4e'}`,color:listFilter===f?'#4fc3e8':'#5d6e96'}}>
+                  {f==='all'?'All':f.charAt(0).toUpperCase()+f.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* Suspect rows */}
+          <div style={{flex:1,overflowY:'auto'}}>
+            {Object.keys(findings).length===0?(
+              <div style={{padding:24,textAlign:'center',color:'#5d6e96'}}>
+                <Search size={32} style={{margin:'0 auto 12px',opacity:0.15,display:'block'}}/>
+                <div style={{fontSize:12,marginBottom:4}}>No scan results yet</div>
+                <div style={{fontSize:10.5,lineHeight:1.5}}>Enter API key + region in the top bar, then click Scan</div>
               </div>
+            ):filteredResults.length===0?(
+              <div style={{padding:24,textAlign:'center',color:'#5d6e96',fontSize:12}}>No suspects match this filter.</div>
+            ):(
+              Object.entries(caseGroups).sort().map(([country,results])=>(
+                <div key={country}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'7px 14px 5px',background:'#070b18',borderBottom:'1px solid #1f2b4e',position:'sticky',top:0,zIndex:2}}>
+                    <span style={{fontSize:10.5,fontWeight:700,color:'#9fb0d4',letterSpacing:'0.04em',textTransform:'uppercase'}}>{country}</span>
+                    <span style={{fontSize:9.5,fontFamily:"IBM Plex Mono, monospace",background:'rgba(255,93,108,0.11)',color:'#ff5d6c',border:'1px solid rgba(255,93,108,0.42)',borderRadius:4,padding:'1px 6px',fontWeight:700}}>{results.length}</span>
+                  </div>
+                  {results.map((r: any)=>{
+                    const tier=maxSevTierOf(r);
+                    const score=r.adjustedDetections??r.detections;
+                    const isActive=r.player.id===activeSuspectId;
+                    const ringCount=Object.keys(r.washPartners||{}).length;
+                    return (
+                      <div key={r.player.id} onClick={()=>setActiveSuspectId(r.player.id)}
+                        style={{display:'flex',alignItems:'stretch',cursor:'pointer',
+                          background:isActive?'rgba(79,195,232,0.08)':'transparent',
+                          borderLeft:isActive?'3px solid #4fc3e8':`3px solid ${T_COLOR[tier]}`,
+                          borderBottom:'1px solid #1f2b4e',
+                        }}>
+                        <div style={{flex:1,padding:'8px 8px 8px 9px',minWidth:0}}>
+                          <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:2}}>
+                            <div style={{width:5,height:5,borderRadius:'50%',background:T_COLOR[tier],flexShrink:0}}/>
+                            <span style={{fontSize:12.5,fontWeight:600,fontFamily:"IBM Plex Mono, monospace",color:isActive?'#4fc3e8':'#eaf0ff',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{String(r.player.name)}</span>
+                            {r.player.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px',flexShrink:0}}>BANNED</span>}
+                          </div>
+                          <div style={{fontSize:10,color:'#5d6e96',display:'flex',gap:5,alignItems:'center'}}>
+                            <span>{ringCount>0?`Ring · ${ringCount+1}`:'Solo'}</span>
+                            {watchlist[r.player.id]&&<span style={{fontSize:9,fontWeight:700,color:'#ffab3d'}}>WATCH</span>}
+                          </div>
+                        </div>
+                        <div style={{display:'flex',alignItems:'center',padding:'0 10px',flexShrink:0}}>
+                          <span style={{fontSize:13,fontWeight:700,fontFamily:"IBM Plex Mono, monospace",color:T_COLOR[tier]}}>{score}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))
             )}
           </div>
         </div>
 
-        {/* ── RIGHT PANEL ── */}
-        <div className="w-full md:w-2/3 p-4 md:p-6 bg-slate-950 overflow-y-visible md:overflow-y-auto flex-1">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4 border-b border-slate-800 pb-4">
-            <h2 className="text-lg font-semibold text-slate-100 flex items-center gap-2"><Database size={20} className="text-slate-400"/> Analysis Results</h2>
-
-            <div className="flex flex-wrap items-center gap-3 font-mono text-sm">
-              {/* API rate bars */}
-              <div className="bg-slate-900 border border-slate-800 px-3 py-2 rounded flex items-center w-full sm:w-56 text-xs">
-                <div className="flex flex-col gap-1.5 w-full">
-                  <div className="flex justify-between text-[10px] text-slate-300 font-semibold leading-none items-center">
-                    <span>WarEraStats.io Cache</span>
-                    <span className="text-slate-500 font-mono text-[9px]">{gatewayNext>0?`Next: ${gatewayNext}s`:'Max'}</span>
-                  </div>
-                  <div className="w-full bg-slate-950 rounded-full h-1.5 border border-slate-800 overflow-hidden">
-                    <div className={`h-full transition-all duration-300 ${gatewayPercent<20?'bg-red-500':gatewayPercent<50?'bg-yellow-500':'bg-blue-500'}`} style={{width:`${gatewayPercent}%`}}></div>
-                  </div>
-                  <div className={`flex justify-between text-[10px] font-semibold leading-none mt-1 items-center ${isOfficialEnabled?'text-slate-300':'text-slate-600'}`}>
-                    <span>WarEra Live API</span>
-                    {isOfficialEnabled&&<span className="text-slate-500 font-mono text-[9px]">{officialNext>0?`Next: ${officialNext}s`:'Max'}</span>}
-                  </div>
-                  <div className="w-full bg-slate-950 rounded-full h-1.5 border border-slate-800 overflow-hidden">
-                    <div className={`h-full transition-all duration-300 ${!isOfficialEnabled?'bg-transparent':officialPercent<20?'bg-red-500':officialPercent<50?'bg-yellow-500':'bg-emerald-500'}`} style={{width:`${!isOfficialEnabled?0:officialPercent}%`}}></div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-slate-900 border border-slate-800 px-3 py-1 rounded flex items-center">
-                <span className="text-slate-500 mr-2">Flags:</span>
-                <span className="text-red-400 font-bold text-lg">{totalFlags}</span>
-              </div>
-
-              {/* Import button */}
-              <button onClick={()=>fileInputRef.current?.click()} className="bg-slate-900 border border-slate-700 hover:border-emerald-500 px-3 py-1 rounded flex items-center gap-1 text-slate-300 hover:text-emerald-300 transition-colors text-xs" title="Import Oracle JSON file">
-                <Download size={13} className="rotate-180"/> Import
-              </button>
-              <input ref={fileInputRef} type="file" accept=".json" onChange={handleImportJson} className="hidden"/>
-
-              {/* Export all button */}
-              {totalFlags>0&&(
-                <button onClick={exportFindings} className="bg-slate-900 border border-slate-700 hover:border-blue-500 px-3 py-1 rounded flex items-center gap-1 text-slate-300 hover:text-blue-300 transition-colors text-xs" title="Export all findings as JSON">
-                  <Download size={13}/> Export All
-                </button>
-              )}
-
-              {/* Watchlist toggle */}
-              {Object.keys(watchlist).length > 0 && (
-                <button onClick={()=>setShowWatchlist(w=>!w)} className={`flex items-center gap-1 px-3 py-1 rounded border text-xs transition-colors ${showWatchlist?'border-amber-500 bg-amber-900/20 text-amber-300':'border-slate-700 bg-slate-900 text-slate-400 hover:border-amber-500 hover:text-amber-400'}`}>
-                  <Bookmark size={12} fill={showWatchlist?'currentColor':'none'}/> Watchlist ({Object.keys(watchlist).length})
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Watchlist panel */}
-          {showWatchlist && Object.keys(watchlist).length > 0 && (
-            <div className="mb-4 bg-slate-900 border border-amber-800/50 rounded-lg p-3">
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-xs font-bold text-amber-400 flex items-center gap-1"><Bookmark size={12} fill="currentColor"/> Suspects Watchlist</h3>
-                <button onClick={()=>setShowWatchlist(false)} className="text-slate-500 hover:text-slate-300 text-[10px]">close</button>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                {Object.values(watchlist).map(p=>(
-                  <div key={p.id} className="flex items-center justify-between bg-slate-950 border border-slate-800 rounded px-2 py-1.5 gap-2">
-                    <div className="flex-1 min-w-0">
-                      <a href={`https://app.warera.io/user/${p.id}`} target="_blank" rel="noopener noreferrer" className="text-xs font-mono text-blue-300 hover:text-blue-200 truncate block">{p.name}</a>
-                      <span className="text-[10px] text-slate-500">{p.country}</span>
-                    </div>
-                    <button onClick={()=>toggleWatchlist(p.id,p.name,p.country)} className="text-slate-600 hover:text-red-400 transition-colors shrink-0" title="Remove"><Star size={10}/></button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Filter / Sort bar */}
-          {totalFlags>0&&(
-            <div className="mb-4 flex flex-wrap items-center gap-2">
-              <button onClick={()=>setShowFilterPanel(!showFilterPanel)} className={`flex items-center gap-1 px-3 py-1.5 rounded border text-xs transition-colors ${showFilterPanel?'border-blue-500 bg-blue-900/20 text-blue-300':'border-slate-700 bg-slate-900 text-slate-400 hover:border-slate-500'}`}>
-                <Filter size={12}/> Filter & Sort
-              </button>
-              {showFilterPanel&&(
-                <div className="flex flex-wrap items-center gap-2 animate-in slide-in-from-top-1 duration-150">
-                  <select value={filterType} onChange={e=>setFilterType(e.target.value)} className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300 outline-none focus:border-blue-500">
-                    <option value="all">All Types</option>
-                    {allSuspicionTypes.map(t=><option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
-                  </select>
-                  <select value={sortMode} onChange={e=>setSortMode(e.target.value)} className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300 outline-none focus:border-blue-500">
-                    <option value="score_desc">Score ↓</option>
-                    <option value="score_asc">Score ↑</option>
-                    <option value="name_asc">Name A→Z</option>
-                  </select>
-                  <div className="flex items-center gap-1">
-                    <span className="text-xs text-slate-500">Min score:</span>
-                    <input type="number" min="0" max="50" value={minScore} onChange={e=>setMinScore(parseInt(e.target.value)||0)} className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300 outline-none focus:border-blue-500 w-16"/>
-                  </div>
-                  {(filterType!=='all'||sortMode!=='score_desc'||minScore>0)&&(
-                    <button onClick={()=>{setFilterType('all');setSortMode('score_desc');setMinScore(0);}} className="text-xs text-slate-500 hover:text-slate-300 underline">Reset</button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Results */}
-          {Object.keys(findings).length===0?(
-            <div className="h-full flex flex-col items-center justify-center text-slate-600 py-10">
-              <Search size={48} className="mb-4 opacity-20"/>
-              <p>Awaiting scan findings...</p>
-              <p className="text-sm mt-2 max-w-md text-center opacity-50 px-4">The engine dynamically load-balances across the community Gateway cache and the Official API to rapidly map multi-account networks concurrently.</p>
+        {/* CENTER: Dossier */}
+        <div style={{flex:1,overflowY:'auto',background:'#070b18',minWidth:0}}>
+          {!activeResult?(
+            <div style={{height:'100%',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',color:'#5d6e96'}}>
+              <ShieldAlert size={48} style={{opacity:0.1,marginBottom:16}}/>
+              <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>Select a suspect</div>
+              <div style={{fontSize:12,textAlign:'center',lineHeight:1.6,opacity:0.7}}>Click any row in the case list to load their dossier.</div>
             </div>
           ):(
-            <div className="space-y-2">
-              {Object.keys(findings).sort().map(country=>(
-                <TreeNode key={country} label={`${country}: Sus Results`} icon={Database} isRoot={true} defaultOpen={true} badge={`${getFilteredFindings(findings[country]).length} Suspects`}>
-                  {renderGroupedFindings(findings[country])}
-                </TreeNode>
-              ))}
+            <div>
+              {/* Header */}
+              <div style={{background:'#0c1226',borderBottom:'1px solid #1f2b4e',padding:'16px 24px'}}>
+                <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:12}}>
+                  <div style={{minWidth:0,flex:1}}>
+                    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}>
+                      <span style={{fontSize:20,fontWeight:700,fontFamily:"IBM Plex Mono, monospace",color:'#eaf0ff'}}>{String(activeResult.player.name)}</span>
+                      {activeResult.player.isBanned&&<span style={{fontSize:8.5,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:4,padding:'2px 6px'}}>BANNED</span>}
+                      {watchlist[activeResult.player.id]&&<span style={{fontSize:8.5,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:4,padding:'2px 6px'}}>WATCHING</span>}
+                      <a href={`https://app.warera.io/user/${activeResult.player.id}`} target="_blank" rel="noopener noreferrer" style={{color:'#4fc3e8',flexShrink:0}}><ExternalLink size={13}/></a>
+                    </div>
+                    <div style={{fontSize:12,color:'#9fb0d4',marginBottom:10}}>
+                      · {activeResult.country}{activeResult.player.level&&<span style={{fontFamily:"IBM Plex Mono, monospace"}}> · Lv.{activeResult.player.level}</span>}
+                    </div>
+                    <p style={{fontSize:12.5,lineHeight:1.55,color:'#9fb0d4',maxWidth:660}}>{String(activeResult.summary)}</p>
+                    {activeResult.phase2Status==='pending'&&<p style={{marginTop:8,fontSize:11.5,color:'#4fc3e8',display:'flex',alignItems:'center',gap:6}}><Users size={11}/> Worker analysis pending - click Load Worker Analysis in the rail.</p>}
+                    {activeResult.phase2Status==='running'&&<p style={{marginTop:8,fontSize:11.5,color:'#9fb0d4',display:'flex',alignItems:'center',gap:6}}><Activity size={11}/> Fetching companies and workers...</p>}
+                    {activeResult.phase2Status==='error'&&<p style={{marginTop:8,fontSize:11.5,color:'#ff5d6c',display:'flex',alignItems:'center',gap:6}}><AlertTriangle size={11}/> Worker analysis failed - only transaction flags shown.</p>}
+                  </div>
+                  {/* Score chip */}
+                  {(()=>{
+                    const sc=activeResult.adjustedDetections??activeResult.detections;
+                    const tier=scoreTierOf(sc);
+                    return (
+                      <div className="group" style={{position:'relative',flexShrink:0,cursor:'default'}}>
+                        <div style={{padding:'8px 14px',background:T_BG[tier],border:`2px solid ${T_LINE[tier]}`,borderRadius:9,textAlign:'center',minWidth:56}}>
+                          <div style={{fontSize:22,fontWeight:700,fontFamily:"IBM Plex Mono, monospace",color:T_COLOR[tier],lineHeight:1}}>{sc}</div>
+                          <div style={{fontSize:9,color:T_COLOR[tier],letterSpacing:'0.08em',fontWeight:700,marginTop:2,textTransform:'uppercase'}}>{tier==='crit'?'Critical':tier==='high'?'High':'Medium'}</div>
+                        </div>
+                        {activeResult.scoreBreakdown&&activeResult.scoreBreakdown.length>0&&(
+                          <div className="hidden group-hover:block" style={{position:'absolute',right:0,top:'110%',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:8,padding:12,zIndex:50,minWidth:220,boxShadow:'0 8px 24px rgba(0,0,0,0.6)'}}>
+                            <div style={{fontSize:10,fontWeight:700,color:'#9fb0d4',marginBottom:8,letterSpacing:'0.06em',textTransform:'uppercase'}}>Score Breakdown</div>
+                            {activeResult.scoreBreakdown.map((item: any,i: number)=>{
+                              const sv=item.severity||'medium';
+                              const tc=sv==='critical'?'#ff5d6c':sv==='high'?'#ffab3d':'#ffd84d';
+                              return <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',paddingBottom:4,marginBottom:4,borderBottom:i<activeResult.scoreBreakdown.length-1?'1px solid #1f2b4e':'none'}}>
+                                <span style={{fontSize:10.5,color:'#9fb0d4'}}>{item.label||item.type}</span>
+                                <span style={{fontSize:11,fontFamily:"IBM Plex Mono, monospace",fontWeight:700,color:tc}}>+{item.weight||item.score||1}</span>
+                              </div>;
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* Findings timeline */}
+              <div style={{padding:'20px 24px'}}>
+                <div style={{fontSize:11,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase',marginBottom:20}}>
+                  Observed Signals - {orderedSuspicions.length}, ordered by strength
+                </div>
+                {orderedSuspicions.map((suspicion: any, sIdx: number)=>{
+                  const tier=sevTierOf(suspicion.type);
+                  const detail=FINDING_DETAIL[suspicion.type];
+                  const friendlyTitle=String(suspicion.type).replace(/_/g,' ').replace(/\b\w/g,(c: string)=>c.toUpperCase());
+                  return (
+                    <div key={sIdx} style={{display:'flex',gap:14,marginBottom:28,alignItems:'flex-start'}}>
+                      {/* Number circle + connector */}
+                      <div style={{display:'flex',flexDirection:'column',alignItems:'center',flexShrink:0,paddingTop:3}}>
+                        <div style={{width:24,height:24,borderRadius:'50%',background:T_BG[tier],border:`2px solid ${T_COLOR[tier]}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700,fontFamily:"IBM Plex Mono, monospace",color:T_COLOR[tier]}}>{sIdx+1}</div>
+                        {sIdx<orderedSuspicions.length-1&&<div style={{width:1,background:'#1f2b4e',marginTop:4,height:16}}/>}
+                      </div>
+                      {/* Body */}
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
+                          <span style={{fontSize:14,fontWeight:700,color:'#eaf0ff',whiteSpace:'nowrap'}}>{friendlyTitle}</span>
+                          <span style={{fontSize:9.5,fontWeight:700,background:T_BG[tier],border:`1px solid ${T_LINE[tier]}`,color:T_COLOR[tier],borderRadius:4,padding:'2px 7px',letterSpacing:'0.05em',textTransform:'uppercase'}}>{tier==='crit'?'Critical':tier==='high'?'High':'Medium'}</span>
+                          {detail&&(
+                            <span className="group/dtip" style={{position:'relative',display:'inline-block'}}>
+                              <span style={{fontSize:10,color:'#4fc3e8',background:'rgba(79,195,232,0.10)',border:'1px solid rgba(79,195,232,0.30)',borderRadius:4,padding:'2px 7px',cursor:'help'}}>i details</span>
+                              <div className="hidden group-hover/dtip:block" style={{position:'absolute',left:0,top:'130%',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:8,padding:12,zIndex:50,width:290,boxShadow:'0 8px 24px rgba(0,0,0,0.6)',fontSize:11.5,lineHeight:1.55}}>
+                                <div style={{marginBottom:7}}><span style={{color:'#5d6e96',fontWeight:600}}>Observed: </span><span style={{color:'#eaf0ff'}}>{detail.observed}</span></div>
+                                <div style={{marginBottom:7}}><span style={{color:'#5d6e96',fontWeight:600}}>Rule: </span><span style={{color:'#eaf0ff',fontFamily:"IBM Plex Mono, monospace",fontSize:10.5}}>{detail.rule}</span></div>
+                                <div><span style={{color:'#5d6e96',fontWeight:600}}>Note: </span><span style={{color:'#9fb0d4'}}>{detail.note}</span></div>
+                              </div>
+                            </span>
+                          )}
+                        </div>
+                        <p style={{fontSize:13,lineHeight:1.55,color:'#9fb0d4',maxWidth:600,marginBottom:8}}>
+                          {String(suspicion.desc).split('Coins').map((part: string,i: number,arr: string[])=>(
+                            <React.Fragment key={i}>{part}{i!==arr.length-1&&<Coins size={10} style={{display:'inline',color:'#ffd84d',verticalAlign:'middle',marginBottom:1}}/>}</React.Fragment>
+                          ))}
+                        </p>
+                        {suspicion.type==='temporal_clustering'&&suspicion.hourBuckets&&<ActivityHeatmap hourBuckets={suspicion.hourBuckets}/>}
+                        {/* Tip farming cards */}
+                        {suspicion.type==='tip_farming'&&suspicion.tipperCounts&&Object.keys(suspicion.tipperCounts).length>0&&(
+                          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:8}}>
+                            {Object.entries(suspicion.tipperCounts).filter(([,c]: any)=>c>=5).sort((a: any,b: any)=>b[1]-a[1]).map(([tipperId,count]: any,tIdx: number)=>{
+                              const tipperName=globalCacheRef.current.names?.[tipperId];
+                              const meta=suspicion.tipperMeta?.[tipperId];
+                              const receivedPct=suspicion.totalTipsReceived>0?Math.round(count/suspicion.totalTipsReceived*100):null;
+                              const sentPct=(suspicion.tipperSentTotals?.[tipperId]||0)>0?Math.round(count/suspicion.tipperSentTotals[tipperId]*100):null;
+                              const coinsFromTipper=suspicion.tipperAmounts?.[tipperId];
+                              return (
+                                <a key={tIdx} href={`https://app.warera.io/user/${tipperId}`} target="_blank" rel="noopener noreferrer"
+                                  style={{background:'#060a16',border:`1px solid ${T_LINE.med}`,borderLeft:`3px solid ${T_COLOR.med}`,borderRadius:6,padding:'8px 10px',display:'block',textDecoration:'none'}}>
+                                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+                                    <span style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,color:'#4fc3e8',display:'flex',alignItems:'center',gap:4,flexWrap:'wrap'}}>
+                                      {tipperName||<span style={{color:'#5d6e96'}}>{tipperId}</span>}
+                                      {meta?.level!=null&&<span style={{color:'#5d6e96',fontSize:9.5}}>Lv.{meta.level}</span>}
+                                      {meta?.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>BANNED</span>}
+                                    </span>
+                                    <span style={{fontSize:9.5,background:'rgba(255,171,61,0.15)',color:'#ffab3d',border:'1px solid rgba(255,171,61,0.40)',borderRadius:4,padding:'2px 6px',fontWeight:700,display:'flex',alignItems:'center',gap:3,flexShrink:0}}>{count}<Star size={8}/></span>
+                                  </div>
+                                  <div style={{fontSize:10,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96',display:'flex',flexDirection:'column',gap:2}}>
+                                    {receivedPct!==null&&<span>{receivedPct}% of all tips received</span>}
+                                    {sentPct!==null&&<span style={{color:'#ffab3d'}}>{sentPct}% of tipper's lifetime sends</span>}
+                                    {coinsFromTipper>0&&<span style={{color:'#3fd0a3'}}>{coinsFromTipper.toFixed(1)} coins donated</span>}
+                                  </div>
+                                </a>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {/* Transaction abuse cards */}
+                        {suspicion.type==='transaction_abuse'&&(suspicion.partners||[]).length>0&&(
+                          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:8}}>
+                            {(suspicion.partners||[]).map((p: any,pIdx: number)=>{
+                              const partnerProfit=-(p.netProfit||0);
+                              const profitColor=Math.abs(partnerProfit)<0.01?'#5d6e96':partnerProfit>0?'#3fd0a3':'#ff5d6c';
+                              const profitText=Math.abs(partnerProfit)<0.01?`0.0 NET (${(p.volume||0).toFixed(1)} VOL)`:partnerProfit>0?`+${partnerProfit.toFixed(1)} gained`:`-${Math.abs(partnerProfit).toFixed(1)} lost`;
+                              return (
+                                <a key={pIdx} href={`https://app.warera.io/user/${p.id}`} target="_blank" rel="noopener noreferrer"
+                                  style={{background:'#060a16',border:`1px solid ${T_LINE.crit}`,borderLeft:`3px solid #ff5d6c`,borderRadius:6,padding:'8px 10px',display:'block',textDecoration:'none'}}>
+                                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:4}}>
+                                    <div>
+                                      <span style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,color:'#4fc3e8'}}>{String(p.name)}</span>
+                                      {p.isBanned&&<span style={{display:'inline-block',marginLeft:4,fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>BANNED</span>}
+                                      {p.isWorker&&<span style={{display:'inline-block',marginLeft:4,fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>WORKER ×2</span>}
+                                    </div>
+                                    <span style={{fontSize:10,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace",flexShrink:0}}>Lv.{p.level}</span>
+                                  </div>
+                                  <div style={{display:'flex',justifyContent:'space-between',fontSize:10,fontFamily:"IBM Plex Mono, monospace"}}>
+                                    <span style={{color:'#5d6e96'}}>{p.txCount} trades · {p.latestTrade?new Date(p.latestTrade).toLocaleDateString():'?'}</span>
+                                    <span style={{color:profitColor,fontWeight:700}}>{profitText}</span>
+                                  </div>
+                                </a>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {/* Worker cards for all other types */}
+                        {!['tip_farming','transaction_abuse','temporal_clustering'].includes(suspicion.type)&&(suspicion.workers||[]).length>0&&(
+                          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:8}}>
+                            {(suspicion.workers||[]).map((w: any,wIdx: number)=>{
+                              let dispName=String(w.normalizedName), isSelf=false, isHermitNode=false;
+                              if(dispName.includes('(SELF)')){isSelf=true;dispName=dispName.replace(' (SELF)','');}
+                              if(dispName.includes('(HERMIT NODE)')){isHermitNode=true;dispName=dispName.replace(' (HERMIT NODE)','');}
+                              return (
+                                <a key={wIdx} href={`https://app.warera.io/user/${w.resolvedUser?._id||w.uid}`} target="_blank" rel="noopener noreferrer"
+                                  style={{background:'#060a16',border:`1px solid ${T_LINE[tier]}`,borderLeft:`3px solid ${T_COLOR[tier]}`,borderRadius:6,padding:'8px 10px',display:'block',textDecoration:'none'}}>
+                                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:4}}>
+                                    <div style={{minWidth:0,flex:1}}>
+                                      <div style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,color:'#4fc3e8',display:'flex',flexWrap:'wrap',alignItems:'center',gap:4}}>
+                                        {suspicion.type==='naming_pattern'
+                                          ?dispName.split(new RegExp(`(${suspicion.overlapString})`, 'gi')).map((part: string,i: number)=>
+                                              part.toLowerCase()===suspicion.overlapString?.toLowerCase()?<span key={i} style={{color:'#ffd84d',fontWeight:700}}>{part}</span>:<span key={i}>{part}</span>)
+                                          :dispName}
+                                        {suspicion.type==='superhuman_apm'&&suspicion.apmDetails&&isSelf&&(
+                                          <span className="group/tooltip" style={{position:'relative',fontSize:9,color:'#4fc3e8',background:'rgba(79,195,232,0.10)',border:'1px solid rgba(79,195,232,0.30)',borderRadius:4,padding:'1px 5px',cursor:'help',fontWeight:700}}>
+                                            AVG {suspicion.apmDetails.avgGapMs}ms
+                                            <div className="hidden group-hover/tooltip:block" style={{position:'absolute',left:0,top:'120%',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:8,padding:10,zIndex:60,minWidth:260,fontSize:10,boxShadow:'0 8px 24px rgba(0,0,0,0.6)'}}>
+                                              <div style={{fontWeight:700,color:'#9fb0d4',marginBottom:6}}>Listed Items (Window: {settings.apmWindowMs}ms)</div>
+                                              {(suspicion.apmDetails.txs||[]).slice(0,15).map((t: any,i: number)=><div key={i} style={{display:'flex',justifyContent:'space-between',gap:10,paddingBottom:3,marginBottom:3,borderBottom:'1px solid #1f2b4e',color:'#9fb0d4'}}><span>{new Date(t.offerTimeMs).toISOString().substring(0,19).replace('T',' ')}</span><span style={{color:'#4fc3e8'}}>{t.itemCode}</span></div>)}
+                                              {(suspicion.apmDetails.txs||[]).length>15&&<div style={{color:'#5d6e96',fontStyle:'italic'}}>+{(suspicion.apmDetails.txs||[]).length-15} more</div>}
+                                            </div>
+                                          </span>
+                                        )}
+                                        {suspicion.type==='script_pacing'&&suspicion.pacingDetails&&isSelf&&(
+                                          <span className="group/tooltip" style={{position:'relative',fontSize:9,color:'#ff5d6c',background:'rgba(255,93,108,0.10)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:4,padding:'1px 5px',cursor:'help',fontWeight:700}}>
+                                            {suspicion.pacingDetails.avgGapMs}ms gap{suspicion.pacingDetails.singleType?` / ${suspicion.pacingDetails.singleType}`:''}
+                                            <div className="hidden group-hover/tooltip:block" style={{position:'absolute',left:0,top:'120%',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:8,padding:10,zIndex:60,minWidth:280,fontSize:10,boxShadow:'0 8px 24px rgba(0,0,0,0.6)'}}>
+                                              <div style={{fontWeight:700,color:'#9fb0d4',marginBottom:6}}>Identical Gaps (±{settings.pacingToleranceMs}ms)</div>
+                                              {(suspicion.pacingDetails.edges||[]).slice(0,15).map((edge: any,i: number)=><div key={i} style={{display:'flex',justifyContent:'space-between',gap:10,paddingBottom:3,marginBottom:3,borderBottom:'1px solid #1f2b4e',color:'#9fb0d4'}}><span style={{color:'#ff5d6c',fontWeight:700}}>{edge.delta}ms</span><span>{new Date(edge.end).toISOString().substring(0,19).replace('T',' ')}</span><span style={{textTransform:'capitalize'}}>{edge.type}</span></div>)}
+                                              {(suspicion.pacingDetails.edges||[]).length>15&&<div style={{color:'#5d6e96',fontStyle:'italic'}}>+{(suspicion.pacingDetails.edges||[]).length-15} more</div>}
+                                            </div>
+                                          </span>
+                                        )}
+                                        {suspicion.type==='market_automation'&&suspicion.sniperDetails&&isSelf&&(
+                                          <span className="group/tooltip" style={{position:'relative',fontSize:9,color:'#ff5d6c',background:'rgba(255,93,108,0.10)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:4,padding:'1px 5px',cursor:'help',fontWeight:700}}>
+                                            AVG {Math.round((suspicion.sniperDetails||[]).reduce((a: number,b: any)=>a+b.timeMs,0)/Math.max(1,(suspicion.sniperDetails||[]).length))}ms
+                                            <div className="hidden group-hover/tooltip:block" style={{position:'absolute',left:0,top:'120%',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:8,padding:10,zIndex:60,minWidth:280,fontSize:10,boxShadow:'0 8px 24px rgba(0,0,0,0.6)'}}>
+                                              <div style={{fontWeight:700,color:'#9fb0d4',marginBottom:6}}>Sniped Items (Fastest First)</div>
+                                              {[...(suspicion.sniperDetails||[])].sort((a: any,b: any)=>a.timeMs-b.timeMs).slice(0,15).map((t: any,i: number)=><div key={i} style={{display:'flex',justifyContent:'space-between',gap:10,paddingBottom:3,marginBottom:3,borderBottom:'1px solid #1f2b4e',color:'#9fb0d4'}}><span style={{color:'#ff5d6c',fontWeight:700}}>{t.timeMs}ms</span><span>{new Date(t.offerTimeMs+t.timeMs).toISOString().substring(0,19).replace('T',' ')}</span><span>{t.itemCode}</span></div>)}
+                                              {(suspicion.sniperDetails||[]).length>15&&<div style={{color:'#5d6e96',fontStyle:'italic'}}>+{(suspicion.sniperDetails||[]).length-15} more</div>}
+                                            </div>
+                                          </span>
+                                        )}
+                                        {suspicion.type==='hermit_network'&&isHermitNode&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>HERMIT NODE</span>}
+                                        {suspicion.type==='newborn_wealthy'&&w.accountAgeDays!==undefined&&<span style={{fontSize:8,fontWeight:700,color:'#4fc3e8',background:'rgba(79,195,232,0.10)',border:'1px solid rgba(79,195,232,0.30)',borderRadius:3,padding:'1px 4px'}}>{w.accountAgeDays}d OLD{w.wealthMaxAELevel>0?` | AE Lv.${w.wealthMaxAELevel}`:''}</span>}
+                                        {w.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>BANNED</span>}
+                                        {w.isActive===false&&!w.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>INACTIVE</span>}
+                                        {w.noBonusPercentage>0&&suspicion.type==='no_production_bonus'&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>{w.noBonusPercentage}% NO-PROD</span>}
+                                        {w.isLaundering&&suspicion.type==='money_laundering'&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px',display:'flex',alignItems:'center',gap:2}}>{w.largeDonations30Days?.toFixed(1)} <Coins size={8}/></span>}
+                                        {suspicion.type==='fidelity_ring'&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>FIDELITY 10</span>}
+                                      </div>
+                                      {suspicion.type==='newborn_wealthy'&&w.wealthReason&&<div style={{fontSize:10,color:'#5d6e96',marginTop:3,lineHeight:1.4}}>{w.wealthReason}</div>}
+                                    </div>
+                                    <span style={{fontSize:10,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96',flexShrink:0,marginLeft:8}}>Lv.{w.normalizedLevel}</span>
+                                  </div>
+                                  {(w.normalizedWage!==undefined||w.normalizedFidelity!==undefined)&&(
+                                    <div style={{display:'flex',justifyContent:'space-between',fontSize:10,fontFamily:"IBM Plex Mono, monospace",marginTop:4}}>
+                                      {w.normalizedWage!==undefined&&<span style={{color:w.normalizedWage<=settings.suspiciousWageThreshold?'#ff5d6c':'#3fd0a3'}}>Wage: {Number(w.normalizedWage).toFixed(3)}</span>}
+                                      {w.normalizedFidelity!==undefined&&<span style={{color:'#5d6e96'}}>Fid: <span style={{color:w.normalizedFidelity===10?'#4fc3e8':'#eaf0ff',fontWeight:w.normalizedFidelity===10?700:400}}>{w.normalizedFidelity}</span>/10</span>}
+                                    </div>
+                                  )}
+                                </a>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
-      </main>
+
+        {/* RIGHT: Rail 348px */}
+        <div style={{width:348,flexShrink:0,background:'#0c1226',borderLeft:'1px solid #1f2b4e',overflowY:'auto'}}>
+          {activeResult?(
+            <div style={{padding:'16px 16px 0'}}>
+              {/* Actions */}
+              <div style={{display:'flex',gap:8,marginBottom:12}}>
+                <button onClick={()=>exportSinglePlayer(activeResult)} style={{flex:1,padding:'8px',background:'#ff5d6c',border:'none',borderRadius:6,color:'#070b18',fontSize:11.5,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+                  <Download size={13}/> Build report
+                </button>
+                <button onClick={()=>toggleWatchlist(activeResult.player.id,activeResult.player.name,activeResult.country)} style={{padding:'8px 10px',background:watchlist[activeResult.player.id]?'rgba(255,171,61,0.20)':'#121b35',border:`1px solid ${watchlist[activeResult.player.id]?'rgba(255,171,61,0.50)':'#2e3f6a'}`,borderRadius:6,color:watchlist[activeResult.player.id]?'#ffab3d':'#9fb0d4',fontSize:11.5,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:5}}>
+                  <Bookmark size={12} fill={watchlist[activeResult.player.id]?'currentColor':'none'}/> Watch
+                </button>
+                <button onClick={()=>rescanPlayer(activeResult.player.id,activeResult.country)} style={{padding:'8px 10px',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:6,color:'#9fb0d4',fontSize:11.5,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:5}}>
+                  <RefreshCw size={12}/>
+                </button>
+              </div>
+              {activeResult.phase2Status==='pending'&&(
+                <button onClick={()=>runPhase2(activeResult.player.id,activeResult.country)} style={{width:'100%',marginBottom:8,padding:'7px',background:'rgba(79,195,232,0.10)',border:'1px solid rgba(79,195,232,0.30)',borderRadius:6,color:'#4fc3e8',fontSize:11.5,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+                  <Users size={12}/> Load Worker Analysis
+                </button>
+              )}
+              <button onClick={()=>{copySummaryToClipboard(activeResult);setCopiedId(activeResult.player.id);setTimeout(()=>setCopiedId(null),2500);}} style={{width:'100%',marginBottom:20,padding:'6px',background:copiedId===activeResult.player.id?'rgba(63,208,163,0.12)':'transparent',border:`1px solid ${copiedId===activeResult.player.id?'rgba(63,208,163,0.40)':'#1f2b4e'}`,borderRadius:6,color:copiedId===activeResult.player.id?'#3fd0a3':'#5d6e96',fontSize:10.5,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:5}}>
+                <CheckSquare size={10}/> {copiedId===activeResult.player.id?'Copied!':'Copy 500-char summary'}
+              </button>
+              {/* CASE FACTS */}
+              <div style={{marginBottom:20}}>
+                <div style={{fontSize:10.5,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase',marginBottom:8}}>Case Facts</div>
+                {([
+                  {label:'Region', value:activeResult.country, mono:false},
+                  activeResult.player.level?{label:'Level', value:`Lv. ${activeResult.player.level}`, mono:true}:null,
+                  activeResult.player.accountAgeDays!=null?{label:'Account age', value:`${Math.floor(activeResult.player.accountAgeDays)} days`, mono:true}:null,
+                  ringSize>0?{label:'Ring size', value:`${ringSize+1}${ringBanned>0?` · ${ringBanned} banned`:''}`, mono:true, color:ringBanned>0?'#ff5d6c':undefined}:null,
+                  activeWashPartners.length>0?{label:'Net coin flow', value:Math.abs(netFlow)<0.01?'0.0':netFlow>0?`+${netFlow.toFixed(1)}`:`-${Math.abs(netFlow).toFixed(1)}`, mono:true, color:Math.abs(netFlow)<0.01?'#5d6e96':netFlow>0?'#3fd0a3':'#ff5d6c'}:null,
+                  critCount>0?{label:'Critical signals', value:`${critCount}`, mono:true, color:'#ff5d6c'}:null,
+                ] as any[]).filter(Boolean).map((row: any,i: number,arr: any[])=>(
+                  <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'5px 0',borderBottom:i<arr.length-1?'1px solid #1f2b4e':'none'}}>
+                    <span style={{fontSize:11.5,color:'#5d6e96'}}>{row.label}</span>
+                    <span style={{fontSize:11.5,fontFamily:row.mono?"'IBM Plex Mono', monospace":undefined,color:row.color||'#eaf0ff',fontWeight:row.color?600:400}}>{row.value}</span>
+                  </div>
+                ))}
+              </div>
+              {/* RING COIN FLOW */}
+              {activeWashPartners.length>0&&(
+                <div style={{marginBottom:20}}>
+                  <div style={{fontSize:10.5,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase',marginBottom:8}}>Ring - Coin Flow</div>
+                  <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                    {activeWashPartners.map(([partnerId, pData]: [string, any])=>{
+                      const profit=pData.netProfit||0;
+                      const profitColor=Math.abs(profit)<0.01?'#5d6e96':profit>0?'#3fd0a3':'#ff5d6c';
+                      const profitText=Math.abs(profit)<0.01?'0.0 NET':profit>0?`+${profit.toFixed(1)}`:`-${Math.abs(profit).toFixed(1)}`;
+                      const partnerName=pData.name||globalCacheRef.current.names[partnerId]||partnerId;
+                      return (
+                        <div key={partnerId} style={{background:'#060a16',border:'1px solid #1f2b4e',borderRadius:6,padding:'8px 10px'}}>
+                          <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8}}>
+                            <div style={{minWidth:0,flex:1}}>
+                              <a href={`https://app.warera.io/user/${partnerId}`} target="_blank" rel="noopener noreferrer" style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,color:'#4fc3e8',textDecoration:'none',display:'block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{String(partnerName)}</a>
+                              {pData.isBanned&&<span style={{fontSize:7.5,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px',marginTop:2,display:'inline-block'}}>BANNED</span>}
+                              {pData.level!=null&&<div style={{fontSize:9.5,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace",marginTop:2}}>Lv.{pData.level}</div>}
+                            </div>
+                            <div style={{textAlign:'right',flexShrink:0}}>
+                              <div style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,fontWeight:700,color:profitColor}}>{profitText}</div>
+                              <div style={{fontSize:9.5,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace"}}>{pData.txCount} trades</div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {Math.abs(netFlow)>0.01&&(
+                      <div style={{fontSize:10.5,fontFamily:"IBM Plex Mono, monospace",textAlign:'right',paddingTop:4,borderTop:'1px solid #1f2b4e',color:'#5d6e96'}}>
+                        Net {netFlow>0?<span style={{color:'#3fd0a3'}}>+{netFlow.toFixed(1)} gained</span>:<span style={{color:'#ff5d6c'}}>-{Math.abs(netFlow).toFixed(1)} lost</span>} from ring
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              <div style={{fontSize:10.5,color:'#5d6e96',paddingBottom:16,borderTop:'1px solid #1f2b4e',paddingTop:10}}>
+                Generated {new Date().toLocaleDateString()} · {totalFlags} flagged
+              </div>
+            </div>
+          ):(
+            <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',color:'#5d6e96',fontSize:12,padding:24,textAlign:'center'}}>
+              Select a suspect to see case details.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* â"€â"€ FOOTER: LogBar â"€â"€ */}
+      <div style={{flexShrink:0,background:'#0c1226',borderTop:'1px solid #1f2b4e',overflow:'hidden'}}>
+        <div onClick={()=>setLogExpanded(e=>!e)} style={{height:40,display:'flex',alignItems:'center',padding:'0 18px',cursor:'pointer',userSelect:'none',justifyContent:'space-between'}}>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            {logExpanded?<ChevronDown size={12} style={{color:'#5d6e96'}}/>:<ChevronRight size={12} style={{color:'#5d6e96'}}/>}
+            <span style={{fontSize:12,fontWeight:600,color:'#9fb0d4'}}>Scanner Telemetry</span>
+            <span style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,color:isScanning?'#ffab3d':'#3fd0a3'}}>
+              {isRateLimited?`COOLDOWN ${limitTimer}s`:isScanning?'Scanning...':currentTask} [{progress}%]
+            </span>
+          </div>
+          <span style={{fontSize:10.5,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96'}}>{totalFlags} flagged</span>
+        </div>
+        {logExpanded&&(
+          <div style={{height:200,background:'#060a16',borderTop:'1px solid #1f2b4e',padding:'8px 12px',overflowY:'auto',fontFamily:"IBM Plex Mono, monospace",fontSize:11,display:'flex',flexDirection:'column',gap:2}}>
+            {logs.map((log: any,i: number)=>(
+              <div key={i} style={{color:log.type==='warning'?'#ff5d6c':log.type==='debug'?'#2e3f6a':'#5d6e96',display:'flex',gap:8}}>
+                <span style={{color:'#1f2b4e',flexShrink:0}}>[{log.time}]</span>
+                <span style={{wordBreak:'break-all'}}>{log.msg}</span>
+              </div>
+            ))}
+            <div ref={logsContainerRef}/>
+          </div>
+        )}
+      </div>
+
+      {/* â"€â"€ CONFIG POPOVER â"€â"€ */}
+      {configOpen&&(
+        <div style={{position:'fixed',top:74,right:18,zIndex:200,background:'#121b35',border:'1px solid #2e3f6a',borderRadius:9,padding:20,width:330,boxShadow:'0 12px 40px rgba(0,0,0,0.75)',maxHeight:'calc(100vh - 88px)',overflowY:'auto'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+            <span style={{fontSize:13,fontWeight:700,color:'#eaf0ff'}}>Detection Thresholds</span>
+            <button onClick={()=>setConfigOpen(false)} style={{background:'none',border:'none',color:'#5d6e96',cursor:'pointer',fontSize:18,lineHeight:1,padding:'0 4px'}}>&#215;</button>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            {[
+              {label:'Suspicious Wage Threshold',key:'suspiciousWageThreshold',min:0.01,max:0.15,step:0.001,fmt:(v: number)=>v.toFixed(3),isFloat:true},
+              {label:'Wealth Anomaly Threshold',key:'wealthAnomalyMultiplier',min:1.5,max:10,step:0.5,fmt:(v: number)=>`${v}x`,isFloat:true},
+              {label:'Sniper Threshold (ms)',key:'sniperThresholdMs',min:100,max:5000,step:100,fmt:(v: number)=>`${v}`,isFloat:false},
+              {label:'Superhuman APM Window (ms)',key:'apmWindowMs',min:100,max:20000,step:100,fmt:(v: number)=>`${v}`,isFloat:false},
+              {label:'Pacing Tolerance (ms)',key:'pacingToleranceMs',min:1,max:100,step:1,fmt:(v: number)=>`+/-${v}`,isFloat:false},
+              {label:'Pacing Min Hits',key:'pacingMinHits',min:4,max:20,step:1,fmt:(v: number)=>`${v}`,isFloat:false},
+            ].map(({label,key,min,max,step,fmt,isFloat})=>(
+              <div key={key}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:3}}>
+                  <label style={{fontSize:11,color:'#9fb0d4'}}>{label}</label>
+                  <span style={{fontSize:11,fontFamily:"IBM Plex Mono, monospace",color:'#4fc3e8'}}>{fmt(settings[key])}</span>
+                </div>
+                <input type="range" min={min} max={max} step={step} value={settings[key]}
+                  onChange={e=>setSettings({...settings,[key]:isFloat?parseFloat(e.target.value):parseInt(e.target.value)})}
+                  style={{width:'100%',accentColor:'#4fc3e8'}} disabled={isScanning}/>
+              </div>
+            ))}
+            <label style={{display:'flex',alignItems:'center',gap:8,fontSize:11.5,color:'#9fb0d4',cursor:'pointer'}}>
+              <input type="checkbox" checked={settings.verboseDebug} onChange={e=>setSettings({...settings,verboseDebug:e.target.checked})} style={{accentColor:'#4fc3e8'}} disabled={isScanning}/>
+              Verbose Debug Logging
+            </label>
+          </div>
+        </div>
+      )}
+
+      {/* â"€â"€ WATCHLIST PANEL â"€â"€ */}
+      {showWatchlist&&Object.keys(watchlist).length>0&&(
+        <div style={{position:'fixed',top:70,right:configOpen?390:18,zIndex:150,background:'#121b35',border:'1px solid rgba(255,171,61,0.50)',borderRadius:9,padding:16,width:300,maxHeight:380,overflowY:'auto',boxShadow:'0 8px 32px rgba(0,0,0,0.6)'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+            <span style={{fontSize:12,fontWeight:700,color:'#ffab3d',display:'flex',alignItems:'center',gap:6}}><Bookmark size={12} fill="currentColor"/> Watchlist</span>
+            <button onClick={()=>setShowWatchlist(false)} style={{background:'none',border:'none',color:'#5d6e96',cursor:'pointer',fontSize:18,lineHeight:1}}>×</button>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {Object.values(watchlist).map((p: any)=>(
+              <div key={p.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',background:'#060a16',border:'1px solid #1f2b4e',borderRadius:6,padding:'6px 10px',gap:8}}>
+                <div style={{minWidth:0,flex:1}}>
+                  <a href={`https://app.warera.io/user/${p.id}`} target="_blank" rel="noopener noreferrer" style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,color:'#4fc3e8',display:'block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',textDecoration:'none'}}>{p.name}</a>
+                  <span style={{fontSize:9.5,color:'#5d6e96'}}>{p.country}</span>
+                </div>
+                <button onClick={()=>toggleWatchlist(p.id,p.name,p.country)} style={{background:'none',border:'none',color:'#5d6e96',cursor:'pointer',padding:'2px'}} title="Remove"><Star size={10}/></button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

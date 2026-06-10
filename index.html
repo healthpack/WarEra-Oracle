@@ -4,23 +4,46 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WarEra Oracle - Multi-Account & Bot Net Detection</title>
+    <title>Palantirish — WarEra Multi-Account & Bot-Net Detection</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
+      *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+      :root {
+        --bg:       #070b18;
+        --panel:    #0c1226;
+        --elev:     #121b35;
+        --elev2:    #1b2748;
+        --inset:    #060a16;
+        --line:     #1f2b4e;
+        --line2:    #2e3f6a;
+        --tx:       #eaf0ff;
+        --tx2:      #9fb0d4;
+        --tx3:      #5d6e96;
+        --link:     #4fc3e8;
+        --link-bg:  rgba(79,195,232,0.13);
+        --crit:     #ff5d6c;
+        --crit-bg:  rgba(255,93,108,0.12);
+        --crit-line:rgba(255,93,108,0.42);
+        --high:     #ffab3d;
+        --high-bg:  rgba(255,171,61,0.12);
+        --high-line:rgba(255,171,61,0.40);
+        --med:      #ffd84d;
+        --med-bg:   rgba(255,216,77,0.11);
+        --med-line: rgba(255,216,77,0.36);
+        --pos:      #3fd0a3;
+        --neg:      #ff5d6c;
       }
       body {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-          'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-          sans-serif;
+        font-family: 'IBM Plex Sans', system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--tx);
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
+        overflow: hidden;
       }
-      #root {
-        min-height: 100vh;
-      }
+      #root { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
     </style>
   </head>
   <body>
