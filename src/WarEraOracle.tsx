@@ -896,7 +896,7 @@ const ActivityHeatmap = ({ hourBuckets }) => {
   );
 };
 
-export default function App() {
+export function WarEraOracle() {
   const [isScanning, setIsScanning] = useState(false);
   const isScanningRef = useRef(false);
   const [progress, setProgress] = useState(0);
