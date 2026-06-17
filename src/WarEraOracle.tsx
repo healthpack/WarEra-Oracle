@@ -54,28 +54,69 @@ const WarEraAPI = {
 // ─────────────────────────────────────────────
 //  BASELINE TRACKING (Passes through globalCache)
 // ─────────────────────────────────────────────
+// Per-level coin wealth baseline. `samples` is a reservoir (capped at SAMPLE_CAP)
+// so we can compute a median per level rather than a mean, which is far more robust
+// to a handful of ultra-rich outliers that would otherwise inflate the baseline and
+// mask the over-wealthy alts the scan hunts for.
+const SAMPLE_CAP = 500;
 const recordWealthBaseline = (globalCache, level, wealth) => {
   if (level == null || wealth == null || isNaN(wealth)) return;
   const key = String(Math.round(level));
   if (!globalCache.wealthByLevel) globalCache.wealthByLevel = {};
-  if (!globalCache.wealthByLevel[key]) { globalCache.wealthByLevel[key] = { avg: wealth, count: 1 }; return; }
-  const e = globalCache.wealthByLevel[key];
-  const w = Math.min(e.count, 500); 
-  e.avg = (e.avg * w + wealth) / (w + 1);
-  e.count += 1;
+  let e = globalCache.wealthByLevel[key];
+  if (!e) { e = globalCache.wealthByLevel[key] = { samples: [], count: 0 }; }
+  if (!Array.isArray(e.samples)) e.samples = legacySamples(e); // migrate legacy {avg,count} shape
+  e.count = (e.count || 0) + 1;
+  if (e.samples.length < SAMPLE_CAP) {
+    e.samples.push(wealth);
+  } else {
+    // Reservoir sampling: keep a uniform random sample once the cap is hit.
+    const j = Math.floor(Math.random() * e.count);
+    if (j < SAMPLE_CAP) e.samples[j] = wealth;
+  }
 };
 
+// Reconstruct a samples array from a legacy mean-only entry so old persisted
+// baselines still contribute something sensible (the mean stands in as one sample).
+const legacySamples = (e) => (e && typeof e.avg === 'number' ? [e.avg] : []);
+
+const median = (arr) => {
+  if (!arr || arr.length === 0) return null;
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+};
+
+// Median wealth for a single level, tolerant of the legacy {avg,count} shape.
+const getLevelMedian = (globalCache, level) => {
+  const e = globalCache.wealthByLevel?.[String(level)];
+  if (!e) return null;
+  const samples = Array.isArray(e.samples) ? e.samples : legacySamples(e);
+  return median(samples);
+};
+
+// Baseline = the AVERAGE of the surrounding per-level medians. We try the immediate
+// ±1 band first and widen the radius only when no nearby level has data, so sparse
+// levels borrow from their neighbours instead of returning nothing.
 const getWealthAverageExtended = (globalCache, level) => {
   if (level == null) return null;
   if (!globalCache.wealthByLevel) return null;
   const lvl = Math.round(level);
   for (const radius of [1, 5, 10, 25, 50, 100, 250]) {
-    let weightedSum = 0, totalCount = 0;
+    const medians = [];
+    let totalCount = 0;
     for (let l = lvl - radius; l <= lvl + radius; l++) {
-      const e = globalCache.wealthByLevel[String(l)];
-      if (e?.count >= 1) { weightedSum += e.avg * e.count; totalCount += e.count; }
+      const m = getLevelMedian(globalCache, l);
+      if (m != null) {
+        medians.push(m);
+        const e = globalCache.wealthByLevel[String(l)];
+        totalCount += (e?.count || (Array.isArray(e?.samples) ? e.samples.length : 1));
+      }
     }
-    if (totalCount >= 1) return { avg: weightedSum / totalCount, radius, totalCount };
+    if (medians.length > 0) {
+      const avg = medians.reduce((a, b) => a + b, 0) / medians.length;
+      return { avg, radius, totalCount, levelsUsed: medians.length };
+    }
   }
   return null;
 };
