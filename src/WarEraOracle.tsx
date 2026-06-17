@@ -19,7 +19,7 @@ const WarEraAPI = {
     let res;
     try {
       const ctrl = new AbortController();
-      const tId = setTimeout(() => ctrl.abort(), 25000);
+      const tId = setTimeout(() => ctrl.abort(), 15000); // 15s timeout to prevent thread hanging
       if (isGateway) {
         res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal: ctrl.signal });
       } else {
@@ -27,7 +27,7 @@ const WarEraAPI = {
         res = await fetch(`${url}?batch=1&input=${input}`, { headers, signal: ctrl.signal });
       }
       clearTimeout(tId);
-    } catch (e) { throw new Error(e.name === 'AbortError' ? `Request timed out (25s): ${endpoint}` : `Network Error: ${e.message}`); }
+    } catch (e) { throw new Error(e.name === 'AbortError' ? `Request timed out: ${endpoint}` : `Network Error: ${e.message}`); }
     const text = await res.text();
     if (res.status === 429 || text.includes('Rate limit exceeded') || text.includes('"status":429')) throw new Error("RATE LIMIT TRIGGERED");
     if (!res.ok) {
@@ -49,6 +49,35 @@ const WarEraAPI = {
     if (resultObj?.error) throw new Error(resultObj.error.message || JSON.stringify(resultObj.error));
     return resultObj?.result?.data?.json || resultObj?.result?.data || resultObj;
   }
+};
+
+// ─────────────────────────────────────────────
+//  BASELINE TRACKING (Passes through globalCache)
+// ─────────────────────────────────────────────
+const recordWealthBaseline = (globalCache, level, wealth) => {
+  if (level == null || wealth == null || isNaN(wealth)) return;
+  const key = String(Math.round(level));
+  if (!globalCache.wealthByLevel) globalCache.wealthByLevel = {};
+  if (!globalCache.wealthByLevel[key]) { globalCache.wealthByLevel[key] = { avg: wealth, count: 1 }; return; }
+  const e = globalCache.wealthByLevel[key];
+  const w = Math.min(e.count, 500); 
+  e.avg = (e.avg * w + wealth) / (w + 1);
+  e.count += 1;
+};
+
+const getWealthAverageExtended = (globalCache, level) => {
+  if (level == null) return null;
+  if (!globalCache.wealthByLevel) return null;
+  const lvl = Math.round(level);
+  for (const radius of [1, 5, 10, 25, 50, 100, 250]) {
+    let weightedSum = 0, totalCount = 0;
+    for (let l = lvl - radius; l <= lvl + radius; l++) {
+      const e = globalCache.wealthByLevel[String(l)];
+      if (e?.count >= 1) { weightedSum += e.avg * e.count; totalCount += e.count; }
+    }
+    if (totalCount >= 1) return { avg: weightedSum / totalCount, radius, totalCount };
+  }
+  return null;
 };
 
 // ─────────────────────────────────────────────
@@ -407,78 +436,36 @@ const detectShellCompanies = (allWorkers, settings, globalCache) => {
   return { suspicions, suspiciousWorkers, zeroBonusCompanyCount, bossNoBonusPercentage };
 };
 
-const levelWealthBaseline = {};
-const wealthByLevel = {};
-
-const recordWealthBaseline = (level, wealth) => {
-  if (level == null || wealth == null || isNaN(wealth)) return;
-  const key = String(Math.round(level));
-  if (!wealthByLevel[key]) { wealthByLevel[key] = { avg: wealth, count: 1 }; return; }
-  const e = wealthByLevel[key];
-  const w = Math.min(e.count, 500); 
-  e.avg = (e.avg * w + wealth) / (w + 1);
-  e.count += 1;
-};
-
-const getWealthAverageExtended = (level) => {
-  if (level == null) return null;
-  const lvl = Math.round(level);
-  for (const radius of [1, 5, 10, 25, 50, 100, 250]) {
-    let weightedSum = 0, totalCount = 0;
-    for (let l = lvl - radius; l <= lvl + radius; l++) {
-      const e = wealthByLevel[String(l)];
-      if (e?.count >= 1) { weightedSum += e.avg * e.count; totalCount += e.count; }
-    }
-    if (totalCount >= 1) return { avg: weightedSum / totalCount, radius, totalCount };
-  }
-  return null;
-};
-
-const recordPlayerWealthBaseline = (level, companyCount, maxAELevel) => {
-  const band = Math.floor((level || 1) / 5) * 5;
-  if (!levelWealthBaseline[band]) levelWealthBaseline[band] = { companySamples: [], aeSamples: [] };
-  if (companyCount > 0) levelWealthBaseline[band].companySamples.push(companyCount);
-  if (maxAELevel > 0) levelWealthBaseline[band].aeSamples.push(maxAELevel);
-};
-
-const getBaselineForLevel = (level) => {
-  const band = Math.floor((level || 1) / 5) * 5;
-  for (let b = band; b <= 50; b += 5) {
-    const bl = levelWealthBaseline[b];
-    if (bl && bl.companySamples.length >= 5) {
-      const sortedC = [...bl.companySamples].sort((a,b)=>a-b);
-      const p75Companies = sortedC[Math.floor(sortedC.length * 0.75)];
-      const sortedAE = [...bl.aeSamples].sort((a,b)=>a-b);
-      const p75AE = sortedAE[Math.floor(sortedAE.length * 0.75)];
-      return { p75Companies, p75AE, sampleSize: bl.companySamples.length };
-    }
-  }
-  return null;
-};
-
-const detectAgeDateAnomaly = (player, allWorkers, settings) => {
-  const multiplier = settings?.wealthAnomalyMultiplier ?? 5;
+const detectAgeDateAnomaly = (player, allWorkers, settings, globalCache, addLog) => {
+  const multiplier = settings?.wealthAnomalyMultiplier ?? 1.5;
   const suspicions = [];
   const now = Date.now();
   const youngRichWorkers = [];
 
   allWorkers.forEach(w => {
     if (!w.resolvedUser?.createdAt) return;
-    const ageInDays = (now - new Date(w.resolvedUser.createdAt).getTime()) / (24 * 60 * 60 * 1000);
+    const ageInDays = (now - new Date(w.resolvedUser.createdAt).getTime()) / 86400000;
     if (ageInDays >= 45) return;
 
     const level = w.normalizedLevel || 1;
     const coinWealth = w.resolvedUser?.userWealth?.value;
     const levelForWealth = w.resolvedUser?.userLevel?.value ?? level;
-    const avgResult = getWealthAverageExtended(levelForWealth);
+    
+    const avgResult = getWealthAverageExtended(globalCache, levelForWealth);
     const avgCoinWealth = avgResult ? avgResult.avg : null;
 
-    if (coinWealth != null && avgCoinWealth !== null && coinWealth > avgCoinWealth * multiplier) {
-      w.accountAgeDays = Math.floor(ageInDays);
-      const radiusSuffix = avgResult && avgResult.radius > 1 ? ` (±${avgResult.radius} lvl avg, n=${avgResult.totalCount})` : '';
-      w.wealthReason = `coin wealth ${coinWealth.toFixed(0)} is ${(coinWealth/avgCoinWealth).toFixed(1)}x the level ${levelForWealth} average${radiusSuffix} (${avgCoinWealth.toFixed(0)}). Account is ${Math.floor(ageInDays)} days old.`;
-      w.wealthMaxAELevel = 0;
-      youngRichWorkers.push(w);
+    if (coinWealth != null) {
+      if (avgCoinWealth !== null) {
+        const pct = (coinWealth / avgCoinWealth) * 100;
+        if (addLog) addLog(`User wealth -${coinWealth.toFixed(0)}- Coins, average wealth for level is -${avgCoinWealth.toFixed(0)}- Coins. User wealth is ${pct.toFixed(0)}% of the average.`, 'debug');
+      } else {
+        if (addLog) addLog(`User wealth -${coinWealth.toFixed(0)}- Coins, average wealth for level is -UNKNOWN- Coins.`, 'debug');
+      }
+
+      if (avgCoinWealth !== null && coinWealth > avgCoinWealth * multiplier) {
+        w.accountAgeDays = Math.floor(ageInDays);
+        youngRichWorkers.push(w);
+      }
     }
   });
 
@@ -491,21 +478,29 @@ const detectAgeDateAnomaly = (player, allWorkers, settings) => {
   }
 
   if (player.accountCreatedAt) {
-    const ageDays = (now - new Date(player.accountCreatedAt).getTime()) / (24 * 60 * 60 * 1000);
+    const ageDays = (now - new Date(player.accountCreatedAt).getTime()) / 86400000;
     if (ageDays < 45) {
       const bossCoinWealth = player.userWealth?.value;
       const bossLevel = player.userLevel?.value ?? player.level;
-      const bossAvgResult = getWealthAverageExtended(bossLevel);
+      const bossAvgResult = getWealthAverageExtended(globalCache, bossLevel);
       const bossAvg = bossAvgResult ? bossAvgResult.avg : null;
-      if (bossCoinWealth != null && bossAvg !== null && bossCoinWealth > bossAvg * multiplier) {
-        const bossRadiusSuffix = bossAvgResult && bossAvgResult.radius > 1 ? ` (±${bossAvgResult.radius} lvl avg, n=${bossAvgResult.totalCount})` : '';
-        const bossReason = `coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth/bossAvg).toFixed(1)}x the level ${bossLevel} average${bossRadiusSuffix} (${bossAvg.toFixed(0)}). Account is ${Math.floor(ageDays)} days old.`;
-        suspicions.push({
-          type: 'newborn_wealthy', severity: 'high',
-          desc: `Boss account may be a recently funded alt: ${bossReason}`,
-          workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?', accountAgeDays: Math.floor(ageDays), wealthReason: bossReason, wealthMaxAELevel: 0 }],
-          detectionWeight: 3
-        });
+      
+      if (bossCoinWealth != null) {
+        if (bossAvg !== null) {
+          const pct = (bossCoinWealth / bossAvg) * 100;
+          if (addLog) addLog(`User wealth -${bossCoinWealth.toFixed(0)}- Coins, average wealth for level is -${bossAvg.toFixed(0)}- Coins. User wealth is ${pct.toFixed(0)}% of the average.`, 'debug');
+        } else {
+          if (addLog) addLog(`User wealth -${bossCoinWealth.toFixed(0)}- Coins, average wealth for level is -UNKNOWN- Coins.`, 'debug');
+        }
+
+        if (bossAvg !== null && bossCoinWealth > bossAvg * multiplier) {
+          suspicions.push({
+            type: 'newborn_wealthy', severity: 'high',
+            desc: `Boss account may be a recently funded alt: Coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth/bossAvg).toFixed(1)}x the level ${bossLevel} average.`,
+            workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?', accountAgeDays: Math.floor(ageDays) }],
+            detectionWeight: 3
+          });
+        }
       }
     }
   }
@@ -538,7 +533,7 @@ const detectTemporalClustering = (player, actionTimes) => {
   return suspicions;
 };
 
-const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRun = false) => {
+const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRun = false, addLog = null) => {
   if (!player) return null;
 
   let rawWorkers = player.companies ? player.companies.flatMap(c => c.workers || []) : [];
@@ -597,7 +592,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
 
   const automationSuspicions = detectAutomation(player, settings);
   const { suspicions: econSuspicions, totalCoinsWashed } = detectEconomicNetwork(player, allWorkers, settings, globalCache);
-  const ageSuspicions = detectAgeDateAnomaly(player, allWorkers, settings);
+  const ageSuspicions = detectAgeDateAnomaly(player, allWorkers, settings, globalCache, addLog);
   const temporalSuspicions = detectTemporalClustering(player, actionTimes);
 
   let workerSuspicions = [], workerSuspiciousSet = new Set();
@@ -687,20 +682,18 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   };
 };
 
-const analyzePhase1 = (player, settings, globalCache) => {
+const analyzePhase1 = (player, settings, globalCache, addLog = null) => {
   if (!player) return null;
 
   const washPartners = player.washPartners || {};
   const hasAdvancedFlags = player.sniperHits >= 5 || player.maxConcurrentTxs >= 5 ||
     player.isHermit || player.isMutualHermit || player.pacingHits >= settings.pacingMinHits;
 
-  if (Object.keys(washPartners).length === 0 && !player.isDirectLaunderer &&
-      !hasAdvancedFlags && !player.tipAbuse) return null;
-
   const automationSuspicions = detectAutomation(player, settings);
   const { suspicions: econSuspicions, totalCoinsWashed } = detectEconomicNetwork(player, [], settings, globalCache);
+  const ageSuspicions = detectAgeDateAnomaly(player, [], settings, globalCache, addLog);
 
-  const allSuspicions = [...automationSuspicions, ...econSuspicions];
+  const allSuspicions = [...automationSuspicions, ...econSuspicions, ...ageSuspicions];
 
   if (player.isDirectLaunderer) {
     const selfWorker = {
@@ -737,7 +730,7 @@ const analyzePhase1 = (player, settings, globalCache) => {
   if (allSuspicions.length === 0) return null;
 
   allSuspicions.sort((a, b) => {
-    const order = ['money_laundering', 'transaction_abuse', 'market_automation', 'superhuman_apm', 'script_pacing', 'mutual_hermit', 'hermit_network', 'tip_farming'];
+    const order = ['money_laundering', 'transaction_abuse', 'market_automation', 'superhuman_apm', 'script_pacing', 'mutual_hermit', 'hermit_network', 'newborn_wealthy', 'tip_farming'];
     const ai = order.indexOf(a.type); const bi = order.indexOf(b.type);
     if (ai !== -1 && bi !== -1) return ai - bi;
     if (ai !== -1) return -1; if (bi !== -1) return 1;
@@ -755,6 +748,8 @@ const analyzePhase1 = (player, settings, globalCache) => {
   if (tipSusP2) summaryParts.push(`Article tip farming (${player.tipAbuse?.heavyTippers || 0} heavy, ${player.tipAbuse?.repeatTippers || 0} repeat tippers).`);
   const abuseSus = allSuspicions.find(s => s.type === 'transaction_abuse');
   if (abuseSus) summaryParts.push(`Wash Trading ring with ${abuseSus?.partners?.length || 0} partners.`);
+  const ageSus = allSuspicions.find(s => s.type === 'newborn_wealthy');
+  if (ageSus) summaryParts.push(`New accounts with disproportionate wealth detected.`);
 
   const detections = allSuspicions.reduce((acc, s) => acc + (s.detectionWeight !== undefined ? s.detectionWeight : (s.workers?.length || s.partners?.length || 1)), 0);
 
@@ -933,7 +928,15 @@ export function WarEraOracle() {
   const isGatewayDead = useRef(false);
   const globalRateLimitRelease = useRef(0);
   const logsContainerRef = useRef(null);
-  const globalCacheRef = useRef({ countries: {}, regions: {}, names: {}, requestDeduper: new Map() });
+  
+  const globalCacheRef = useRef({ 
+    countries: {}, 
+    regions: {}, 
+    names: {}, 
+    requestDeduper: new Map(), 
+    wealthByLevel: {}
+  });
+  
   const globalWashPartners = useRef({});
   const globalBans = useRef({});
   const globalHermitPrimaries = useRef({});
@@ -1036,7 +1039,7 @@ export function WarEraOracle() {
       }
       if (isRateLimited) {
         setIsRateLimited(false);
-        setCurrentTask(`Executing Concurrency Pool (x${settings.concurrencyLimit})...`);
+        setCurrentTask(`Executing Concurrency Pool (x${effectiveConcurrencyRef.current})...`);
       }
       const now = Date.now();
       gatewayTokens.current = gatewayTokens.current.filter(t => now-t < 60000);
@@ -1056,7 +1059,10 @@ export function WarEraOracle() {
       let nextExpire = forceOfficial ? oNext : Math.min(gNext, oNext);
       if (nextExpire === Infinity) nextExpire = now;
       const waitMs = Math.max(10, 60000 - (now - nextExpire) + 10);
-      globalRateLimitRelease.current = Date.now() + waitMs;
+      
+      if (globalRateLimitRelease.current < Date.now() + waitMs) {
+          globalRateLimitRelease.current = Date.now() + waitMs;
+      }
     }
     throw new Error("Scan Aborted");
   };
@@ -1064,82 +1070,94 @@ export function WarEraOracle() {
   const smartFetch = async (endpoint, payload, forceOfficial=false) => {
     const cacheKey = endpoint + JSON.stringify(payload);
     
-    if (!globalCacheRef.current.requestDeduper) globalCacheRef.current.requestDeduper = new Map();
     if (globalCacheRef.current.requestDeduper.has(cacheKey)) {
         return await globalCacheRef.current.requestDeduper.get(cacheKey);
     }
 
     const executeFetch = async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1500);
-        const cacheRes = await fetch('/api/cache', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ endpoint, payload, forceOfficial, apiKey: apiKey.trim() }),
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-        if (cacheRes.ok) {
-          const cacheJson = await cacheRes.json();
-          if (cacheJson?.data !== undefined) {
-            let d = cacheJson.data;
-            if (Array.isArray(d) && d.length > 0 && typeof d[0] === 'string') { try { d = JSON.parse(d[0]); } catch { } }
-            return d;
-          }
-        }
-      } catch(e) { }
+      let currentForceOfficial = forceOfficial;
+      while(true) {
+        if (!isScanningRef.current) throw new Error("Scan Aborted");
 
-      let route;
-      if (isScanningRef.current) { route = await getToken(forceOfficial); }
-      else { route = forceOfficial ? 'official' : (isGatewayDead.current ? 'official' : 'gateway'); }
-      const baseUrl = route === 'gateway' ? 'https://gateway.warerastats.io/trpc/' : 'https://api2.warera.io/trpc/';
-      const activeKey = apiKey.trim();
-      try {
-        let result = await WarEraAPI.fetch(endpoint, payload, activeKey, baseUrl);
-        if (Array.isArray(result) && result.length > 0 && typeof result[0] === 'string') {
-          try { result = JSON.parse(result[0]); } catch { }
-        }
-        return result;
-      } catch (e) {
-        if (e.message.includes('RATE LIMIT')) {
-          globalRateLimitRelease.current = Date.now() + 10000;
-          addLog(`[WARNING] HTTP 429 on ${route.toUpperCase()}. Pausing all threads...`, 'warning');
-          while (globalRateLimitRelease.current > Date.now()) {
-            if (!isScanningRef.current) throw new Error("Scan Aborted");
-            await new Promise(r => setTimeout(r, 500));
-          }
-          return await smartFetch(endpoint, payload, forceOfficial);
-        }
-        const msg = e.message.toLowerCase();
-        const isSchemaErr = msg.includes('no procedure') || msg.includes('too_big') || msg.includes('unrecognized key') || msg.includes('invalid_type');
-        if (route === 'gateway' && (msg.includes('sqlstate 53300') || msg.includes('too many clients'))) {
-          const cur = effectiveConcurrencyRef.current;
-          const now = Date.now();
-          if (now - concurrencyLastReducedRef.current > 15000) {
-            const next = cur > 25 ? 25 : cur > 12 ? 12 : cur;
-            if (next < cur) {
-              effectiveConcurrencyRef.current = next;
-              concurrencyLastReducedRef.current = now;
-              addLog(`[GATEWAY] DB saturated - reducing concurrency ${cur} -> ${next} (15s cooldown active)`, 'warning');
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 1500);
+          const cacheRes = await fetch('/api/cache', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ endpoint, payload, forceOfficial: currentForceOfficial, apiKey: apiKey.trim() }),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          if (cacheRes.ok) {
+            const cacheJson = await cacheRes.json();
+            if (cacheJson?.data !== undefined) {
+              let d = cacheJson.data;
+              if (Array.isArray(d) && d.length > 0 && typeof d[0] === 'string') { try { d = JSON.parse(d[0]); } catch { } }
+              return d;
             }
           }
-          return await smartFetch(endpoint, payload, true);
-        }
-        if (route === 'gateway' && !isSchemaErr) {
-          gatewayFails.current += 1;
-          if (gatewayFails.current >= 4 && !isGatewayDead.current) {
-            isGatewayDead.current = true;
-            addLog(`[CRITICAL] Gateway failed 4 times. Circuit Breaker tripped. Falling back to Official API.`, 'warning');
-            setTimeout(() => { if (isScanningRef.current) { isGatewayDead.current=false; gatewayFails.current=0; addLog(`[INFO] Gateway routing resurrected.`, 'info'); } }, 60000);
-          } else if (!isGatewayDead.current) {
-            addLog(`[GATEWAY] Miss #${gatewayFails.current} on ${endpoint}: ${e.message.split('\n')[0]}`, 'info');
+        } catch(e) { }
+
+        let route;
+        if (isScanningRef.current) { route = await getToken(currentForceOfficial); }
+        else { route = currentForceOfficial ? 'official' : (isGatewayDead.current ? 'official' : 'gateway'); }
+        const baseUrl = route === 'gateway' ? 'https://gateway.warerastats.io/trpc/' : 'https://api2.warera.io/trpc/';
+        const activeKey = apiKey.trim();
+        try {
+          let result = await WarEraAPI.fetch(endpoint, payload, activeKey, baseUrl);
+          if (Array.isArray(result) && result.length > 0 && typeof result[0] === 'string') {
+            try { result = JSON.parse(result[0]); } catch { }
           }
-          const isOfficialEnabled = apiKey && apiKey.trim() !== '';
-          if (!isOfficialEnabled) throw new Error("Gateway failed and no Live API Key provided for fallback.");
-          return await smartFetch(endpoint, payload, true);
+          return result;
+        } catch (e) {
+          if (e.message.includes('RATE LIMIT')) {
+            const nowMs = Date.now();
+            if (globalRateLimitRelease.current < nowMs + 10000) {
+              globalRateLimitRelease.current = nowMs + 10000;
+              addLog(`[WARNING] HTTP 429 on ${route.toUpperCase()}. Pausing all threads...`, 'warning');
+            }
+            while (globalRateLimitRelease.current > Date.now()) {
+              if (!isScanningRef.current) throw new Error("Scan Aborted");
+              await new Promise(r => setTimeout(r, 500));
+            }
+            await new Promise(r => setTimeout(r, Math.random() * 2000));
+            continue;
+          }
+          const msg = e.message.toLowerCase();
+          const isSchemaErr = msg.includes('no procedure') || msg.includes('too_big') || msg.includes('unrecognized key') || msg.includes('invalid_type');
+          if (route === 'gateway' && (msg.includes('sqlstate 53300') || msg.includes('too many clients'))) {
+            const cur = effectiveConcurrencyRef.current;
+            const nowMs = Date.now();
+            if (nowMs - concurrencyLastReducedRef.current > 15000) {
+              const next = cur > 25 ? 25 : cur > 12 ? 12 : cur;
+              if (next < cur) {
+                effectiveConcurrencyRef.current = next;
+                concurrencyLastReducedRef.current = nowMs;
+                addLog(`[GATEWAY] DB saturated - reducing concurrency ${cur} -> ${next} (15s cooldown active)`, 'warning');
+              }
+            }
+            await new Promise(r => setTimeout(r, Math.random() * 2000));
+            currentForceOfficial = true;
+            continue;
+          }
+          if (route === 'gateway' && !isSchemaErr) {
+            gatewayFails.current += 1;
+            if (gatewayFails.current >= 4 && !isGatewayDead.current) {
+              isGatewayDead.current = true;
+              addLog(`[CRITICAL] Gateway failed 4 times. Circuit Breaker tripped. Falling back to Official API.`, 'warning');
+              setTimeout(() => { if (isScanningRef.current) { isGatewayDead.current=false; gatewayFails.current=0; addLog(`[INFO] Gateway routing resurrected.`, 'info'); } }, 60000);
+            } else if (!isGatewayDead.current) {
+              addLog(`[GATEWAY] Miss #${gatewayFails.current} on ${endpoint}: ${e.message.split('\n')[0]}`, 'info');
+            }
+            const isOfficialEnabled = apiKey && apiKey.trim() !== '';
+            if (!isOfficialEnabled) throw new Error("Gateway failed and no Live API Key provided for fallback.");
+            await new Promise(r => setTimeout(r, Math.random() * 2000));
+            currentForceOfficial = true;
+            continue;
+          }
+          throw e;
         }
-        throw e;
       }
     };
 
@@ -1254,7 +1272,7 @@ export function WarEraOracle() {
         playerObj.accountCreatedAt = uData.createdAt || uData.registeredAt || null;
         playerObj.userWealth = uData.userWealth || null;
         playerObj.userLevel = uData.userLevel || null;
-        if (uData.userWealth?.value != null && uData.userLevel?.value != null) recordWealthBaseline(uData.userLevel.value, uData.userWealth.value);
+        if (uData.userWealth?.value != null && uData.userLevel?.value != null) recordWealthBaseline(globalCacheRef.current, uData.userLevel.value, uData.userWealth.value);
         if (foundName && foundName !== 'Unknown') globalCacheRef.current.names[uId] = foundName;
         if (uData.isBanned || uData.banned) { addLog(`[OK] ${foundName} cleared (banned).`, 'info'); return; }
         bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
@@ -1496,13 +1514,11 @@ export function WarEraOracle() {
             totalCoinsReceived += amt;
           }
         });
-        const heavyTippers = Object.values(tipperCounts).filter(c => c >= 10).length;
-        const repeatTippers = Object.values(tipperCounts).filter(c => c >= 5).length;
-        if (heavyTippers >= 1 || repeatTippers >= 2) {
+        const validTipperIds = Object.keys(tipperCounts).filter(id => tipperCounts[id] >= 5);
+        if (Object.keys(tipperCounts).filter(id => tipperCounts[id] >= 10).length >= 1 || validTipperIds.length >= 2) {
           const tipperSentTotals = {};
           const tipperMeta = {};
-          for (const tipperId of Object.keys(tipperCounts)) {
-            if (tipperCounts[tipperId] < 5) continue;
+          for (const tipperId of validTipperIds) {
             if (!globalCacheRef.current.names[tipperId]) {
               try {
                 const td = await smartFetch('user.getUserLite', { userId: tipperId });
@@ -1517,15 +1533,30 @@ export function WarEraOracle() {
             try {
               const tipperTxData = await smartFetch('transaction.getPaginatedTransactions', { transactionType: 'articleTip', userId: tipperId, limit: 100 });
               const tipperItems = Array.isArray(tipperTxData) ? tipperTxData : (tipperTxData?.items||tipperTxData?.data||tipperTxData?.transactions||[]);
-              let sentCount = 0;
+              let totalSentCoins = 0;
               tipperItems.forEach(tx => {
                 const senderId = typeof tx.sender==='object' ? (tx.sender?._id||tx.sender?.id) : (tx.buyerId||tx.senderId||tx.sender||tx.fromId||tx.from||tx.authorId);
-                if (senderId === tipperId) sentCount++;
+                if (senderId === tipperId) {
+                    const amt = typeof tx.amount==='number' ? tx.amount : typeof tx.coins==='number' ? tx.coins : typeof tx.value==='number' ? tx.value : typeof tx.price==='number' ? tx.price : 0;
+                    totalSentCoins += amt;
+                }
               });
-              if (sentCount > 0) tipperSentTotals[tipperId] = sentCount;
+              if (totalSentCoins > 0) {
+                const givenToTarget = tipperAmounts[tipperId] || 0;
+                if ((givenToTarget / totalSentCoins) < 0.15) {
+                    delete tipperCounts[tipperId];
+                    delete tipperAmounts[tipperId];
+                    continue;
+                }
+                tipperSentTotals[tipperId] = totalSentCoins;
+              }
             } catch { /* best-effort */ }
           }
-          tipAbuse = { heavyTippers, repeatTippers, tipperCounts, tipperAmounts, tipperSentTotals, tipperMeta, totalTipsReceived, totalCoinsReceived };
+          const finalHeavy = Object.values(tipperCounts).filter(c => c >= 10).length;
+          const finalRepeat = Object.values(tipperCounts).filter(c => c >= 5).length;
+          if (finalHeavy >= 1 || finalRepeat >= 2) {
+             tipAbuse = { heavyTippers: finalHeavy, repeatTippers: finalRepeat, tipperCounts, tipperAmounts, tipperSentTotals, tipperMeta, totalTipsReceived, totalCoinsReceived };
+          }
         }
       } else {
         addLog(`[DEBUG] articleTip fetch failed for ${foundName}: ${tipTxResult.reason?.message}`, 'debug');
@@ -1569,7 +1600,10 @@ export function WarEraOracle() {
       sniperHits >= 5 || maxConcurrentTxs >= 5 || isHermit || isMutualHermit ||
       pacingHits >= settings.pacingMinHits || tipAbuse !== null;
 
-    if (!hasP1Flags) { addLog(`[OK] ${foundName} cleared (no transaction flags).`, 'info'); return; }
+    if (!hasP1Flags && !alwaysPhase2Ref.current) { 
+        addLog(`[OK] ${foundName} cleared (no transaction flags).`, 'info'); 
+        return; 
+    }
 
     const livePlayer = {
       id: uId, name: foundName, level: playerObj.level, isBanned: playerObj.isBanned, country: playerObj.scanContext||'Unknown Target',
@@ -1589,7 +1623,7 @@ export function WarEraOracle() {
 
     phase2DataRef.current[uId] = { livePlayer, actionTimes, hasMuLeadership, bossMuId, foundName, country: livePlayer.country };
 
-    const phase1Result = analyzePhase1(livePlayer, settings, globalCacheRef.current);
+    const phase1Result = analyzePhase1(livePlayer, settings, globalCacheRef.current, addLog);
     if (phase1Result) {
       phase1Result.phase2Status = 'pending';
       addLog(`[WARNING] Phase 1 flags: ${foundName} (score ${phase1Result.detections})`, 'warning');
@@ -1603,9 +1637,9 @@ export function WarEraOracle() {
         await processPlayerPhase2(uId, livePlayer.country, true);
       }
     } else if (alwaysPhase2Ref.current) {
-      addLog(`[INFO] ${foundName} - no Phase 1 flags; running worker analysis for targeted scan.`, 'info');
+      addLog(`[INFO] ${foundName} - running phase 2 worker analysis.`, 'info');
       const placeholder = {
-        player: livePlayer, summary: 'No transaction flags - running worker analysis...', suspicions: [],
+        player: livePlayer, summary: 'Running worker analysis...', suspicions: [],
         detections: 0, phase2Status: 'running', washPartners: {}, washPartnerCount: 0,
         totalCoinsWashed: 0, zeroBonusCompanyCount: 0, bossNoBonusPercentage: 0,
         hasLaundering: false, launderingWorkerCount: 0, totalLaunderedCoins: 0, scoreBreakdown: []
@@ -1714,7 +1748,7 @@ export function WarEraOracle() {
                   const uData = w.resolvedUser?.username ? w.resolvedUser : await smartFetch('user.getUserLite', { userId });
                   if (uData) {
                     w.resolvedUser=uData; w.isBanned=!!(uData.isBanned||uData.banned||uData.infos?.isBanned);
-                    if (uData.userWealth?.value!=null&&uData.userLevel?.value!=null) recordWealthBaseline(uData.userLevel.value, uData.userWealth.value);
+                    if (uData.userWealth?.value!=null&&uData.userLevel?.value!=null) recordWealthBaseline(globalCacheRef.current, uData.userLevel.value, uData.userWealth.value);
                     globalCacheRef.current.names[userId]=uData.username||uData.name||userId;
                     let workerMuId=uData.mu?(typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu):(uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
                     w.workerMuId=workerMuId;
@@ -1723,8 +1757,7 @@ export function WarEraOracle() {
                   const isActive=uData?.isActive;
                   if (isActive!==false&&level<30) w.ownedCompanies=await fetchUserCompaniesFull(userId);
                   else w.ownedCompanies=[];
-                  const workerAELevel = w.ownedCompanies ? Math.max(0, ...w.ownedCompanies.map(c => c.automatedEngine||c.aeLevel||c.engineLevel||0)) : 0;
-                  recordPlayerWealthBaseline(level, w.ownedCompanies?.length||0, workerAELevel);
+                  
                   if (hasMuLeadership&&bossMuId&&w.workerMuId===bossMuId) {
                     try {
                       const txData=await smartFetch('transaction.getPaginatedTransactions',{userId,muId:bossMuId,transactionType:'donation',limit:100});
@@ -1774,7 +1807,7 @@ export function WarEraOracle() {
       livePlayer.pacingSingleType = pacingSingleType;
 
       const fullPlayer = { ...livePlayer, companies: parsedCompanies };
-      const result = analyzePlayer(fullPlayer, settings, globalCacheRef.current, actionTimes, true);
+      const result = analyzePlayer(fullPlayer, settings, globalCacheRef.current, actionTimes, true, addLog);
 
       setFindings(prev => {
         const newState = { ...prev };
@@ -1785,7 +1818,7 @@ export function WarEraOracle() {
           if (idx >= 0) newState[country][idx] = result;
           else newState[country].push(result);
         } else {
-          if (idx >= 0) newState[country][idx] = { ...newState[country][idx], phase2Status: 'complete' };
+          if (idx >= 0) newState[country] = newState[country].filter(r => r.player.id !== playerId);
         }
         return newState;
       });
@@ -1823,18 +1856,19 @@ export function WarEraOracle() {
       const localWb = localStorage.getItem('wera_wealth_baseline');
       if (localWb) {
         const parsedWb = JSON.parse(localWb);
-        Object.assign(wealthByLevel, parsedWb);
+        Object.assign(globalCacheRef.current.wealthByLevel || {}, parsedWb);
       }
       const wbRes = await fetch('/api/cache', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'get_wealth_baseline' }) });
       if (wbRes.ok) { 
           const wbJson = await wbRes.json(); 
           let loaded = wbJson.data||{}; 
           if (typeof loaded === 'object' && !Array.isArray(loaded)) { 
-              Object.assign(wealthByLevel, loaded); 
+              if(!globalCacheRef.current.wealthByLevel) globalCacheRef.current.wealthByLevel = {};
+              Object.assign(globalCacheRef.current.wealthByLevel, loaded); 
           } 
       }
     } catch(e) { addLog(`[DEBUG] Could not load wealth baseline from server: ${e.message}`, 'debug'); }
-    addLog(`[INFO] Wealth baseline: ${Object.keys(wealthByLevel).length} level entries loaded.`, 'info');
+    addLog(`[INFO] Wealth baseline: ${Object.keys(globalCacheRef.current.wealthByLevel || {}).length} level entries loaded.`, 'info');
 
     addLog(`Initializing High-Concurrency Oracle Engine...`, 'info');
 
@@ -1937,19 +1971,34 @@ export function WarEraOracle() {
 
     if (scanQueueRef.current.length===0) { addLog(`[CRITICAL] No targets acquired.`, 'warning'); setIsScanning(false); isScanningRef.current=false; setCurrentTask('Idle'); return; }
 
-    const processedIds=new Set(); let playersScanned=0; let activePromises=[];
+    const processedIds=new Set(); let playersScanned=0;
+    const activePromises = new Set();
     setCurrentTask(`Executing Concurrency Pool (x${effectiveConcurrencyRef.current})...`);
+    
     try {
-      while (isScanningRef.current&&(scanQueueRef.current.length>0||activePromises.length>0)) {
-        while (scanQueueRef.current.length>0&&activePromises.length<effectiveConcurrencyRef.current) {
-          const player=scanQueueRef.current.shift();
-          const pid=player._id||player.id;
-          if (processedIds.has(pid)) continue; processedIds.add(pid);
-          const p=(async()=>{ await new Promise(r=>setTimeout(r,10)); try { await processPlayerPhase1(player); } catch(err) { addLog(`[CRITICAL] Engine crash on ${player.name||player._id}: ${err.message}`, 'warning'); } })();
-          p.finally(()=>{ activePromises=activePromises.filter(pr=>pr!==p); playersScanned++; const total=playersScanned+activePromises.length+scanQueueRef.current.length; setProgress(Math.floor((playersScanned/total)*100)); });
-          activePromises.push(p);
+      while (isScanningRef.current && (scanQueueRef.current.length > 0 || activePromises.size > 0)) {
+        while (scanQueueRef.current.length > 0 && activePromises.size < effectiveConcurrencyRef.current) {
+          const player = scanQueueRef.current.shift();
+          const pid = player._id || player.id;
+          if (processedIds.has(pid)) continue; 
+          processedIds.add(pid);
+          
+          const p = (async () => { 
+              await new Promise(r=>setTimeout(r, 10)); 
+              try { await processPlayerPhase1(player); } 
+              catch(err) { addLog(`[CRITICAL] Engine crash on ${player.name||player._id}: ${err.message}`, 'warning'); } 
+          })();
+          
+          activePromises.add(p);
+          p.finally(() => { 
+              activePromises.delete(p); 
+              playersScanned++; 
+              const total = playersScanned + activePromises.size + scanQueueRef.current.length; 
+              setProgress(Math.floor((playersScanned/total)*100)); 
+          });
         }
-        if (activePromises.length>0) {
+        
+        if (activePromises.size > 0) {
           await Promise.race(activePromises);
           const nowR = Date.now();
           if (concurrencyLastReducedRef.current > 0 && nowR - concurrencyLastReducedRef.current > 60000) {
@@ -1969,9 +2018,9 @@ export function WarEraOracle() {
       setIsRateLimited(false);
       if (isScanningRef.current) { setCurrentTask('Scan Complete'); setProgress(100); addLog('Scan sequence terminated.', 'info'); }
       setIsScanning(false); isScanningRef.current=false;
-      if (Object.keys(wealthByLevel).length > 0) {
-        localStorage.setItem('wera_wealth_baseline', JSON.stringify(wealthByLevel));
-        fetch('/api/cache', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'set_wealth_baseline', data:wealthByLevel }) }).catch(()=>{});
+      if (globalCacheRef.current.wealthByLevel && Object.keys(globalCacheRef.current.wealthByLevel).length > 0) {
+        localStorage.setItem('wera_wealth_baseline', JSON.stringify(globalCacheRef.current.wealthByLevel));
+        fetch('/api/cache', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'set_wealth_baseline', data:globalCacheRef.current.wealthByLevel }) }).catch(()=>{});
       }
     }
   };
@@ -1979,12 +2028,7 @@ export function WarEraOracle() {
   const abortScan = () => { setIsScanning(false); isScanningRef.current=false; setIsRateLimited(false); setCurrentTask('Scan Aborted'); addLog('Scan manually aborted.', 'warning'); };
 
   const exportFindings = () => {
-    const data = {
-      _oracleExport: true,
-      exportedAt: new Date().toISOString(),
-      totalFlags: Object.values(findings).flat().length,
-      findings,
-    };
+    const data = { _oracleExport: true, exportedAt: new Date().toISOString(), totalFlags: Object.values(findings).flat().length, findings };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href=url; a.download=`warera-oracle-${Date.now()}.json`; a.click();
@@ -1992,12 +2036,7 @@ export function WarEraOracle() {
   };
 
   const exportSinglePlayer = (result) => {
-    const data = {
-      _oracleExport: true,
-      exportedAt: new Date().toISOString(),
-      totalFlags: 1,
-      findings: { [result.player.country]: [result] },
-    };
+    const data = { _oracleExport: true, exportedAt: new Date().toISOString(), totalFlags: 1, findings: { [result.player.country]: [result] } };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href=url; a.download=`oracle-${result.player.name}-${Date.now()}.json`; a.click();
@@ -2011,15 +2050,10 @@ export function WarEraOracle() {
     reader.onload = (ev) => {
       try {
         const parsed = JSON.parse(ev.target.result);
-        if (!parsed._oracleExport || !parsed.findings) {
-          alert('Invalid Oracle export file. Make sure you exported from WarEra Oracle.');
-          return;
-        }
+        if (!parsed._oracleExport || !parsed.findings) { alert('Invalid Oracle export file. Make sure you exported from WarEra Oracle.'); return; }
         setFindings(parsed.findings);
         addLog(`✅ Imported ${Object.values(parsed.findings).flat().length} findings from ${file.name}`, 'info');
-      } catch(err) {
-        alert(`Failed to parse file: ${err.message}`);
-      }
+      } catch(err) { alert(`Failed to parse file: ${err.message}`); }
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -2028,7 +2062,6 @@ export function WarEraOracle() {
   const buildShortSummary = (result) => {
     const name = result.player.name;
     const parts = [];
-
     const launderSus = result.suspicions.find(s => s.type === 'money_laundering');
     if (launderSus) {
       const workerNames = launderSus.workers.filter(w => !w.normalizedName.includes('(SELF)')).map(w => w.normalizedName);
@@ -2036,7 +2069,6 @@ export function WarEraOracle() {
       if (workerNames.length > 0) parts.push(`${workerNames.length} worker(s) (${workerNames.slice(0,3).join(', ')}${workerNames.length>3?'...':''}) donated ${total} coins to ${name}'s MU in large transactions.`);
       else parts.push(`${name} sent ${total} coins to their MU in large outbound donations.`);
     }
-
     const washSus = result.suspicions.find(s => s.type === 'transaction_abuse');
     if (washSus) {
       const banned = (washSus.partners || []).filter(p => p.isBanned);
@@ -2044,62 +2076,37 @@ export function WarEraOracle() {
       const profitStr = Math.abs(netProfit) < 0.01 ? 'no net gain' : netProfit > 0 ? `gaining ${netProfit.toFixed(1)} coins` : `losing ${Math.abs(netProfit).toFixed(1)} coins`;
       parts.push(`Ring-traded with ${(washSus.partners||[]).length} partner(s) (${profitStr})${banned.length > 0 ? `, ${banned.length} since banned` : ''}.`);
     }
-
     const wageSus = result.suspicions.find(s => s.type === 'low_wage');
     if (wageSus) parts.push(`${wageSus.workers.length} workers paid minimum wage.`);
-
     const cloneSus = result.suspicions.filter(s => s.type === 'cloned_progression');
-    if (cloneSus.length > 0) {
-      const total = cloneSus.reduce((s,c) => s + c.workers.length, 0);
-      parts.push(`${total} workers have cloned skills.`);
-    }
-
+    if (cloneSus.length > 0) parts.push(`${cloneSus.reduce((s,c) => s + c.workers.length, 0)} workers have cloned skills.`);
     const shellSus = result.suspicions.find(s => s.type === 'no_production_bonus');
     if (shellSus && result.bossNoBonusPercentage > 0) parts.push(`${result.bossNoBonusPercentage}% of worker companies have no regional production bonuses.`);
-
     const nameSus = result.suspicions.filter(s => s.type === 'naming_pattern');
-    if (nameSus.length > 0) {
-      const groupStrings = nameSus.map(s => `(${s.workers.map(w=>w.normalizedName).join(', ')})`).join(', ');
-      parts.push(`Workers with overlapping names: ${groupStrings}.`);
-    }
-
+    if (nameSus.length > 0) parts.push(`Workers with overlapping names: ${nameSus.map(s => `(${s.workers.map(w=>w.normalizedName).join(', ')})`).join(', ')}.`);
     const sniperSus = result.suspicions.find(s => s.type === 'market_automation');
     if (sniperSus) parts.push(`Sniper bot: bought ${result.player.sniperHits} items within ${settings.sniperThresholdMs}ms of listing.`);
-
     const paceSus = result.suspicions.find(s => s.type === 'script_pacing');
     if (paceSus) parts.push(`Script pacing: ${result.player.pacingHits} actions at ~${result.player.pacingAvgMs}ms intervals.`);
-
     const tipSus = result.suspicions.filter((s) => s.type === 'tip_farming');
-    if (tipSus.length > 0) {
-      parts.push(`Tip farming: ${tipSus.length} coordinated tipping pattern${tipSus.length>1?'s':''} detected.`);
-    }
-
+    if (tipSus.length > 0) parts.push(`Tip farming: ${tipSus.length} coordinated tipping pattern${tipSus.length>1?'s':''} detected.`);
     const hermitSus = result.suspicions.find((s) => s.type === 'hermit_network' || s.type === 'mutual_hermit');
     if (hermitSus) parts.push(`Hermit trade network: transactions confined to a closed group of accounts.`);
-
     let summary = parts.join(' ');
-    if (summary.length > 500) {
-      summary = summary.substring(0, 497).replace(/\s\S*$/, '') + '...';
-    }
+    if (summary.length > 500) summary = summary.substring(0, 497).replace(/\s\S*$/, '') + '...';
     return summary;
   };
 
   const copySummaryToClipboard = (result) => {
     const text = buildShortSummary(result);
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
-    } else {
-      fallbackCopy(text);
-    }
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+    else fallbackCopy(text);
   };
 
   const fallbackCopy = (text) => {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
-    document.body.appendChild(ta);
-    ta.focus(); ta.select();
-    try { document.execCommand('copy'); } catch(e) { console.warn('Copy failed', e); }
+    const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { document.execCommand('copy'); } catch(e) {}
     document.body.removeChild(ta);
   };
 
@@ -2108,8 +2115,7 @@ export function WarEraOracle() {
     setFindings(prev => { const n={...prev}; if(n[country]) n[country]=n[country].filter(r=>r.player.id!==playerId); return n; });
     scanQueueRef.current.unshift({ _id: playerId, scanContext: country });
     if (!isScanningRef.current) {
-      setIsScanning(true); isScanningRef.current=true; setProgress(0);
-      setCurrentTask('Re-scanning player...');
+      setIsScanning(true); isScanningRef.current=true; setProgress(0); setCurrentTask('Re-scanning player...');
       const processedIds=new Set(); let activePromises=[];
       const runRescan=async()=>{
         try {
@@ -2614,7 +2620,7 @@ export function WarEraOracle() {
                                         )}
 
                                         {suspicion.type==='hermit_network'&&isHermitNode&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>HERMIT NODE</span>}
-                                        {suspicion.type==='newborn_wealthy'&&w.accountAgeDays!==undefined&&<span style={{fontSize:8,fontWeight:700,color:'#4fc3e8',background:'rgba(79,195,232,0.10)',border:'1px solid rgba(79,195,232,0.30)',borderRadius:3,padding:'1px 4px'}}>{w.accountAgeDays}d OLD{w.wealthMaxAELevel>0?` | AE Lv.${w.wealthMaxAELevel}`:''}</span>}
+                                        {suspicion.type==='newborn_wealthy'&&w.accountAgeDays!==undefined&&<span style={{fontSize:8,fontWeight:700,color:'#4fc3e8',background:'rgba(79,195,232,0.10)',border:'1px solid rgba(79,195,232,0.30)',borderRadius:3,padding:'1px 4px'}}>{w.accountAgeDays}d OLD</span>}
                                         {w.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>BANNED</span>}
                                         {w.isActive===false&&!w.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>INACTIVE</span>}
                                         {w.noBonusPercentage>0&&suspicion.type==='no_production_bonus'&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>{w.noBonusPercentage}% NO-PROD</span>}
