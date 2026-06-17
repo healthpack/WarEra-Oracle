@@ -1037,7 +1037,9 @@ export function WarEraOracle() {
   const logUserWealth = useCallback((name, uData) => {
     if (!didLogWealthShapeRef.current && uData) {
       didLogWealthShapeRef.current = true;
-      addLog(`[DIAG] profile keys: ${Object.keys(uData).join(',')} | userWealth=${JSON.stringify(uData.userWealth)} userLevel=${JSON.stringify(uData.userLevel)} leveling=${JSON.stringify(uData.leveling)}`, 'info');
+      addLog(`[DIAG] profile keys: ${Object.keys(uData).join(',')}`, 'info');
+      addLog(`[DIAG] stats=${JSON.stringify(uData.stats)}`, 'info');
+      addLog(`[DIAG] rankings=${JSON.stringify(uData.rankings)}`, 'info');
     }
     const wealth = extractCoinWealth(uData);
     const level = extractUserLevel(uData);
