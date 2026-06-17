@@ -131,8 +131,11 @@ const firstNumber = (...cands) => {
   }
   return null;
 };
-const extractCoinWealth = (u) => u ? firstNumber(u.userWealth, u.wealth, u.money, u.coins, u.balance, u.economy?.coins, u.economy?.wealth, u.wallet?.coins, u.wallet?.balance, u.currencies?.coins) : null;
-const extractUserLevel = (u) => u ? firstNumber(u.userLevel, u.leveling?.level, u.level) : null;
+// Wealth and level live under `rankings` in getUserLite (e.g.
+// rankings.userWealth = { value, rank, tier }); older code expected them at the
+// top level, so we check both.
+const extractCoinWealth = (u) => u ? firstNumber(u.rankings?.userWealth, u.userWealth, u.wealth, u.money, u.coins, u.balance) : null;
+const extractUserLevel = (u) => u ? firstNumber(u.rankings?.userLevel, u.userLevel, u.leveling?.level, u.level) : null;
 
 // ─────────────────────────────────────────────
 //  DETECTION MODULES
@@ -997,7 +1000,6 @@ export function WarEraOracle() {
   const phase2DataRef = useRef({});
   const didLogTipPayloadRef = useRef(false);
   const didLogUserLiteShapeRef = useRef(false);
-  const didLogWealthShapeRef = useRef(false);
   const didLogWorkerShapeRef = useRef(false);
   const effectiveConcurrencyRef = useRef(50);
   const concurrencyLastReducedRef = useRef(0);
@@ -1035,12 +1037,6 @@ export function WarEraOracle() {
   // the API omits the expected userWealth field. Call BEFORE recordWealthBaseline
   // so the user is never averaged against themselves.
   const logUserWealth = useCallback((name, uData) => {
-    if (!didLogWealthShapeRef.current && uData) {
-      didLogWealthShapeRef.current = true;
-      addLog(`[DIAG] profile keys: ${Object.keys(uData).join(',')}`, 'info');
-      addLog(`[DIAG] stats=${JSON.stringify(uData.stats)}`, 'info');
-      addLog(`[DIAG] rankings=${JSON.stringify(uData.rankings)}`, 'info');
-    }
     const wealth = extractCoinWealth(uData);
     const level = extractUserLevel(uData);
     if (wealth == null) { addLog(`${name}: no wealth field found in profile.`, 'info'); return; }
@@ -1350,8 +1346,8 @@ export function WarEraOracle() {
         if (foundName==='Unknown'&&!didLogUserLiteShapeRef.current){didLogUserLiteShapeRef.current=true;addLog(`[INFO] getUserLite shape (first Unknown): ${JSON.stringify(uData).substring(0,300)}`, 'info');}
         playerObj.level = uData.leveling?.level || '?';
         playerObj.accountCreatedAt = uData.createdAt || uData.registeredAt || null;
-        playerObj.userWealth = uData.userWealth || null;
-        playerObj.userLevel = uData.userLevel || null;
+        playerObj.userWealth = uData.userWealth || uData.rankings?.userWealth || null;
+        playerObj.userLevel = uData.userLevel || uData.rankings?.userLevel || null;
         logUserWealth(foundName, uData);
         { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w); }
         if (foundName && foundName !== 'Unknown') globalCacheRef.current.names[uId] = foundName;
@@ -1829,6 +1825,7 @@ export function WarEraOracle() {
                   const uData = w.resolvedUser?.username ? w.resolvedUser : await smartFetch('user.getUserLite', { userId });
                   if (uData) {
                     w.resolvedUser=uData; w.isBanned=!!(uData.isBanned||uData.banned||uData.infos?.isBanned);
+                    if (uData.rankings) { uData.userWealth = uData.userWealth || uData.rankings.userWealth; uData.userLevel = uData.userLevel || uData.rankings.userLevel; }
                     logUserWealth(uData.username||uData.name||userId, uData);
                     { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w); }
                     globalCacheRef.current.names[userId]=uData.username||uData.name||userId;
@@ -1924,7 +1921,7 @@ export function WarEraOracle() {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
     globalWashPartners.current={}; globalBans.current={}; globalHermitPrimaries.current={};
-    phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWealthShapeRef.current=false; didLogWorkerShapeRef.current=false;
+    phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false;
     effectiveConcurrencyRef.current=settings.concurrencyLimit; concurrencyLastReducedRef.current=0;
     alwaysPhase2Ref.current=false;
     scanQueueRef.current=[];
