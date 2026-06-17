@@ -1016,6 +1016,20 @@ export function WarEraOracle() {
     setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), msg, type }]);
   }, [settings.verboseDebug]);
 
+  // Logs a per-user wealth check against the level baseline, for EVERY scanned user.
+  // Call this BEFORE recordWealthBaseline so the user is never averaged against themselves.
+  const logUserWealth = useCallback((name, level, wealth) => {
+    if (wealth == null || level == null || isNaN(wealth)) return;
+    const avgResult = getWealthAverageExtended(globalCacheRef.current, level);
+    const avg = avgResult ? avgResult.avg : null;
+    if (avg == null) {
+      addLog(`${name}: User wealth -${Math.round(wealth)}- Coins, no average wealth for level ${level} yet (baseline empty).`, 'info');
+      return;
+    }
+    const pct = avg !== 0 ? Math.round((wealth / avg) * 100) : 0;
+    addLog(`${name}: User wealth -${Math.round(wealth)}- Coins, average wealth for level is -${Math.round(avg)}- Coins. User wealth is ${pct}% of the average.`, 'info');
+  }, [addLog]);
+
   useEffect(() => {
     if ((showLogs || logExpanded) && logsContainerRef.current) logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
   }, [logs, showLogs, logExpanded]);
@@ -1313,7 +1327,10 @@ export function WarEraOracle() {
         playerObj.accountCreatedAt = uData.createdAt || uData.registeredAt || null;
         playerObj.userWealth = uData.userWealth || null;
         playerObj.userLevel = uData.userLevel || null;
-        if (uData.userWealth?.value != null && uData.userLevel?.value != null) recordWealthBaseline(globalCacheRef.current, uData.userLevel.value, uData.userWealth.value);
+        if (uData.userWealth?.value != null && uData.userLevel?.value != null) {
+          logUserWealth(foundName, uData.userLevel.value, uData.userWealth.value);
+          recordWealthBaseline(globalCacheRef.current, uData.userLevel.value, uData.userWealth.value);
+        }
         if (foundName && foundName !== 'Unknown') globalCacheRef.current.names[uId] = foundName;
         if (uData.isBanned || uData.banned) { addLog(`[OK] ${foundName} cleared (banned).`, 'info'); return; }
         bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
@@ -1789,7 +1806,10 @@ export function WarEraOracle() {
                   const uData = w.resolvedUser?.username ? w.resolvedUser : await smartFetch('user.getUserLite', { userId });
                   if (uData) {
                     w.resolvedUser=uData; w.isBanned=!!(uData.isBanned||uData.banned||uData.infos?.isBanned);
-                    if (uData.userWealth?.value!=null&&uData.userLevel?.value!=null) recordWealthBaseline(globalCacheRef.current, uData.userLevel.value, uData.userWealth.value);
+                    if (uData.userWealth?.value!=null&&uData.userLevel?.value!=null) {
+                      logUserWealth(uData.username||uData.name||userId, uData.userLevel.value, uData.userWealth.value);
+                      recordWealthBaseline(globalCacheRef.current, uData.userLevel.value, uData.userWealth.value);
+                    }
                     globalCacheRef.current.names[userId]=uData.username||uData.name||userId;
                     let workerMuId=uData.mu?(typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu):(uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
                     w.workerMuId=workerMuId;
