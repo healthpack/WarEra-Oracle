@@ -121,6 +121,19 @@ const getWealthAverageExtended = (globalCache, level) => {
   return null;
 };
 
+// Pull coin wealth / level out of a user profile, tolerant of where the API puts
+// them. getUserLite has been observed to omit userWealth, so we probe several
+// candidate paths rather than assuming a single field.
+const firstNumber = (...cands) => {
+  for (const c of cands) {
+    const n = (c && typeof c === 'object' && 'value' in c) ? c.value : c;
+    if (typeof n === 'number' && !isNaN(n)) return n;
+  }
+  return null;
+};
+const extractCoinWealth = (u) => u ? firstNumber(u.userWealth, u.wealth, u.money, u.coins, u.balance, u.economy?.coins, u.economy?.wealth, u.wallet?.coins, u.wallet?.balance, u.currencies?.coins) : null;
+const extractUserLevel = (u) => u ? firstNumber(u.userLevel, u.leveling?.level, u.level) : null;
+
 // ─────────────────────────────────────────────
 //  DETECTION MODULES
 // ─────────────────────────────────────────────
@@ -984,6 +997,7 @@ export function WarEraOracle() {
   const phase2DataRef = useRef({});
   const didLogTipPayloadRef = useRef(false);
   const didLogUserLiteShapeRef = useRef(false);
+  const didLogWealthShapeRef = useRef(false);
   const didLogWorkerShapeRef = useRef(false);
   const effectiveConcurrencyRef = useRef(50);
   const concurrencyLastReducedRef = useRef(0);
@@ -1017,9 +1031,18 @@ export function WarEraOracle() {
   }, [settings.verboseDebug]);
 
   // Logs a per-user wealth check against the level baseline, for EVERY scanned user.
-  // Call this BEFORE recordWealthBaseline so the user is never averaged against themselves.
-  const logUserWealth = useCallback((name, level, wealth) => {
-    if (wealth == null || level == null || isNaN(wealth)) return;
+  // Takes the raw profile and resolves wealth/level itself so it prints even when
+  // the API omits the expected userWealth field. Call BEFORE recordWealthBaseline
+  // so the user is never averaged against themselves.
+  const logUserWealth = useCallback((name, uData) => {
+    if (!didLogWealthShapeRef.current && uData) {
+      didLogWealthShapeRef.current = true;
+      addLog(`[DIAG] profile keys: ${Object.keys(uData).join(',')} | userWealth=${JSON.stringify(uData.userWealth)} userLevel=${JSON.stringify(uData.userLevel)} leveling=${JSON.stringify(uData.leveling)}`, 'info');
+    }
+    const wealth = extractCoinWealth(uData);
+    const level = extractUserLevel(uData);
+    if (wealth == null) { addLog(`${name}: no wealth field found in profile.`, 'info'); return; }
+    if (level == null) { addLog(`${name}: User wealth -${Math.round(wealth)}- Coins, level unknown.`, 'info'); return; }
     const avgResult = getWealthAverageExtended(globalCacheRef.current, level);
     const avg = avgResult ? avgResult.avg : null;
     if (avg == null) {
@@ -1327,10 +1350,8 @@ export function WarEraOracle() {
         playerObj.accountCreatedAt = uData.createdAt || uData.registeredAt || null;
         playerObj.userWealth = uData.userWealth || null;
         playerObj.userLevel = uData.userLevel || null;
-        if (uData.userWealth?.value != null && uData.userLevel?.value != null) {
-          logUserWealth(foundName, uData.userLevel.value, uData.userWealth.value);
-          recordWealthBaseline(globalCacheRef.current, uData.userLevel.value, uData.userWealth.value);
-        }
+        logUserWealth(foundName, uData);
+        { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w); }
         if (foundName && foundName !== 'Unknown') globalCacheRef.current.names[uId] = foundName;
         if (uData.isBanned || uData.banned) { addLog(`[OK] ${foundName} cleared (banned).`, 'info'); return; }
         bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
@@ -1806,10 +1827,8 @@ export function WarEraOracle() {
                   const uData = w.resolvedUser?.username ? w.resolvedUser : await smartFetch('user.getUserLite', { userId });
                   if (uData) {
                     w.resolvedUser=uData; w.isBanned=!!(uData.isBanned||uData.banned||uData.infos?.isBanned);
-                    if (uData.userWealth?.value!=null&&uData.userLevel?.value!=null) {
-                      logUserWealth(uData.username||uData.name||userId, uData.userLevel.value, uData.userWealth.value);
-                      recordWealthBaseline(globalCacheRef.current, uData.userLevel.value, uData.userWealth.value);
-                    }
+                    logUserWealth(uData.username||uData.name||userId, uData);
+                    { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w); }
                     globalCacheRef.current.names[userId]=uData.username||uData.name||userId;
                     let workerMuId=uData.mu?(typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu):(uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
                     w.workerMuId=workerMuId;
@@ -1903,7 +1922,7 @@ export function WarEraOracle() {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
     globalWashPartners.current={}; globalBans.current={}; globalHermitPrimaries.current={};
-    phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false;
+    phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWealthShapeRef.current=false; didLogWorkerShapeRef.current=false;
     effectiveConcurrencyRef.current=settings.concurrencyLimit; concurrencyLastReducedRef.current=0;
     alwaysPhase2Ref.current=false;
     scanQueueRef.current=[];
