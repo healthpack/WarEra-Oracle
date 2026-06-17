@@ -21,6 +21,12 @@ const NO_CACHE = new Set([
   'search.searchAnything',
 ]);
 
+// Endpoints requiring the caller's API key — the warerastats gateway has no
+// per-user auth and 401s on these, so they must go straight to the official API.
+const OFFICIAL_ONLY = new Set([
+  'transaction.getPaginatedTransactions',
+]);
+
 // ── Upstash REST helpers ──────────────────────────────────────────
 const redisGet = async (key) => {
   const url = `${process.env.UPSTASH_REDIS_REST_URL}/get/${encodeURIComponent(key)}`;
@@ -55,7 +61,7 @@ async function cacheKey(endpoint, payload) {
 }
 
 // ── WarEra fetch (gateway first, official fallback) ───────────────
-async function fetchWarEra(endpoint, payload, apiKey) {
+async function fetchWarEra(endpoint, payload, apiKey, forceOfficial = false) {
   const doFetch = async (baseUrl, isGateway) => {
     const url = `${baseUrl}${endpoint}`;
     const headers = { 'Content-Type': 'application/json' };
@@ -75,6 +81,11 @@ async function fetchWarEra(endpoint, payload, apiKey) {
     if (obj?.error) throw new Error(obj.error.message || 'API_ERROR');
     return obj?.result?.data?.json ?? obj?.result?.data ?? obj;
   };
+
+  // Skip the gateway entirely for auth-required endpoints — it would just 401.
+  if (forceOfficial || OFFICIAL_ONLY.has(endpoint)) {
+    return await doFetch('https://api2.warera.io/trpc/', false);
+  }
 
   try {
     return await doFetch('https://gateway.warerastats.io/trpc/', true);
@@ -124,13 +135,13 @@ export default async function handler(req, res) {
     } catch (e) { return res.status(500).json({ error: e.message }); }
   }
 
-  const { endpoint, payload = {}, apiKey = '' } = body;
+  const { endpoint, payload = {}, apiKey = '', forceOfficial = false } = body;
   if (!endpoint) return res.status(400).json({ error: 'Missing endpoint' });
 
   // Real-time endpoints — skip cache entirely
   if (NO_CACHE.has(endpoint)) {
     try {
-      const data = await fetchWarEra(endpoint, payload, apiKey);
+      const data = await fetchWarEra(endpoint, payload, apiKey, forceOfficial);
       return res.status(200).json({ data, cached: false });
     } catch (e) {
       return e.message === 'RATE_LIMIT'
@@ -156,7 +167,7 @@ export default async function handler(req, res) {
   // Cache miss — fetch live
   let data;
   try {
-    data = await fetchWarEra(endpoint, payload, apiKey);
+    data = await fetchWarEra(endpoint, payload, apiKey, forceOfficial);
   } catch (e) {
     return e.message === 'RATE_LIMIT'
       ? res.status(429).json({ error: 'Rate limit' })

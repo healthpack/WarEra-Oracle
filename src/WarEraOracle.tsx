@@ -1144,6 +1144,11 @@ export function WarEraOracle() {
   };
 
   const smartFetch = async (endpoint, payload, forceOfficial=false) => {
+    // The warerastats gateway has no per-user auth, so endpoints that require the
+    // caller's API key (transactions) only work on the official API. Routing them
+    // through the gateway just 401s, trips the circuit breaker, and drags every
+    // other endpoint onto the official API for 60s — so go official directly.
+    if (endpoint.startsWith('transaction.')) forceOfficial = true;
     const cacheKey = endpoint + JSON.stringify(payload);
     
     if (globalCacheRef.current.requestDeduper.has(cacheKey)) {
