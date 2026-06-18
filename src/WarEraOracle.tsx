@@ -15,7 +15,13 @@ const WarEraAPI = {
     const isGateway = baseUrl.includes('gateway');
     const url = `${baseUrl}${endpoint}`;
     const headers = { 'Content-Type': 'application/json' };
-    if (activeKey && activeKey.trim() !== '') headers['X-API-Key'] = activeKey.trim();
+    // Authenticated endpoints (worker.getWorkers, transaction.*) reject X-API-Key
+    // alone, so also send the key as a Bearer token. Public endpoints ignore it.
+    if (activeKey && activeKey.trim() !== '') {
+      const k = activeKey.trim();
+      headers['X-API-Key'] = k;
+      headers['Authorization'] = `Bearer ${k}`;
+    }
     let res;
     try {
       const ctrl = new AbortController();

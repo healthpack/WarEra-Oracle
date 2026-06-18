@@ -65,7 +65,9 @@ async function fetchWarEra(endpoint, payload, apiKey, forceOfficial = false) {
   const doFetch = async (baseUrl, isGateway) => {
     const url = `${baseUrl}${endpoint}`;
     const headers = { 'Content-Type': 'application/json' };
-    if (apiKey) headers['X-API-Key'] = apiKey;
+    // Authenticated endpoints reject X-API-Key alone; also send the key as a
+    // Bearer token. Public endpoints ignore it.
+    if (apiKey) { headers['X-API-Key'] = apiKey; headers['Authorization'] = `Bearer ${apiKey}`; }
 
     const res = isGateway
       ? await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) })
