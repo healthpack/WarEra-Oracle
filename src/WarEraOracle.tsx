@@ -1150,11 +1150,12 @@ export function WarEraOracle() {
   };
 
   const smartFetch = async (endpoint, payload, forceOfficial=false) => {
-    // The warerastats gateway has no per-user auth, so endpoints that require the
-    // caller's API key (transactions) only work on the official API. Routing them
-    // through the gateway just 401s, trips the circuit breaker, and drags every
-    // other endpoint onto the official API for 60s — so go official directly.
-    if (endpoint.startsWith('transaction.')) forceOfficial = true;
+    // The warerastats gateway no longer supplies session auth and only forwards
+    // X-API-Key, so endpoints that need real auth (transactions, workers) must go
+    // straight to the official API with the Bearer token. Routing them through the
+    // gateway just 401s, trips the circuit breaker, and drags every other endpoint
+    // onto the official API for 60s.
+    if (endpoint.startsWith('transaction.') || endpoint.startsWith('worker.')) forceOfficial = true;
     const cacheKey = endpoint + JSON.stringify(payload);
     
     if (globalCacheRef.current.requestDeduper.has(cacheKey)) {

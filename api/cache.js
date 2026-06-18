@@ -21,11 +21,10 @@ const NO_CACHE = new Set([
   'search.searchAnything',
 ]);
 
-// Endpoints requiring the caller's API key — the warerastats gateway has no
-// per-user auth and 401s on these, so they must go straight to the official API.
-const OFFICIAL_ONLY = new Set([
-  'transaction.getPaginatedTransactions',
-]);
+// Endpoints requiring the caller's API key — the warerastats gateway only
+// forwards X-API-Key (not the Bearer token these need), so they must go straight
+// to the official API.
+const isOfficialOnly = (ep) => ep.startsWith('transaction.') || ep.startsWith('worker.');
 
 // ── Upstash REST helpers ──────────────────────────────────────────
 const redisGet = async (key) => {
@@ -85,7 +84,7 @@ async function fetchWarEra(endpoint, payload, apiKey, forceOfficial = false) {
   };
 
   // Skip the gateway entirely for auth-required endpoints — it would just 401.
-  if (forceOfficial || OFFICIAL_ONLY.has(endpoint)) {
+  if (forceOfficial || isOfficialOnly(endpoint)) {
     return await doFetch('https://api2.warera.io/trpc/', false);
   }
 
