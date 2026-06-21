@@ -60,31 +60,34 @@ const WarEraAPI = {
 // ─────────────────────────────────────────────
 //  BASELINE TRACKING (Passes through globalCache)
 // ─────────────────────────────────────────────
-// Per-level coin wealth baseline. `samples` is a reservoir (capped at SAMPLE_CAP)
-// so we can compute a median per level rather than a mean, which is far more robust
-// to a handful of ultra-rich outliers that would otherwise inflate the baseline and
-// mask the over-wealthy alts the scan hunts for.
-const SAMPLE_CAP = 500;
-const recordWealthBaseline = (globalCache, level, wealth) => {
+// Per-level coin wealth baseline, keyed by userId (`byUser`). Keying by user means
+// re-scanning the same player UPDATES their wealth in place (latest-wins) instead of
+// appending duplicate samples — so repeatedly scanning the same small country can't
+// poison the median, and stale wealth refreshes itself. We keep a median per level
+// (robust to ultra-rich outliers) and cap distinct users per level to bound memory.
+const USER_CAP = 500; // distinct users per level; bounds the Redis baseline payload
+const recordWealthBaseline = (globalCache, level, wealth, userId) => {
   if (level == null || wealth == null || isNaN(wealth)) return;
   const key = String(Math.round(level));
   if (!globalCache.wealthByLevel) globalCache.wealthByLevel = {};
   let e = globalCache.wealthByLevel[key];
-  if (!e) { e = globalCache.wealthByLevel[key] = { samples: [], count: 0 }; }
-  if (!Array.isArray(e.samples)) e.samples = legacySamples(e); // migrate legacy {avg,count} shape
-  e.count = (e.count || 0) + 1;
-  if (e.samples.length < SAMPLE_CAP) {
-    e.samples.push(wealth);
-  } else {
-    // Reservoir sampling: keep a uniform random sample once the cap is hit.
-    const j = Math.floor(Math.random() * e.count);
-    if (j < SAMPLE_CAP) e.samples[j] = wealth;
+  if (!e || typeof e !== 'object') e = globalCache.wealthByLevel[key] = {};
+  if (!e.byUser || typeof e.byUser !== 'object') e.byUser = {};
+  // Without a userId we can't dedupe, so bucket anonymously but still record.
+  const uk = userId || `anon:${Object.keys(e.byUser).length}`;
+  const isNew = !(uk in e.byUser);
+  e.byUser[uk] = wealth; // latest-wins
+  if (isNew) {
+    // Evict the oldest distinct user once over the cap. Hex userId / "anon:" keys are
+    // non-integer strings, so Object.keys preserves insertion order.
+    const keys = Object.keys(e.byUser);
+    if (keys.length > USER_CAP) delete e.byUser[keys[0]];
   }
 };
 
-// Reconstruct a samples array from a legacy mean-only entry so old persisted
-// baselines still contribute something sensible (the mean stands in as one sample).
-const legacySamples = (e) => (e && typeof e.avg === 'number' ? [e.avg] : []);
+// Reconstruct a samples array from a legacy entry (mean-only {avg,count} or the older
+// anonymous {samples:[]}) so pre-byUser baselines still contribute until users refill.
+const legacySamples = (e) => Array.isArray(e?.samples) ? e.samples : (e && typeof e.avg === 'number' ? [e.avg] : []);
 
 const median = (arr) => {
   if (!arr || arr.length === 0) return null;
@@ -93,12 +96,23 @@ const median = (arr) => {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 };
 
-// Median wealth for a single level, tolerant of the legacy {avg,count} shape.
+// Distinct contributors backing a level's median (used for diagnostics / radius).
+const levelSampleCount = (e) => {
+  if (!e) return 0;
+  if (e.byUser && typeof e.byUser === 'object') return Object.keys(e.byUser).length;
+  return legacySamples(e).length;
+};
+
+// Median wealth for a single level. Prefers the deduped per-user values; falls back to
+// legacy anonymous samples until enough per-user data has accumulated.
 const getLevelMedian = (globalCache, level) => {
   const e = globalCache.wealthByLevel?.[String(level)];
   if (!e) return null;
-  const samples = Array.isArray(e.samples) ? e.samples : legacySamples(e);
-  return median(samples);
+  if (e.byUser && typeof e.byUser === 'object') {
+    const vals = Object.values(e.byUser).filter(v => typeof v === 'number' && !isNaN(v));
+    if (vals.length) return median(vals);
+  }
+  return median(legacySamples(e));
 };
 
 // Baseline = the AVERAGE of the surrounding per-level medians. We try the immediate
@@ -115,8 +129,7 @@ const getWealthAverageExtended = (globalCache, level) => {
       const m = getLevelMedian(globalCache, l);
       if (m != null) {
         medians.push(m);
-        const e = globalCache.wealthByLevel[String(l)];
-        totalCount += (e?.count || (Array.isArray(e?.samples) ? e.samples.length : 1));
+        totalCount += levelSampleCount(globalCache.wealthByLevel[String(l)]);
       }
     }
     if (medians.length > 0) {
@@ -1361,7 +1374,7 @@ export function WarEraOracle() {
         playerObj.userWealth = uData.userWealth || uData.rankings?.userWealth || null;
         playerObj.userLevel = uData.userLevel || uData.rankings?.userLevel || null;
         logUserWealth(foundName, uData);
-        { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w); }
+        { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w, uId); }
         if (foundName && foundName !== 'Unknown') globalCacheRef.current.names[uId] = foundName;
         if (uData.isBanned || uData.banned) { addLog(`[OK] ${foundName} cleared (banned).`, 'info'); return; }
         bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
@@ -1839,7 +1852,7 @@ export function WarEraOracle() {
                     w.resolvedUser=uData; w.isBanned=!!(uData.isBanned||uData.banned||uData.infos?.isBanned);
                     if (uData.rankings) { uData.userWealth = uData.userWealth || uData.rankings.userWealth; uData.userLevel = uData.userLevel || uData.rankings.userLevel; }
                     logUserWealth(uData.username||uData.name||userId, uData);
-                    { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w); }
+                    { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w, userId); }
                     globalCacheRef.current.names[userId]=uData.username||uData.name||userId;
                     let workerMuId=uData.mu?(typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu):(uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
                     w.workerMuId=workerMuId;
