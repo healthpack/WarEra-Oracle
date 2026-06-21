@@ -21,10 +21,10 @@ const NO_CACHE = new Set([
   'search.searchAnything',
 ]);
 
-// Endpoints requiring the caller's API key — the warerastats gateway only
-// forwards X-API-Key (not the Bearer token these need), so they must go straight
-// to the official API.
-const isOfficialOnly = (ep) => ep.startsWith('transaction.') || ep.startsWith('worker.');
+// worker.* needs a user session JWT the gateway doesn't carry, so it must go to the
+// official API. transaction.* is served by the gateway for free, so it is NOT
+// official-only and uses the normal gateway-first path.
+const isOfficialOnly = (ep) => ep.startsWith('worker.');
 
 // ── Upstash REST helpers ──────────────────────────────────────────
 const redisGet = async (key) => {

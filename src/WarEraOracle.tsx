@@ -1152,12 +1152,12 @@ export function WarEraOracle() {
   };
 
   const smartFetch = async (endpoint, payload, forceOfficial=false) => {
-    // The warerastats gateway no longer supplies session auth and only forwards
-    // X-API-Key, so endpoints that need real auth (transactions, workers) must go
-    // straight to the official API with the Bearer token. Routing them through the
-    // gateway just 401s, trips the circuit breaker, and drags every other endpoint
-    // onto the official API for 60s.
-    if (endpoint.startsWith('transaction.') || endpoint.startsWith('worker.')) forceOfficial = true;
+    // The gateway carries its own session for transaction.* and serves it for free,
+    // so let transactions route normally (gateway-preferred). worker.* however needs a
+    // user session JWT the gateway does NOT have — it 401s there — so force worker.* to
+    // the official API (where the proxy can attach a JWT) and keep it off the gateway
+    // so its failures don't trip the breaker.
+    if (endpoint.startsWith('worker.')) forceOfficial = true;
     const cacheKey = endpoint + JSON.stringify(payload);
     
     if (globalCacheRef.current.requestDeduper.has(cacheKey)) {
@@ -1218,7 +1218,7 @@ export function WarEraOracle() {
             continue;
           }
           const msg = e.message.toLowerCase();
-          const isSchemaErr = msg.includes('no procedure') || msg.includes('too_big') || msg.includes('unrecognized key') || msg.includes('invalid_type');
+          const isSchemaErr = msg.includes('no procedure') || msg.includes('too_big') || msg.includes('unrecognized key') || msg.includes('invalid_type') || msg.includes('unknown method') || msg.includes('unsupported gateway route');
           // Auth errors mean the endpoint needs the official API's Bearer token, not
           // that the gateway is down — fall back for this one call without penalizing
           // the gateway (otherwise a stray auth call kills it for every public request).
