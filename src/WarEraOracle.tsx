@@ -545,7 +545,7 @@ const detectAgeDateAnomaly = (player, allWorkers, settings, globalCache, _addLog
 
   if (richWorkers.length >= 1) {
     suspicions.push({
-      type: 'newborn_wealthy', severity: richWorkers.length >= 2 ? 'critical' : 'high',
+      type: 'wealth_anomaly', severity: richWorkers.length >= 2 ? 'critical' : 'high',
       desc: `${richWorkers.length} account(s) show disproportionate coin wealth for their level (> ${multiplier}x the level median). May indicate external funding.`,
       workers: richWorkers, detectionWeight: richWorkers.length * 2
     });
@@ -561,7 +561,7 @@ const detectAgeDateAnomaly = (player, allWorkers, settings, globalCache, _addLog
       const ageDays = player.accountCreatedAt ? Math.floor((now - new Date(player.accountCreatedAt).getTime()) / 86400000) : undefined;
       const reason = `coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth / bossAvg).toFixed(1)}x the level ${bossLevel} median (${bossAvg.toFixed(0)}).`;
       suspicions.push({
-        type: 'newborn_wealthy', severity: 'high',
+        type: 'wealth_anomaly', severity: 'high',
         desc: `Boss account ${reason}`,
         workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?', accountAgeDays: ageDays, wealthReason: reason }],
         detectionWeight: 3
@@ -711,8 +711,8 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   if (hasLaundering) summaryParts.push(`${launderingWorkerCount} workers donated ${totalLaunderedCoins.toFixed(1)} coins in large MU transactions.`);
   const coordDonation = allSuspicions.find(s => s.type === 'coordinated_donation');
   if (coordDonation) summaryParts.push(`Donations coordinated within 10-min windows.`);
-  const ageSus = allSuspicions.find(s => s.type === 'newborn_wealthy');
-  if (ageSus) summaryParts.push(`New accounts with disproportionate wealth detected.`);
+  const ageSus = allSuspicions.find(s => s.type === 'wealth_anomaly');
+  if (ageSus) summaryParts.push(`Account wealth disproportionately high for level.`);
   const tempSus = allSuspicions.find(s => s.type === 'temporal_clustering');
   if (tempSus) summaryParts.push(`Activity locked to narrow time window.`);
   const cloneSus = allSuspicions.filter(s => s.type === 'cloned_progression');
@@ -728,7 +728,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   if (abuseSus) summaryParts.push(`Wash Trading ring with ${abuseSus?.partners?.length || 0} partners.`);
 
   allSuspicions.sort((a, b) => {
-    const order = ['coordinated_donation','money_laundering','transaction_abuse','market_automation','superhuman_apm','script_pacing','mutual_hermit','hermit_network','newborn_wealthy'];
+    const order = ['coordinated_donation','money_laundering','transaction_abuse','market_automation','superhuman_apm','script_pacing','mutual_hermit','hermit_network','wealth_anomaly'];
     const ai = order.indexOf(a.type); const bi = order.indexOf(b.type);
     if (ai !== -1 && bi !== -1) return ai - bi;
     if (ai !== -1) return -1; if (bi !== -1) return 1;
@@ -794,7 +794,7 @@ const analyzePhase1 = (player, settings, globalCache, addLog = null) => {
   if (allSuspicions.length === 0) return null;
 
   allSuspicions.sort((a, b) => {
-    const order = ['money_laundering', 'transaction_abuse', 'market_automation', 'superhuman_apm', 'script_pacing', 'mutual_hermit', 'hermit_network', 'newborn_wealthy', 'tip_farming'];
+    const order = ['money_laundering', 'transaction_abuse', 'market_automation', 'superhuman_apm', 'script_pacing', 'mutual_hermit', 'hermit_network', 'wealth_anomaly', 'tip_farming'];
     const ai = order.indexOf(a.type); const bi = order.indexOf(b.type);
     if (ai !== -1 && bi !== -1) return ai - bi;
     if (ai !== -1) return -1; if (bi !== -1) return 1;
@@ -812,8 +812,8 @@ const analyzePhase1 = (player, settings, globalCache, addLog = null) => {
   if (tipSusP2) summaryParts.push(`Article tip farming (${player.tipAbuse?.heavyTippers || 0} heavy, ${player.tipAbuse?.repeatTippers || 0} repeat tippers).`);
   const abuseSus = allSuspicions.find(s => s.type === 'transaction_abuse');
   if (abuseSus) summaryParts.push(`Wash Trading ring with ${abuseSus?.partners?.length || 0} partners.`);
-  const ageSus = allSuspicions.find(s => s.type === 'newborn_wealthy');
-  if (ageSus) summaryParts.push(`New accounts with disproportionate wealth detected.`);
+  const ageSus = allSuspicions.find(s => s.type === 'wealth_anomaly');
+  if (ageSus) summaryParts.push(`Account wealth disproportionately high for level.`);
 
   const detections = allSuspicions.reduce((acc, s) => acc + (s.detectionWeight !== undefined ? s.detectionWeight : (s.workers?.length || s.partners?.length || 1)), 0);
 
@@ -1362,7 +1362,17 @@ export function WarEraOracle() {
         playerObj.userWealth = uData.userWealth || uData.rankings?.userWealth || null;
         playerObj.userLevel = uData.userLevel || uData.rankings?.userLevel || null;
         logUserWealth(foundName, uData);
-        { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w, uId); }
+        {
+          const _w = extractCoinWealth(uData), _l = extractUserLevel(uData);
+          if (_w != null && _l != null) {
+            // Self wealth-anomaly pre-check (vs the pre-record baseline, matching the
+            // log) so wealthy accounts with no transaction flags still advance to
+            // analysis — analyzePhase1 then runs the authoritative detectAgeDateAnomaly.
+            const _ar = getWealthAverageExtended(globalCacheRef.current, _l);
+            if (_ar && _ar.avg > 0 && _w > _ar.avg * (settings.wealthAnomalyMultiplier ?? 1.5)) playerObj.wealthAnomalous = true;
+            recordWealthBaseline(globalCacheRef.current, _l, _w, uId);
+          }
+        }
         if (foundName && foundName !== 'Unknown') globalCacheRef.current.names[uId] = foundName;
         if (uData.isBanned || uData.banned) { addLog(`[OK] ${foundName} cleared (banned).`, 'info'); return; }
         bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
@@ -1688,7 +1698,7 @@ export function WarEraOracle() {
 
     const hasP1Flags = Object.keys(washPartners).length > 0 || isDirectLaunderer ||
       sniperHits >= 5 || maxConcurrentTxs >= 5 || isHermit || isMutualHermit ||
-      pacingHits >= settings.pacingMinHits || tipAbuse !== null;
+      pacingHits >= settings.pacingMinHits || tipAbuse !== null || playerObj.wealthAnomalous;
 
     if (!hasP1Flags && !alwaysPhase2Ref.current) { 
         addLog(`[OK] ${foundName} cleared (no transaction flags).`, 'info'); 
@@ -2246,7 +2256,7 @@ export function WarEraOracle() {
   const officialNext=getNextRefill(officialTokens.current);
 
   const CRIT_TYPES = new Set(['market_automation','superhuman_apm','script_pacing','money_laundering','coordinated_donation','transaction_abuse']);
-  const HIGH_TYPES = new Set(['hermit_network','mutual_hermit','newborn_wealthy','fidelity_ring','cloned_progression']);
+  const HIGH_TYPES = new Set(['hermit_network','mutual_hermit','wealth_anomaly','fidelity_ring','cloned_progression']);
   const sevTierOf = (type) => CRIT_TYPES.has(type) ? 'crit' : HIGH_TYPES.has(type) ? 'high' : 'med';
   const scoreTierOf = (score) => score >= 10 ? 'crit' : score >= 5 ? 'high' : 'med';
   const T_COLOR = { crit:'#ff5d6c', high:'#ffab3d', med:'#ffd84d' };
@@ -2262,7 +2272,7 @@ export function WarEraOracle() {
     transaction_abuse:    { observed:'High-volume bilateral trading with the same counterparty', rule:'>=5 trades; significantly imbalanced net profit', note:'Repeated round-trip trades between two accounts are a common wash-trading pattern.' },
     hermit_network:       { observed:'Workers employed nowhere except this account', rule:'All known employment is with this single employer', note:'Exclusive worker networks can indicate account manufacturing, though niche legitimate employers exist.' },
     mutual_hermit:        { observed:'Mutual exclusive employment between boss and worker', rule:'Boss is also exclusively employed by this account', note:'Reciprocal hermit relationships substantially increase the likelihood of coordination.' },
-    newborn_wealthy:      { observed:'Account wealth significantly above level peers', rule:`Coin wealth > ${settings.wealthAnomalyMultiplier}x level average`, note:'New accounts with unusual wealth may be externally funded; compare with account age.' },
+    wealth_anomaly:      { observed:'Account coin wealth significantly above level peers', rule:`Coin wealth > ${settings.wealthAnomalyMultiplier}x the level median`, note:'Wealth far above the level median may indicate external funding from another account; check account age and transaction history for context.' },
     fidelity_ring:        { observed:'Workers holding maximum fidelity across the workforce', rule:'Fidelity = 10/10 across workers', note:'Perfect fidelity cluster is unusual - may indicate artificially maintained relationships.' },
     cloned_progression:   { observed:'Progression stats mirror another account', rule:'Level/wealth within 2% of a known clone signature', note:'Near-identical progression curves can indicate copy-cat account farming.' },
     low_wage:             { observed:'Workers paid below suspicious wage threshold', rule:`Wage <= ${settings.suspiciousWageThreshold.toFixed(3)}`, note:'Low wages alone are not conclusive; combine with other signals for stronger inference.' },
@@ -2718,14 +2728,14 @@ export function WarEraOracle() {
                                         )}
 
                                         {suspicion.type==='hermit_network'&&isHermitNode&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>HERMIT NODE</span>}
-                                        {suspicion.type==='newborn_wealthy'&&w.accountAgeDays!==undefined&&<span style={{fontSize:8,fontWeight:700,color:'#4fc3e8',background:'rgba(79,195,232,0.10)',border:'1px solid rgba(79,195,232,0.30)',borderRadius:3,padding:'1px 4px'}}>{w.accountAgeDays}d OLD</span>}
+                                        {suspicion.type==='wealth_anomaly'&&w.accountAgeDays!==undefined&&<span style={{fontSize:8,fontWeight:700,color:'#4fc3e8',background:'rgba(79,195,232,0.10)',border:'1px solid rgba(79,195,232,0.30)',borderRadius:3,padding:'1px 4px'}}>{w.accountAgeDays}d OLD</span>}
                                         {w.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>BANNED</span>}
                                         {w.isActive===false&&!w.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>INACTIVE</span>}
                                         {w.noBonusPercentage>0&&suspicion.type==='no_production_bonus'&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>{w.noBonusPercentage}% NO-PROD</span>}
                                         {w.isLaundering&&suspicion.type==='money_laundering'&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px',display:'flex',alignItems:'center',gap:2}}>{w.largeDonations30Days?.toFixed(1)} <Coins size={8}/></span>}
                                         {suspicion.type==='fidelity_ring'&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>FIDELITY 10</span>}
                                       </div>
-                                      {suspicion.type==='newborn_wealthy'&&w.wealthReason&&<div style={{fontSize:10,color:'#5d6e96',marginTop:3,lineHeight:1.4}}>{w.wealthReason}</div>}
+                                      {suspicion.type==='wealth_anomaly'&&w.wealthReason&&<div style={{fontSize:10,color:'#5d6e96',marginTop:3,lineHeight:1.4}}>{w.wealthReason}</div>}
                                     </div>
                                     <span style={{fontSize:10,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96',flexShrink:0,marginLeft:8}}>Lv.{w.normalizedLevel}</span>
                                   </div>
