@@ -154,7 +154,14 @@ const firstNumber = (...cands) => {
 // rankings.userWealth = { value, rank, tier }); older code expected them at the
 // top level, so we check both.
 const extractCoinWealth = (u) => u ? firstNumber(u.rankings?.userWealth, u.userWealth, u.wealth, u.money, u.coins, u.balance) : null;
-const extractUserLevel = (u) => u ? firstNumber(u.rankings?.userLevel, u.userLevel, u.leveling?.level, u.level) : null;
+// Game level is 1-50. Prefer the canonical leveling.level, then rankings.userLevel.
+// Reject anything out of range so a stray numeric field (e.g. an embedded worker's
+// XP-like value of 5400) can't create a garbage level bucket that poisons the median.
+const extractUserLevel = (u) => {
+  if (!u) return null;
+  const lvl = firstNumber(u.leveling?.level, u.rankings?.userLevel, u.userLevel, u.level);
+  return (lvl != null && lvl >= 1 && lvl <= 60) ? lvl : null;
+};
 
 // ─────────────────────────────────────────────
 //  DETECTION MODULES
@@ -512,72 +519,53 @@ const detectShellCompanies = (allWorkers, settings, globalCache) => {
   return { suspicions, suspiciousWorkers, zeroBonusCompanyCount, bossNoBonusPercentage };
 };
 
-const detectAgeDateAnomaly = (player, allWorkers, settings, globalCache, addLog) => {
+// Flags accounts whose coin wealth is disproportionately high for their level,
+// regardless of account age (account age is recorded as context only). Uses the
+// shared extractors so the flag agrees with the per-user wealth log.
+const detectAgeDateAnomaly = (player, allWorkers, settings, globalCache, _addLog) => {
   const multiplier = settings?.wealthAnomalyMultiplier ?? 1.5;
   const suspicions = [];
   const now = Date.now();
-  const youngRichWorkers = [];
+  const richWorkers = [];
 
   allWorkers.forEach(w => {
-    if (!w.resolvedUser?.createdAt) return;
-    const ageInDays = (now - new Date(w.resolvedUser.createdAt).getTime()) / 86400000;
-    if (ageInDays >= 45) return;
-
-    const level = w.normalizedLevel || 1;
-    const coinWealth = w.resolvedUser?.userWealth?.value;
-    const levelForWealth = w.resolvedUser?.userLevel?.value ?? level;
-    
-    const avgResult = getWealthAverageExtended(globalCache, levelForWealth);
+    const coinWealth = extractCoinWealth(w.resolvedUser);
+    if (coinWealth == null) return;
+    const level = extractUserLevel(w.resolvedUser) ?? w.normalizedLevel ?? 1;
+    const avgResult = getWealthAverageExtended(globalCache, level);
     const avgCoinWealth = avgResult ? avgResult.avg : null;
+    if (avgCoinWealth == null) return;
 
-    if (coinWealth != null) {
-      if (avgCoinWealth !== null) {
-        const pct = (coinWealth / avgCoinWealth) * 100;
-        if (addLog) addLog(`User wealth -${coinWealth.toFixed(0)}- Coins, average wealth for level is -${avgCoinWealth.toFixed(0)}- Coins. User wealth is ${pct.toFixed(0)}% of the average.`, 'debug');
-      } else {
-        if (addLog) addLog(`User wealth -${coinWealth.toFixed(0)}- Coins, average wealth for level is -UNKNOWN- Coins.`, 'debug');
-      }
-
-      if (avgCoinWealth !== null && coinWealth > avgCoinWealth * multiplier) {
-        w.accountAgeDays = Math.floor(ageInDays);
-        youngRichWorkers.push(w);
-      }
+    if (coinWealth > avgCoinWealth * multiplier) {
+      if (w.resolvedUser?.createdAt) w.accountAgeDays = Math.floor((now - new Date(w.resolvedUser.createdAt).getTime()) / 86400000);
+      w.wealthReason = `coin wealth ${coinWealth.toFixed(0)} is ${(coinWealth / avgCoinWealth).toFixed(1)}x the level ${level} median (${avgCoinWealth.toFixed(0)}).`;
+      richWorkers.push(w);
     }
   });
 
-  if (youngRichWorkers.length >= 1) {
+  if (richWorkers.length >= 1) {
     suspicions.push({
-      type: 'newborn_wealthy', severity: youngRichWorkers.length >= 2 ? 'critical' : 'high',
-      desc: `${youngRichWorkers.length} young worker account(s) show disproportionate coin wealth for their level. This may indicate funding from a main account.`,
-      workers: youngRichWorkers, detectionWeight: youngRichWorkers.length * 2
+      type: 'newborn_wealthy', severity: richWorkers.length >= 2 ? 'critical' : 'high',
+      desc: `${richWorkers.length} account(s) show disproportionate coin wealth for their level (> ${multiplier}x the level median). May indicate external funding.`,
+      workers: richWorkers, detectionWeight: richWorkers.length * 2
     });
   }
 
-  if (player.accountCreatedAt) {
-    const ageDays = (now - new Date(player.accountCreatedAt).getTime()) / 86400000;
-    if (ageDays < 45) {
-      const bossCoinWealth = player.userWealth?.value;
-      const bossLevel = player.userLevel?.value ?? player.level;
-      const bossAvgResult = getWealthAverageExtended(globalCache, bossLevel);
-      const bossAvg = bossAvgResult ? bossAvgResult.avg : null;
-      
-      if (bossCoinWealth != null) {
-        if (bossAvg !== null) {
-          const pct = (bossCoinWealth / bossAvg) * 100;
-          if (addLog) addLog(`User wealth -${bossCoinWealth.toFixed(0)}- Coins, average wealth for level is -${bossAvg.toFixed(0)}- Coins. User wealth is ${pct.toFixed(0)}% of the average.`, 'debug');
-        } else {
-          if (addLog) addLog(`User wealth -${bossCoinWealth.toFixed(0)}- Coins, average wealth for level is -UNKNOWN- Coins.`, 'debug');
-        }
-
-        if (bossAvg !== null && bossCoinWealth > bossAvg * multiplier) {
-          suspicions.push({
-            type: 'newborn_wealthy', severity: 'high',
-            desc: `Boss account may be a recently funded alt: Coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth/bossAvg).toFixed(1)}x the level ${bossLevel} average.`,
-            workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?', accountAgeDays: Math.floor(ageDays) }],
-            detectionWeight: 3
-          });
-        }
-      }
+  // Boss account itself
+  const bossCoinWealth = extractCoinWealth(player);
+  if (bossCoinWealth != null) {
+    const bossLevel = extractUserLevel(player) ?? player.level ?? 1;
+    const bossAvgResult = getWealthAverageExtended(globalCache, bossLevel);
+    const bossAvg = bossAvgResult ? bossAvgResult.avg : null;
+    if (bossAvg != null && bossCoinWealth > bossAvg * multiplier) {
+      const ageDays = player.accountCreatedAt ? Math.floor((now - new Date(player.accountCreatedAt).getTime()) / 86400000) : undefined;
+      const reason = `coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth / bossAvg).toFixed(1)}x the level ${bossLevel} median (${bossAvg.toFixed(0)}).`;
+      suspicions.push({
+        type: 'newborn_wealthy', severity: 'high',
+        desc: `Boss account ${reason}`,
+        workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?', accountAgeDays: ageDays, wealthReason: reason }],
+        detectionWeight: 3
+      });
     }
   }
 
@@ -1957,20 +1945,26 @@ export function WarEraOracle() {
     globalCacheRef.current.requestDeduper.clear();
 
     try {
+      if (!globalCacheRef.current.wealthByLevel) globalCacheRef.current.wealthByLevel = {};
       const localWb = localStorage.getItem('wera_wealth_baseline');
       if (localWb) {
         const parsedWb = JSON.parse(localWb);
-        Object.assign(globalCacheRef.current.wealthByLevel || {}, parsedWb);
+        Object.assign(globalCacheRef.current.wealthByLevel, parsedWb);
       }
       const wbRes = await fetch('/api/cache', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'get_wealth_baseline' }) });
-      if (wbRes.ok) { 
-          const wbJson = await wbRes.json(); 
-          let loaded = wbJson.data||{}; 
-          if (typeof loaded === 'object' && !Array.isArray(loaded)) { 
-              if(!globalCacheRef.current.wealthByLevel) globalCacheRef.current.wealthByLevel = {};
-              Object.assign(globalCacheRef.current.wealthByLevel, loaded); 
-          } 
+      if (wbRes.ok) {
+          const wbJson = await wbRes.json();
+          let loaded = wbJson.data||{};
+          if (typeof loaded === 'object' && !Array.isArray(loaded)) {
+              Object.assign(globalCacheRef.current.wealthByLevel, loaded);
+          }
       }
+      // Drop garbage level buckets (game level is 1-50) left by the earlier
+      // level-extraction bug, so they don't linger as junk baselines.
+      const wbl = globalCacheRef.current.wealthByLevel;
+      let pruned = 0;
+      for (const k of Object.keys(wbl)) { const n = Number(k); if (!(n >= 1 && n <= 60)) { delete wbl[k]; pruned++; } }
+      if (pruned > 0) addLog(`[INFO] Wealth baseline: pruned ${pruned} out-of-range level bucket(s).`, 'info');
     } catch(e) { addLog(`[DEBUG] Could not load wealth baseline from server: ${e.message}`, 'debug'); }
     addLog(`[INFO] Wealth baseline: ${Object.keys(globalCacheRef.current.wealthByLevel || {}).length} level entries loaded.`, 'info');
 
