@@ -15,13 +15,9 @@ const WarEraAPI = {
     const isGateway = baseUrl.includes('gateway');
     const url = `${baseUrl}${endpoint}`;
     const headers = { 'Content-Type': 'application/json' };
-    // Authenticated endpoints (worker.getWorkers, transaction.*) reject X-API-Key
-    // alone, so also send the key as a Bearer token. Public endpoints ignore it.
-    if (activeKey && activeKey.trim() !== '') {
-      const k = activeKey.trim();
-      headers['X-API-Key'] = k;
-      headers['Authorization'] = `Bearer ${k}`;
-    }
+    // X-API-Key only. An Authorization: Bearer header here confuses the gateway's own
+    // session injection (and the official API wants a JWT cookie, not a Bearer key).
+    if (activeKey && activeKey.trim() !== '') headers['X-API-Key'] = activeKey.trim();
     let res;
     try {
       const ctrl = new AbortController();
@@ -1170,6 +1166,7 @@ export function WarEraOracle() {
 
     const executeFetch = async () => {
       let currentForceOfficial = forceOfficial;
+      let gatewayOnlyRetries = 0;
       while(true) {
         if (!isScanningRef.current) throw new Error("Scan Aborted");
 
@@ -1227,8 +1224,17 @@ export function WarEraOracle() {
           // that the gateway is down — fall back for this one call without penalizing
           // the gateway (otherwise a stray auth call kills it for every public request).
           const isAuthErr = msg.includes('api token required') || msg.includes('missing x-api-key') || msg.includes('unauthorized') || msg.includes('http 401') || msg.includes('401:');
-          // Gateway-only endpoints can't fall back to official (it 401s) — surface the error.
-          if (route === 'gateway' && forceGateway) { throw e; }
+          // Gateway-only endpoints can't fall back to official (it 401s). The gateway's
+          // shared session can transiently 401 under burst load, so retry a few times
+          // with backoff before giving up.
+          if (route === 'gateway' && forceGateway) {
+            if (gatewayOnlyRetries < 4) {
+              gatewayOnlyRetries += 1;
+              await new Promise(r => setTimeout(r, 300 * gatewayOnlyRetries + Math.random() * 400));
+              continue;
+            }
+            throw e;
+          }
           if (route === 'gateway' && isAuthErr) {
             await new Promise(r => setTimeout(r, Math.random() * 500));
             currentForceOfficial = true;

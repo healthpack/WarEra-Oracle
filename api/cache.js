@@ -65,9 +65,9 @@ async function fetchWarEra(endpoint, payload, apiKey, forceOfficial = false) {
   const doFetch = async (baseUrl, isGateway) => {
     const url = `${baseUrl}${endpoint}`;
     const headers = { 'Content-Type': 'application/json' };
-    // Authenticated endpoints reject X-API-Key alone; also send the key as a
-    // Bearer token. Public endpoints ignore it.
-    if (apiKey) { headers['X-API-Key'] = apiKey; headers['Authorization'] = `Bearer ${apiKey}`; }
+    // X-API-Key only — an Authorization: Bearer header confuses the gateway's own
+    // session injection for transaction.*.
+    if (apiKey) headers['X-API-Key'] = apiKey;
 
     const res = isGateway
       ? await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) })
@@ -90,8 +90,20 @@ async function fetchWarEra(endpoint, payload, apiKey, forceOfficial = false) {
   }
 
   // Gateway-only endpoints (transaction.*) must not fall back to official (it 401s).
+  // The gateway batches concurrent requests and its shared session can transiently
+  // 401 under burst load, so retry a few times with backoff before giving up.
   if (isGatewayOnly(endpoint)) {
-    return await doFetch('https://gateway.warerastats.io/trpc/', true);
+    let lastErr;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        return await doFetch('https://gateway.warerastats.io/trpc/', true);
+      } catch (e) {
+        if (e.message === 'RATE_LIMIT') throw e;
+        lastErr = e;
+        await new Promise(r => setTimeout(r, 250 * (attempt + 1) + Math.random() * 400));
+      }
+    }
+    throw lastErr;
   }
 
   try {
