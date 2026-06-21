@@ -524,8 +524,20 @@ const detectShellCompanies = (allWorkers, settings, globalCache) => {
 // Flags accounts whose coin wealth is disproportionately high for their level,
 // regardless of account age (account age is recorded as context only). Uses the
 // shared extractors so the flag agrees with the per-user wealth log.
+// Returns { anomalous, reason } if coin wealth is above the (level-adjusted) high bound
+// or below the low bound. Low-wealth is only judged at level >= 11, where wealth is
+// stable enough to be meaningful (sub-11 accounts naturally hold little).
+const classifyWealth = (coinWealth, level, avg, settings) => {
+  if (avg == null || avg <= 0 || coinWealth == null) return null;
+  const ratio = coinWealth / avg;
+  const upperMult = effectiveWealthMultiplier(level, settings?.wealthAnomalyMultiplier ?? 1.5);
+  const lowerMult = settings?.wealthAnomalyLowerMultiplier ?? 0.5;
+  if (ratio > upperMult) return { anomalous: true, reason: `coin wealth ${coinWealth.toFixed(0)} is ${ratio.toFixed(1)}x the level ${level} median (${avg.toFixed(0)}).` };
+  if (level >= 11 && ratio < lowerMult) return { anomalous: true, reason: `coin wealth ${coinWealth.toFixed(0)} is only ${ratio.toFixed(2)}x the level ${level} median (${avg.toFixed(0)}) — unusually low.` };
+  return null;
+};
+
 const detectAgeDateAnomaly = (player, allWorkers, settings, globalCache, _addLog) => {
-  const multiplier = settings?.wealthAnomalyMultiplier ?? 1.5;
   const suspicions = [];
   const now = Date.now();
   const richWorkers = [];
@@ -535,20 +547,18 @@ const detectAgeDateAnomaly = (player, allWorkers, settings, globalCache, _addLog
     if (coinWealth == null) return;
     const level = extractUserLevel(w.resolvedUser) ?? w.normalizedLevel ?? 1;
     const avgResult = getWealthAverageExtended(globalCache, level);
-    const avgCoinWealth = avgResult ? avgResult.avg : null;
-    if (avgCoinWealth == null) return;
-
-    if (coinWealth > avgCoinWealth * effectiveWealthMultiplier(level, multiplier)) {
+    const verdict = classifyWealth(coinWealth, level, avgResult ? avgResult.avg : null, settings);
+    if (verdict) {
       if (w.resolvedUser?.createdAt) w.accountAgeDays = Math.floor((now - new Date(w.resolvedUser.createdAt).getTime()) / 86400000);
-      w.wealthReason = `coin wealth ${coinWealth.toFixed(0)} is ${(coinWealth / avgCoinWealth).toFixed(1)}x the level ${level} median (${avgCoinWealth.toFixed(0)}).`;
+      w.wealthReason = verdict.reason;
       richWorkers.push(w);
     }
   });
 
   if (richWorkers.length >= 1) {
     suspicions.push({
-      type: 'wealth_anomaly', severity: richWorkers.length >= 2 ? 'critical' : 'high',
-      desc: `${richWorkers.length} account(s) show disproportionate coin wealth for their level (> ${multiplier}x the level median). May indicate external funding.`,
+      type: 'wealth_anomaly', severity: 'critical',
+      desc: `${richWorkers.length} account(s) show anomalous coin wealth for their level (outside ${settings?.wealthAnomalyLowerMultiplier ?? 0.5}x–${settings?.wealthAnomalyMultiplier ?? 1.5}x the level median). May indicate external funding or draining.`,
       workers: richWorkers, detectionWeight: richWorkers.length * 2
     });
   }
@@ -558,14 +568,13 @@ const detectAgeDateAnomaly = (player, allWorkers, settings, globalCache, _addLog
   if (bossCoinWealth != null) {
     const bossLevel = extractUserLevel(player) ?? player.level ?? 1;
     const bossAvgResult = getWealthAverageExtended(globalCache, bossLevel);
-    const bossAvg = bossAvgResult ? bossAvgResult.avg : null;
-    if (bossAvg != null && bossCoinWealth > bossAvg * effectiveWealthMultiplier(bossLevel, multiplier)) {
+    const bossVerdict = classifyWealth(bossCoinWealth, bossLevel, bossAvgResult ? bossAvgResult.avg : null, settings);
+    if (bossVerdict) {
       const ageDays = player.accountCreatedAt ? Math.floor((now - new Date(player.accountCreatedAt).getTime()) / 86400000) : undefined;
-      const reason = `coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth / bossAvg).toFixed(1)}x the level ${bossLevel} median (${bossAvg.toFixed(0)}).`;
       suspicions.push({
-        type: 'wealth_anomaly', severity: 'high',
-        desc: `Boss account ${reason}`,
-        workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?', accountAgeDays: ageDays, wealthReason: reason }],
+        type: 'wealth_anomaly', severity: 'critical',
+        desc: `Boss account ${bossVerdict.reason}`,
+        workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?', accountAgeDays: ageDays, wealthReason: bossVerdict.reason }],
         detectionWeight: 3
       });
     }
@@ -968,6 +977,7 @@ export function WarEraOracle() {
     suspiciousWageThreshold: 0.110,
     concurrencyLimit: 50,
     wealthAnomalyMultiplier: 1.5,
+    wealthAnomalyLowerMultiplier: 0.5,
     sniperThresholdMs: 1000,
     apmWindowMs: 500,
     pacingToleranceMs: 3,
@@ -1389,7 +1399,7 @@ export function WarEraOracle() {
             // log) so wealthy accounts with no transaction flags still advance to
             // analysis — analyzePhase1 then runs the authoritative detectAgeDateAnomaly.
             const _ar = getWealthAverageExtended(globalCacheRef.current, _l);
-            if (_ar && _ar.avg > 0 && _w > _ar.avg * effectiveWealthMultiplier(_l, settings.wealthAnomalyMultiplier ?? 1.5)) playerObj.wealthAnomalous = true;
+            if (_ar && classifyWealth(_w, _l, _ar.avg, settings)) playerObj.wealthAnomalous = true;
             recordWealthBaseline(globalCacheRef.current, _l, _w, uId);
           }
         }
@@ -2306,7 +2316,7 @@ export function WarEraOracle() {
     transaction_abuse:    { observed:'High-volume bilateral trading with the same counterparty', rule:'>=5 trades; significantly imbalanced net profit', note:'Repeated round-trip trades between two accounts are a common wash-trading pattern.' },
     hermit_network:       { observed:'Workers employed nowhere except this account', rule:'All known employment is with this single employer', note:'Exclusive worker networks can indicate account manufacturing, though niche legitimate employers exist.' },
     mutual_hermit:        { observed:'Mutual exclusive employment between boss and worker', rule:'Boss is also exclusively employed by this account', note:'Reciprocal hermit relationships substantially increase the likelihood of coordination.' },
-    wealth_anomaly:      { observed:'Account coin wealth significantly above level peers', rule:`Coin wealth > ${settings.wealthAnomalyMultiplier}x the level median`, note:'Wealth far above the level median may indicate external funding from another account; check account age and transaction history for context.' },
+    wealth_anomaly:      { observed:'Account coin wealth far from level peers', rule:`Coin wealth > ${settings.wealthAnomalyMultiplier}x or < ${settings.wealthAnomalyLowerMultiplier}x the level median (low bound applies at level 11+)`, note:'Wealth far above the level median may indicate external funding; far below may indicate a drained mule. Check account age and transaction history for context.' },
     fidelity_ring:        { observed:'Workers holding maximum fidelity across the workforce', rule:'Fidelity = 10/10 across workers', note:'Perfect fidelity cluster is unusual - may indicate artificially maintained relationships.' },
     cloned_progression:   { observed:'Progression stats mirror another account', rule:'Level/wealth within 2% of a known clone signature', note:'Near-identical progression curves can indicate copy-cat account farming.' },
     low_wage:             { observed:'Workers paid below suspicious wage threshold', rule:`Wage <= ${settings.suspiciousWageThreshold.toFixed(3)}`, note:'Low wages alone are not conclusive; combine with other signals for stronger inference.' },
@@ -2362,6 +2372,7 @@ export function WarEraOracle() {
   const activeRuleCount = [
     settings.suspiciousWageThreshold !== 0.110,
     settings.wealthAnomalyMultiplier !== 1.5,
+    settings.wealthAnomalyLowerMultiplier !== 0.5,
     settings.sniperThresholdMs !== 1000,
     settings.apmWindowMs !== 500,
     settings.pacingToleranceMs !== 3,
@@ -2527,6 +2538,10 @@ export function WarEraOracle() {
                     const score=r.adjustedDetections??r.detections;
                     const isActive=r.player.id===activeSuspectId;
                     const ringCount=Object.keys(r.washPartners||{}).length;
+                    const _pw=extractCoinWealth(r.player);
+                    const _pl=extractUserLevel(r.player)??r.player.level;
+                    const _pavg=_pl!=null?getWealthAverageExtended(globalCacheRef.current,_pl):null;
+                    const wealthRatio=(_pw!=null&&_pavg&&_pavg.avg>0)?(_pw/_pavg.avg):null;
                     return (
                       <div key={r.player.id} onClick={()=>setActiveSuspectId(r.player.id)}
                         style={{display:'flex',alignItems:'stretch',cursor:'pointer',
@@ -2542,6 +2557,7 @@ export function WarEraOracle() {
                           </div>
                           <div style={{fontSize:10,color:'#5d6e96',display:'flex',gap:5,alignItems:'center'}}>
                             <span>{ringCount>0?`Ring - ${ringCount+1}`:'Solo'}</span>
+                            {wealthRatio!=null&&<span style={{fontWeight:700,color:wealthRatio>=1?'#ffab3d':'#4fc3e8'}}>{wealthRatio.toFixed(1)}X avg coins</span>}
                             {watchlist[r.player.id]&&<span style={{fontSize:9,fontWeight:700,color:'#ffab3d'}}>WATCH</span>}
                           </div>
                         </div>
@@ -2915,7 +2931,8 @@ export function WarEraOracle() {
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
             {[
               {label:'Suspicious Wage Threshold',key:'suspiciousWageThreshold',min:0.01,max:0.15,step:0.001,fmt:(v)=>v.toFixed(3),isFloat:true},
-              {label:'Wealth Anomaly Threshold',key:'wealthAnomalyMultiplier',min:1,max:10,step:0.5,fmt:(v)=>`${v}x`,isFloat:true},
+              {label:'Wealth Anomaly Threshold (high)',key:'wealthAnomalyMultiplier',min:1,max:10,step:0.5,fmt:(v)=>`${v}x`,isFloat:true},
+              {label:'Low Wealth Threshold',key:'wealthAnomalyLowerMultiplier',min:0.05,max:0.95,step:0.05,fmt:(v)=>`${v}x`,isFloat:true},
               {label:'Sniper Threshold (ms)',key:'sniperThresholdMs',min:100,max:5000,step:100,fmt:(v)=>`${v}`,isFloat:false},
               {label:'Superhuman APM Window (ms)',key:'apmWindowMs',min:100,max:20000,step:100,fmt:(v)=>`${v}`,isFloat:false},
               {label:'Pacing Tolerance (ms)',key:'pacingToleranceMs',min:1,max:100,step:1,fmt:(v)=>`+/-${v}`,isFloat:false},
