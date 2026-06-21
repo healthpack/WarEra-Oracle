@@ -1015,6 +1015,7 @@ export function WarEraOracle() {
   const successfulWorkerEndpointRef = useRef(null);
   const successfulWorkerSchemaRef = useRef(null);
   const workerEndpointDiscoveryPromiseRef = useRef(null);
+  const txHealthRef = useRef({ ok: 0, fail: 0, warned: false });
 
   const [listFilter, setListFilter] = useState('all');
   const [activeSuspectId, setActiveSuspectId] = useState(null);
@@ -1421,7 +1422,17 @@ export function WarEraOracle() {
         nextCursor = txData?.nextCursor||txData?.meta?.nextCursor||null;
         if (reachedOld || itemMarketTxs.length >= 1000) break;
       } while (nextCursor);
-    } catch(e) { addLog(`[DEBUG] itemMarket fetch failed for ${foundName}: ${e.message}`, 'debug'); }
+      txHealthRef.current.ok += 1;
+    } catch(e) {
+      txHealthRef.current.fail += 1;
+      // Surface the first transaction failure prominently — otherwise the cause of
+      // "no transaction flags" is buried at debug level and looks like a clean scan.
+      if (!txHealthRef.current.warned) {
+        txHealthRef.current.warned = true;
+        addLog(`[CRITICAL] Transaction endpoint failing (${e.message.split('\n')[0]}). ALL transaction-based heuristics (wash trading, laundering, sniper, pacing, hermit, tips) are disabled this scan.`, 'warning');
+      }
+      addLog(`[DEBUG] itemMarket fetch failed for ${foundName}: ${e.message}`, 'debug');
+    }
 
     const actionTimes = [];
     let sniperHits=0, sniperDetails=[];
@@ -1961,9 +1972,10 @@ export function WarEraOracle() {
     alwaysPhase2Ref.current=false;
     scanQueueRef.current=[];
     
-    successfulWorkerEndpointRef.current=null; 
+    successfulWorkerEndpointRef.current=null;
     successfulWorkerSchemaRef.current=null;
     workerEndpointDiscoveryPromiseRef.current=null;
+    txHealthRef.current = { ok: 0, fail: 0, warned: false };
     globalCacheRef.current.requestDeduper.clear();
 
     try {
@@ -2136,6 +2148,9 @@ export function WarEraOracle() {
       await Promise.all(activePromises);
     } finally {
       setIsRateLimited(false);
+      const txH = txHealthRef.current;
+      if (txH.ok > 0) addLog(`[INFO] Transaction endpoint healthy (${txH.ok} ok / ${txH.fail} failed). Transaction heuristics ran with live data.`, 'info');
+      else if (txH.fail > 0) addLog(`[CRITICAL] Transaction endpoint failed on all ${txH.fail} attempt(s) — transaction-based heuristics had no data this scan.`, 'warning');
       if (isScanningRef.current) { setCurrentTask('Scan Complete'); setProgress(100); addLog('Scan sequence terminated.', 'info'); }
       setIsScanning(false); isScanningRef.current=false;
       if (globalCacheRef.current.wealthByLevel && Object.keys(globalCacheRef.current.wealthByLevel).length > 0) {
