@@ -1067,7 +1067,7 @@ export function WarEraOracle() {
       return;
     }
     const pct = avg !== 0 ? Math.round((wealth / avg) * 100) : 0;
-    addLog(`${name}: User wealth -${Math.round(wealth)}- Coins, average wealth for level is -${Math.round(avg)}- Coins. User wealth is ${pct}% of the average.`, 'info');
+    addLog(`${name}: User wealth -${Math.round(wealth)}- Coins, average wealth for level >${level}< is -${Math.round(avg)}- Coins. User wealth is ${pct}% of the average.`, 'info');
   }, [addLog]);
 
   useEffect(() => {
