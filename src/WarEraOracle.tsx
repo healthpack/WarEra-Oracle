@@ -1113,7 +1113,7 @@ export function WarEraOracle() {
     }
   }, [findings]);
 
-  const getToken = async (forceOfficial=false, forceGateway=false) => {
+  const getToken = async (forceOfficial=false) => {
     const startWait = Date.now();
     while (isScanningRef.current) {
       // Hard safety: never spin forever waiting for capacity (a saturated bucket or a
@@ -1141,7 +1141,6 @@ export function WarEraOracle() {
       let oCapacity = isOfficialEnabled ? ((400 - officialTokens.current.length) / 400) : 0;
       if (forceOfficial) gCapacity = -1;
       if (isGatewayDead.current) gCapacity = -1;
-      if (forceGateway) oCapacity = -1; // gateway-only endpoint (e.g. transaction.*) — official 401s
       if (gCapacity > 0 || oCapacity > 0) {
         if (oCapacity > gCapacity) { officialTokens.current.push(now); setTick(t=>t+1); return 'official'; }
         else { gatewayTokens.current.push(now); setTick(t=>t+1); return 'gateway'; }
@@ -1160,15 +1159,9 @@ export function WarEraOracle() {
   };
 
   const smartFetch = async (endpoint, payload, forceOfficial=false) => {
-    // The gateway carries its own session for transaction.* and serves it for free,
-    // so let transactions route normally (gateway-preferred). worker.* however needs a
-    // user session JWT the gateway does NOT have — it 401s there — so force worker.* to
-    // the official API (where the proxy can attach a JWT) and keep it off the gateway
-    // so its failures don't trip the breaker.
-    if (endpoint.startsWith('worker.')) forceOfficial = true;
-    // transaction.* is served by the gateway's own session; the official API 401s on it,
-    // so pin it to the gateway and never fall back to official.
-    const forceGateway = endpoint.startsWith('transaction.');
+    // worker.* and transaction.* both authenticate fine with the user's API key on
+    // either backend, so they use the normal gateway-first / official-fallback routing
+    // — no special-casing. A gateway burst-401 just falls back to the official API.
     const cacheKey = endpoint + JSON.stringify(payload);
     
     if (globalCacheRef.current.requestDeduper.has(cacheKey)) {
@@ -1177,7 +1170,6 @@ export function WarEraOracle() {
 
     const executeFetch = async () => {
       let currentForceOfficial = forceOfficial;
-      let gatewayOnlyRetries = 0;
       while(true) {
         if (!isScanningRef.current) throw new Error("Scan Aborted");
 
@@ -1202,8 +1194,8 @@ export function WarEraOracle() {
         } catch(e) { }
 
         let route;
-        if (isScanningRef.current) { route = await getToken(currentForceOfficial, forceGateway); }
-        else { route = forceGateway ? 'gateway' : (currentForceOfficial ? 'official' : (isGatewayDead.current ? 'official' : 'gateway')); }
+        if (isScanningRef.current) { route = await getToken(currentForceOfficial); }
+        else { route = currentForceOfficial ? 'official' : (isGatewayDead.current ? 'official' : 'gateway'); }
         const baseUrl = route === 'gateway' ? 'https://gateway.warerastats.io/trpc/' : 'https://api2.warera.io/trpc/';
         const activeKey = apiKey.trim();
         try {
@@ -1249,20 +1241,10 @@ export function WarEraOracle() {
               }
             }
             await new Promise(r => setTimeout(r, 500 + Math.random() * 2000));
-            if (!forceGateway) currentForceOfficial = true;
+            currentForceOfficial = true;
             continue;
           }
 
-          // Gateway-only endpoints can't fall back to official (it 401s). The gateway's
-          // shared session can transiently 401 under burst, so retry with backoff.
-          if (route === 'gateway' && forceGateway) {
-            if (gatewayOnlyRetries < 5) {
-              gatewayOnlyRetries += 1;
-              await new Promise(r => setTimeout(r, 300 * gatewayOnlyRetries + Math.random() * 400));
-              continue;
-            }
-            throw e;
-          }
           if (route === 'gateway' && isAuthErr) {
             await new Promise(r => setTimeout(r, Math.random() * 500));
             currentForceOfficial = true;

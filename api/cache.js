@@ -21,11 +21,9 @@ const NO_CACHE = new Set([
   'search.searchAnything',
 ]);
 
-// worker.* needs a user session JWT the gateway doesn't carry, so it must go to the
-// official API. transaction.* is the opposite: the gateway serves it from its own
-// session, while the official API 401s on it — so it is gateway-ONLY (no fallback).
-const isOfficialOnly = (ep) => ep.startsWith('worker.');
-const isGatewayOnly = (ep) => ep.startsWith('transaction.');
+// worker.* and transaction.* both authenticate with the user's API key on either
+// backend, so they use the default gateway-first / official-fallback path — no
+// special-casing.
 
 // ── Upstash REST helpers ──────────────────────────────────────────
 const redisGet = async (key) => {
@@ -84,28 +82,12 @@ async function fetchWarEra(endpoint, payload, apiKey, forceOfficial = false) {
     return obj?.result?.data?.json ?? obj?.result?.data ?? obj;
   };
 
-  // Skip the gateway entirely for auth-required endpoints — it would just 401.
-  if (forceOfficial || isOfficialOnly(endpoint)) {
+  if (forceOfficial) {
     return await doFetch('https://api2.warera.io/trpc/', false);
   }
 
-  // Gateway-only endpoints (transaction.*) must not fall back to official (it 401s).
-  // The gateway batches concurrent requests and its shared session can transiently
-  // 401 under burst load, so retry a few times with backoff before giving up.
-  if (isGatewayOnly(endpoint)) {
-    let lastErr;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      try {
-        return await doFetch('https://gateway.warerastats.io/trpc/', true);
-      } catch (e) {
-        if (e.message === 'RATE_LIMIT') throw e;
-        lastErr = e;
-        await new Promise(r => setTimeout(r, 250 * (attempt + 1) + Math.random() * 400));
-      }
-    }
-    throw lastErr;
-  }
-
+  // Gateway-first; fall back to the official API on any gateway error (including the
+  // gateway's transient burst-401s, which the user's API key resolves on official).
   try {
     return await doFetch('https://gateway.warerastats.io/trpc/', true);
   } catch (e) {
