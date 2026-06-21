@@ -1198,6 +1198,9 @@ export function WarEraOracle() {
           if (Array.isArray(result) && result.length > 0 && typeof result[0] === 'string') {
             try { result = JSON.parse(result[0]); } catch { }
           }
+          // A good gateway response clears the failure streak so only *consecutive*
+          // failures (a real outage) can trip the breaker, not sporadic blips.
+          if (route === 'gateway') gatewayFails.current = 0;
           return result;
         } catch (e) {
           if (e.message.includes('RATE LIMIT')) {
@@ -1215,6 +1218,15 @@ export function WarEraOracle() {
           }
           const msg = e.message.toLowerCase();
           const isSchemaErr = msg.includes('no procedure') || msg.includes('too_big') || msg.includes('unrecognized key') || msg.includes('invalid_type');
+          // Auth errors mean the endpoint needs the official API's Bearer token, not
+          // that the gateway is down — fall back for this one call without penalizing
+          // the gateway (otherwise a stray auth call kills it for every public request).
+          const isAuthErr = msg.includes('api token required') || msg.includes('missing x-api-key') || msg.includes('unauthorized') || msg.includes('http 401') || msg.includes('401:');
+          if (route === 'gateway' && isAuthErr) {
+            await new Promise(r => setTimeout(r, Math.random() * 500));
+            currentForceOfficial = true;
+            continue;
+          }
           if (route === 'gateway' && (msg.includes('sqlstate 53300') || msg.includes('too many clients'))) {
             const cur = effectiveConcurrencyRef.current;
             const nowMs = Date.now();
