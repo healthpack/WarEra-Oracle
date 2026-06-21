@@ -22,9 +22,10 @@ const NO_CACHE = new Set([
 ]);
 
 // worker.* needs a user session JWT the gateway doesn't carry, so it must go to the
-// official API. transaction.* is served by the gateway for free, so it is NOT
-// official-only and uses the normal gateway-first path.
+// official API. transaction.* is the opposite: the gateway serves it from its own
+// session, while the official API 401s on it — so it is gateway-ONLY (no fallback).
 const isOfficialOnly = (ep) => ep.startsWith('worker.');
+const isGatewayOnly = (ep) => ep.startsWith('transaction.');
 
 // ── Upstash REST helpers ──────────────────────────────────────────
 const redisGet = async (key) => {
@@ -86,6 +87,11 @@ async function fetchWarEra(endpoint, payload, apiKey, forceOfficial = false) {
   // Skip the gateway entirely for auth-required endpoints — it would just 401.
   if (forceOfficial || isOfficialOnly(endpoint)) {
     return await doFetch('https://api2.warera.io/trpc/', false);
+  }
+
+  // Gateway-only endpoints (transaction.*) must not fall back to official (it 401s).
+  if (isGatewayOnly(endpoint)) {
+    return await doFetch('https://gateway.warerastats.io/trpc/', true);
   }
 
   try {

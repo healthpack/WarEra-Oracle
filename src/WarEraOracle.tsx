@@ -1111,7 +1111,7 @@ export function WarEraOracle() {
     }
   }, [findings]);
 
-  const getToken = async (forceOfficial=false) => {
+  const getToken = async (forceOfficial=false, forceGateway=false) => {
     while (isScanningRef.current) {
       while (globalRateLimitRelease.current > Date.now()) {
         if (!isScanningRef.current) throw new Error("Scan Aborted");
@@ -1134,6 +1134,7 @@ export function WarEraOracle() {
       let oCapacity = isOfficialEnabled ? ((400 - officialTokens.current.length) / 400) : 0;
       if (forceOfficial) gCapacity = -1;
       if (isGatewayDead.current) gCapacity = -1;
+      if (forceGateway) oCapacity = -1; // gateway-only endpoint (e.g. transaction.*) — official 401s
       if (gCapacity > 0 || oCapacity > 0) {
         if (oCapacity > gCapacity) { officialTokens.current.push(now); setTick(t=>t+1); return 'official'; }
         else { gatewayTokens.current.push(now); setTick(t=>t+1); return 'gateway'; }
@@ -1158,6 +1159,9 @@ export function WarEraOracle() {
     // the official API (where the proxy can attach a JWT) and keep it off the gateway
     // so its failures don't trip the breaker.
     if (endpoint.startsWith('worker.')) forceOfficial = true;
+    // transaction.* is served by the gateway's own session; the official API 401s on it,
+    // so pin it to the gateway and never fall back to official.
+    const forceGateway = endpoint.startsWith('transaction.');
     const cacheKey = endpoint + JSON.stringify(payload);
     
     if (globalCacheRef.current.requestDeduper.has(cacheKey)) {
@@ -1190,8 +1194,8 @@ export function WarEraOracle() {
         } catch(e) { }
 
         let route;
-        if (isScanningRef.current) { route = await getToken(currentForceOfficial); }
-        else { route = currentForceOfficial ? 'official' : (isGatewayDead.current ? 'official' : 'gateway'); }
+        if (isScanningRef.current) { route = await getToken(currentForceOfficial, forceGateway); }
+        else { route = forceGateway ? 'gateway' : (currentForceOfficial ? 'official' : (isGatewayDead.current ? 'official' : 'gateway')); }
         const baseUrl = route === 'gateway' ? 'https://gateway.warerastats.io/trpc/' : 'https://api2.warera.io/trpc/';
         const activeKey = apiKey.trim();
         try {
@@ -1223,6 +1227,8 @@ export function WarEraOracle() {
           // that the gateway is down — fall back for this one call without penalizing
           // the gateway (otherwise a stray auth call kills it for every public request).
           const isAuthErr = msg.includes('api token required') || msg.includes('missing x-api-key') || msg.includes('unauthorized') || msg.includes('http 401') || msg.includes('401:');
+          // Gateway-only endpoints can't fall back to official (it 401s) — surface the error.
+          if (route === 'gateway' && forceGateway) { throw e; }
           if (route === 'gateway' && isAuthErr) {
             await new Promise(r => setTimeout(r, Math.random() * 500));
             currentForceOfficial = true;
