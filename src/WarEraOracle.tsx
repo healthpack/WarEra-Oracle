@@ -159,6 +159,12 @@ const extractUserLevel = (u) => {
   return (lvl != null && lvl >= 1 && lvl <= 60) ? lvl : null;
 };
 
+// Low-level accounts (< 11) have small, volatile wealth, so require a much higher bar
+// — 4x the level median (400%) — before flagging, to suppress sub-level-11 noise.
+const LOW_LEVEL_WEALTH_MULTIPLIER = 4;
+const effectiveWealthMultiplier = (level, baseMultiplier) =>
+  (level != null && level < 11) ? Math.max(LOW_LEVEL_WEALTH_MULTIPLIER, baseMultiplier) : baseMultiplier;
+
 // ─────────────────────────────────────────────
 //  DETECTION MODULES
 // ─────────────────────────────────────────────
@@ -532,7 +538,7 @@ const detectAgeDateAnomaly = (player, allWorkers, settings, globalCache, _addLog
     const avgCoinWealth = avgResult ? avgResult.avg : null;
     if (avgCoinWealth == null) return;
 
-    if (coinWealth > avgCoinWealth * multiplier) {
+    if (coinWealth > avgCoinWealth * effectiveWealthMultiplier(level, multiplier)) {
       if (w.resolvedUser?.createdAt) w.accountAgeDays = Math.floor((now - new Date(w.resolvedUser.createdAt).getTime()) / 86400000);
       w.wealthReason = `coin wealth ${coinWealth.toFixed(0)} is ${(coinWealth / avgCoinWealth).toFixed(1)}x the level ${level} median (${avgCoinWealth.toFixed(0)}).`;
       richWorkers.push(w);
@@ -553,7 +559,7 @@ const detectAgeDateAnomaly = (player, allWorkers, settings, globalCache, _addLog
     const bossLevel = extractUserLevel(player) ?? player.level ?? 1;
     const bossAvgResult = getWealthAverageExtended(globalCache, bossLevel);
     const bossAvg = bossAvgResult ? bossAvgResult.avg : null;
-    if (bossAvg != null && bossCoinWealth > bossAvg * multiplier) {
+    if (bossAvg != null && bossCoinWealth > bossAvg * effectiveWealthMultiplier(bossLevel, multiplier)) {
       const ageDays = player.accountCreatedAt ? Math.floor((now - new Date(player.accountCreatedAt).getTime()) / 86400000) : undefined;
       const reason = `coin wealth ${bossCoinWealth.toFixed(0)} is ${(bossCoinWealth / bossAvg).toFixed(1)}x the level ${bossLevel} median (${bossAvg.toFixed(0)}).`;
       suspicions.push({
@@ -1108,9 +1114,14 @@ export function WarEraOracle() {
   }, [findings]);
 
   const getToken = async (forceOfficial=false, forceGateway=false) => {
+    const startWait = Date.now();
     while (isScanningRef.current) {
+      // Hard safety: never spin forever waiting for capacity (a saturated bucket or a
+      // stuck global pause). Throwing lets the caller fail and unblocks phase 2.
+      if (Date.now() - startWait > 60000) throw new Error("API capacity timeout");
       while (globalRateLimitRelease.current > Date.now()) {
         if (!isScanningRef.current) throw new Error("Scan Aborted");
+        if (Date.now() - startWait > 60000) throw new Error("API capacity timeout");
         const waitMs = globalRateLimitRelease.current - Date.now();
         setIsRateLimited(true);
         setLimitTimer(Math.ceil(waitMs / 1000));
@@ -1220,27 +1231,13 @@ export function WarEraOracle() {
           }
           const msg = e.message.toLowerCase();
           const isSchemaErr = msg.includes('no procedure') || msg.includes('too_big') || msg.includes('unrecognized key') || msg.includes('invalid_type') || msg.includes('unknown method') || msg.includes('unsupported gateway route');
-          // Auth errors mean the endpoint needs the official API's Bearer token, not
-          // that the gateway is down — fall back for this one call without penalizing
-          // the gateway (otherwise a stray auth call kills it for every public request).
           const isAuthErr = msg.includes('api token required') || msg.includes('missing x-api-key') || msg.includes('unauthorized') || msg.includes('http 401') || msg.includes('401:');
-          // Gateway-only endpoints can't fall back to official (it 401s). The gateway's
-          // shared session can transiently 401 under burst load, so retry a few times
-          // with backoff before giving up.
-          if (route === 'gateway' && forceGateway) {
-            if (gatewayOnlyRetries < 4) {
-              gatewayOnlyRetries += 1;
-              await new Promise(r => setTimeout(r, 300 * gatewayOnlyRetries + Math.random() * 400));
-              continue;
-            }
-            throw e;
-          }
-          if (route === 'gateway' && isAuthErr) {
-            await new Promise(r => setTimeout(r, Math.random() * 500));
-            currentForceOfficial = true;
-            continue;
-          }
-          if (route === 'gateway' && (msg.includes('sqlstate 53300') || msg.includes('too many clients'))) {
+          const isDbSaturation = msg.includes('sqlstate 53300') || msg.includes('too many clients');
+
+          // Gateway DB pool exhausted under load — reduce concurrency and back off. For
+          // gateway-only endpoints (transaction.*) retry the gateway (official 401s);
+          // otherwise offload this call to the official API.
+          if (route === 'gateway' && isDbSaturation) {
             const cur = effectiveConcurrencyRef.current;
             const nowMs = Date.now();
             if (nowMs - concurrencyLastReducedRef.current > 15000) {
@@ -1251,7 +1248,23 @@ export function WarEraOracle() {
                 addLog(`[GATEWAY] DB saturated - reducing concurrency ${cur} -> ${next} (15s cooldown active)`, 'warning');
               }
             }
-            await new Promise(r => setTimeout(r, Math.random() * 2000));
+            await new Promise(r => setTimeout(r, 500 + Math.random() * 2000));
+            if (!forceGateway) currentForceOfficial = true;
+            continue;
+          }
+
+          // Gateway-only endpoints can't fall back to official (it 401s). The gateway's
+          // shared session can transiently 401 under burst, so retry with backoff.
+          if (route === 'gateway' && forceGateway) {
+            if (gatewayOnlyRetries < 5) {
+              gatewayOnlyRetries += 1;
+              await new Promise(r => setTimeout(r, 300 * gatewayOnlyRetries + Math.random() * 400));
+              continue;
+            }
+            throw e;
+          }
+          if (route === 'gateway' && isAuthErr) {
+            await new Promise(r => setTimeout(r, Math.random() * 500));
             currentForceOfficial = true;
             continue;
           }
@@ -1394,7 +1407,7 @@ export function WarEraOracle() {
             // log) so wealthy accounts with no transaction flags still advance to
             // analysis — analyzePhase1 then runs the authoritative detectAgeDateAnomaly.
             const _ar = getWealthAverageExtended(globalCacheRef.current, _l);
-            if (_ar && _ar.avg > 0 && _w > _ar.avg * (settings.wealthAnomalyMultiplier ?? 1.5)) playerObj.wealthAnomalous = true;
+            if (_ar && _ar.avg > 0 && _w > _ar.avg * effectiveWealthMultiplier(_l, settings.wealthAnomalyMultiplier ?? 1.5)) playerObj.wealthAnomalous = true;
             recordWealthBaseline(globalCacheRef.current, _l, _w, uId);
           }
         }
