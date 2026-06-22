@@ -1038,7 +1038,11 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
   const [zoom, setZoom] = React.useState(1);
   const [hover, setHover] = React.useState(null);
   const [dragKey, setDragKey] = React.useState(null);
-  React.useEffect(() => { setPosns(initial); }, [initial]);
+  // Re-seed positions only when the node SET or container size actually changes —
+  // not on every parent re-render (which gives `nodes`/`initial` a new identity and
+  // would otherwise snap a dragged node back to its start).
+  const layoutKey = nodes.map(n => n.uid).join(',') + '|' + Math.round(geom.cx) + 'x' + Math.round(geom.cy);
+  React.useEffect(() => { setPosns(initial); }, [layoutKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const dragRef = React.useRef(null);
   const toLocal = (clientX, clientY) => {
     const el = wrapRef.current; const rect = el.getBoundingClientRect();
@@ -1164,7 +1168,7 @@ const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX }) => {
 };
 
 // Sidebar beside the map: identity, verdict, summary, actions, signal ledger.
-const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, workforceSize }) => {
+const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onCopy, copied, workforceSize }) => {
   const sc = activeResult.adjustedDetections ?? activeResult.detections;
   const tier = plScoreTier(sc);
   const ringCount = Object.keys(activeResult.washPartners || {}).length;
@@ -1196,6 +1200,7 @@ const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, wor
         <button onClick={onWatch} style={{ ...btn, background: isWatching ? 'rgba(255,171,61,0.20)' : '#121b35', color: isWatching ? '#ffab3d' : '#9fb0d4', border: `1px solid ${isWatching ? 'rgba(255,171,61,0.50)' : '#2e3f6a'}` }}><Star size={12} /> Watch</button>
         <button onClick={onRescan} style={{ ...btn, background: '#121b35', color: '#9fb0d4', border: '1px solid #2e3f6a' }}><RefreshCw size={12} /> Rescan</button>
       </div>
+      {onCopy && <button onClick={onCopy} style={{ ...btn, width: '100%', background: copied ? 'rgba(63,208,163,0.12)' : 'transparent', color: copied ? '#3fd0a3' : '#5d6e96', border: `1px solid ${copied ? 'rgba(63,208,163,0.40)' : '#1f2b4e'}`, fontSize: 10.5, marginTop: -4 }}><CheckSquare size={11} /> {copied ? 'Copied!' : 'Copy 500-char summary'}</button>}
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.08em', color: '#9fb0d4', marginBottom: 8, textTransform: 'uppercase' }}>Signal Ledger</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
@@ -3000,9 +3005,11 @@ export function WarEraOracle() {
                   <div style={{padding:'14px 24px 0',display:'flex',gap:14,alignItems:'stretch'}}>
                     <ClusterMapPanel activeResult={activeResult} globalCache={globalCacheRef.current} bossWealthX={_bx}/>
                     <MapSidebar activeResult={activeResult} isWatching={!!watchlist[activeResult.player.id]} workforceSize={_wf}
+                      copied={copiedId===activeResult.player.id}
                       onWatch={()=>toggleWatchlist(activeResult.player.id,activeResult.player.name,activeResult.country)}
-                      onRescan={()=>runPhase2(activeResult.player.id,activeResult.country)}
-                      onReport={()=>exportSinglePlayer(activeResult)}/>
+                      onRescan={()=>rescanPlayer(activeResult.player.id,activeResult.country)}
+                      onReport={()=>exportSinglePlayer(activeResult)}
+                      onCopy={()=>{copySummaryToClipboard(activeResult);setCopiedId(activeResult.player.id);setTimeout(()=>setCopiedId(null),2500);}}/>
                   </div>
                 );
               })()}
@@ -3194,91 +3201,7 @@ export function WarEraOracle() {
           )}
         </div>
 
-        {/* RIGHT: Rail 348px */}
-        <div style={{width:348,flexShrink:0,background:'#0c1226',borderLeft:'1px solid #1f2b4e',overflowY:'auto'}}>
-          {activeResult?(
-            <div style={{padding:'16px 16px 0'}}>
-              {/* Actions */}
-              <div style={{display:'flex',gap:8,marginBottom:12}}>
-                <button onClick={()=>exportSinglePlayer(activeResult)} style={{flex:1,padding:'8px',background:'#ff5d6c',border:'none',borderRadius:6,color:'#070b18',fontSize:11.5,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
-                  <Download size={13}/> Build report
-                </button>
-                <button onClick={()=>toggleWatchlist(activeResult.player.id,activeResult.player.name,activeResult.country)} style={{padding:'8px 10px',background:watchlist[activeResult.player.id]?'rgba(255,171,61,0.20)':'#121b35',border:`1px solid ${watchlist[activeResult.player.id]?'rgba(255,171,61,0.50)':'#2e3f6a'}`,borderRadius:6,color:watchlist[activeResult.player.id]?'#ffab3d':'#9fb0d4',fontSize:11.5,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:5}}>
-                  <Bookmark size={12} fill={watchlist[activeResult.player.id]?'currentColor':'none'}/> Watch
-                </button>
-                <button onClick={()=>rescanPlayer(activeResult.player.id,activeResult.country)} style={{padding:'8px 10px',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:6,color:'#9fb0d4',fontSize:11.5,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:5}}>
-                  <RefreshCw size={12}/>
-                </button>
-              </div>
-              {activeResult.phase2Status==='pending'&&(
-                <button onClick={()=>runPhase2(activeResult.player.id,activeResult.country)} style={{width:'100%',marginBottom:8,padding:'7px',background:'rgba(79,195,232,0.10)',border:'1px solid rgba(79,195,232,0.30)',borderRadius:6,color:'#4fc3e8',fontSize:11.5,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
-                  <Users size={12}/> Load Worker Analysis
-                </button>
-              )}
-              <button onClick={()=>{copySummaryToClipboard(activeResult);setCopiedId(activeResult.player.id);setTimeout(()=>setCopiedId(null),2500);}} style={{width:'100%',marginBottom:20,padding:'6px',background:copiedId===activeResult.player.id?'rgba(63,208,163,0.12)':'transparent',border:`1px solid ${copiedId===activeResult.player.id?'rgba(63,208,163,0.40)':'#1f2b4e'}`,borderRadius:6,color:copiedId===activeResult.player.id?'#3fd0a3':'#5d6e96',fontSize:10.5,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:5}}>
-                <CheckSquare size={10}/> {copiedId===activeResult.player.id?'Copied!':'Copy 500-char summary'}
-              </button>
-              {/* CASE FACTS */}
-              <div style={{marginBottom:20}}>
-                <div style={{fontSize:10.5,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase',marginBottom:8}}>Case Facts</div>
-                {[
-                  {label:'Region', value:activeResult.country, mono:false},
-                  activeResult.player.level?{label:'Level', value:`Lv. ${activeResult.player.level}`, mono:true}:null,
-                  activeResult.player.accountAgeDays!=null?{label:'Account age', value:`${Math.floor(activeResult.player.accountAgeDays)} days`, mono:true}:null,
-                  ringSize>0?{label:'Ring size', value:`${ringSize+1}${ringBanned>0?` - ${ringBanned} banned`:''}`, mono:true, color:ringBanned>0?'#ff5d6c':undefined}:null,
-                  activeWashPartners.length>0?{label:'Net coin flow', value:Math.abs(netFlow)<0.01?'0.0':netFlow>0?`+${netFlow.toFixed(1)}`:`-${Math.abs(netFlow).toFixed(1)}`, mono:true, color:Math.abs(netFlow)<0.01?'#5d6e96':netFlow>0?'#3fd0a3':'#ff5d6c'}:null,
-                  critCount>0?{label:'Critical signals', value:`${critCount}`, mono:true, color:'#ff5d6c'}:null,
-                ].filter(Boolean).map((row,i,arr)=>(
-                  <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'5px 0',borderBottom:i<arr.length-1?'1px solid #1f2b4e':'none'}}>
-                    <span style={{fontSize:11.5,color:'#5d6e96'}}>{row.label}</span>
-                    <span style={{fontSize:11.5,fontFamily:row.mono?"'IBM Plex Mono', monospace":undefined,color:row.color||'#eaf0ff',fontWeight:row.color?600:400}}>{row.value}</span>
-                  </div>
-                ))}
-              </div>
-              {/* RING COIN FLOW */}
-              {activeWashPartners.length>0&&(
-                <div style={{marginBottom:20}}>
-                  <div style={{fontSize:10.5,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase',marginBottom:8}}>Ring - Coin Flow</div>
-                  <div style={{display:'flex',flexDirection:'column',gap:8}}>
-                    {activeWashPartners.map(([partnerId, pData])=>{
-                      const profit=pData.netProfit||0;
-                      const profitColor=Math.abs(profit)<0.01?'#5d6e96':profit>0?'#3fd0a3':'#ff5d6c';
-                      const profitText=Math.abs(profit)<0.01?'0.0 NET':profit>0?`+${profit.toFixed(1)}`:`-${Math.abs(profit).toFixed(1)}`;
-                      const partnerName=pData.name||globalCacheRef.current.names[partnerId]||partnerId;
-                      return (
-                        <div key={partnerId} style={{background:'#060a16',border:'1px solid #1f2b4e',borderRadius:6,padding:'8px 10px'}}>
-                          <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8}}>
-                            <div style={{minWidth:0,flex:1}}>
-                              <a href={`https://app.warera.io/user/${partnerId}`} target="_blank" rel="noopener noreferrer" style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,color:'#4fc3e8',textDecoration:'none',display:'block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{String(partnerName)}</a>
-                              {pData.isBanned&&<span style={{fontSize:7.5,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px',marginTop:2,display:'inline-block'}}>BANNED</span>}
-                              {pData.level!=null&&<div style={{fontSize:9.5,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace",marginTop:2}}>Lv.{pData.level}</div>}
-                            </div>
-                            <div style={{textAlign:'right',flexShrink:0}}>
-                              <div style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,fontWeight:700,color:profitColor}}>{profitText}</div>
-                              <div style={{fontSize:9.5,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace"}}>{pData.txCount} trades</div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {Math.abs(netFlow)>0.01&&(
-                      <div style={{fontSize:10.5,fontFamily:"IBM Plex Mono, monospace",textAlign:'right',paddingTop:4,borderTop:'1px solid #1f2b4e',color:'#5d6e96'}}>
-                        Net {netFlow>0?<span style={{color:'#3fd0a3'}}>+{netFlow.toFixed(1)} gained</span>:<span style={{color:'#ff5d6c'}}>-{Math.abs(netFlow).toFixed(1)} lost</span>} from ring
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-              <div style={{fontSize:10.5,color:'#5d6e96',paddingBottom:16,borderTop:'1px solid #1f2b4e',paddingTop:10}}>
-                Generated {new Date().toLocaleDateString()} - {totalFlags} flagged
-              </div>
-            </div>
-          ):(
-            <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',color:'#5d6e96',fontSize:12,padding:24,textAlign:'center'}}>
-              Select a suspect to see case details.
-            </div>
-          )}
-        </div>
+        {/* (Old right rail removed — replaced by the in-pane MapSidebar beside the relationship map.) */}
       </div>
 
       {/* ── FOOTER: LogBar ── */}
