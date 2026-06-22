@@ -865,7 +865,7 @@ const MATRIX_LINK_LABEL = {
 };
 const CLONE_COLOR = ['#4fc3e8', '#c98bff', '#5aa0ff', '#3fd0a3'];
 
-const buildMatrixModel = (suspicions) => {
+const buildMatrixModel = (suspicions, globalCache) => {
   const byUid = new Map();
   const order = [];
   let overlapString = null;
@@ -877,9 +877,17 @@ const buildMatrixModel = (suspicions) => {
       if (!uid) return;
       const name = String(w.normalizedName || '').replace(' (SELF)', '').replace(' (HERMIT NODE)', '');
       if (!byUid.has(uid)) {
+        let wealthX = null;
+        const ru = w.resolvedUser;
+        if (globalCache && ru) {
+          const cw = extractCoinWealth(ru);
+          const lv = extractUserLevel(ru) ?? w.normalizedLevel;
+          const ar = lv != null ? getWealthAverageExtended(globalCache, lv) : null;
+          if (cw != null && ar && ar.avg > 0) wealthX = cw / ar.avg;
+        }
         byUid.set(uid, {
           uid, name, wage: w.normalizedWage, level: w.normalizedLevel,
-          fid: w.normalizedFidelity, build: w.normalizedBuild,
+          fid: w.normalizedFidelity, build: w.normalizedBuild, wealthX,
           age: w.accountAgeDays ?? (w.resolvedUser?.createdAt ? Math.floor((Date.now() - new Date(w.resolvedUser.createdAt).getTime()) / 86400000) : null),
           id: w.resolvedUser?._id || uid, links: new Set(),
         });
@@ -965,6 +973,288 @@ const LinkedAccountMatrix = ({ suspicions, wageThreshold = 0.11 }) => {
           })}
         </tbody>
       </table>
+      </div>
+    </div>
+  );
+};
+
+// ── Severity + relationship helpers (Concept G) ──────────────────────────────
+const PL_SEV = {
+  crit: { c: '#ff5d6c', bg: 'rgba(255,93,108,0.12)', line: 'rgba(255,93,108,0.42)' },
+  high: { c: '#ffab3d', bg: 'rgba(255,171,61,0.12)', line: 'rgba(255,171,61,0.40)' },
+  med:  { c: '#ffd84d', bg: 'rgba(255,216,77,0.11)', line: 'rgba(255,216,77,0.36)' },
+};
+const plScoreTier = (s) => s >= 10 ? 'crit' : s >= 5 ? 'high' : 'med';
+const plSevTier = (sev) => sev === 'critical' ? 'crit' : sev === 'high' ? 'high' : 'med';
+const PL_REL = { name: '#5aa0ff', clone: '#c98bff' };
+const wealthColor = (x) => x == null ? '#9fb0d4' : (x < 0.5 ? '#4fc3e8' : x > 2 ? '#ff5d6c' : '#ffab3d');
+
+const buildClusterEdges = (rows, overlapString) => {
+  const edges = [];
+  if (overlapString) {
+    const named = rows.filter(r => String(r.name).toLowerCase().includes(String(overlapString).toLowerCase()));
+    for (let i = 1; i < named.length; i++) edges.push({ a: named[i - 1].uid, b: named[i].uid, type: 'name' });
+  }
+  const groups = {};
+  rows.forEach(r => { if (r.cloneGroup) (groups[r.cloneGroup] = groups[r.cloneGroup] || []).push(r); });
+  Object.values(groups).forEach(g => { for (let i = 1; i < g.length; i++) edges.push({ a: g[i - 1].uid, b: g[i].uid, type: 'clone' }); });
+  return edges;
+};
+
+const WealthTag = ({ x, size = 10 }) => {
+  if (x == null) return null;
+  const c = wealthColor(x);
+  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontFamily: "IBM Plex Mono, monospace", fontSize: size, fontWeight: 700, color: c }}>
+    <span style={{ width: size - 1, height: size - 1, borderRadius: '50%', border: `1.5px solid ${c}`, flexShrink: 0 }} />{x.toFixed(1)}×
+  </span>;
+};
+
+// ── Interactive relationship map (drag / zoom / hover) ───────────────────────
+const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
+  const wrapRef = React.useRef(null);
+  const [size, setSize] = React.useState({ w: 0, h: 0 });
+  React.useLayoutEffect(() => {
+    const el = wrapRef.current; if (!el) return;
+    const measure = () => setSize({ w: el.clientWidth, h: el.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure); ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const NODE_H = 72;
+  const geom = React.useMemo(() => {
+    const w = size.w || 820, h = size.h || height;
+    const rx = Math.max(150, (w / 2 - nodeW / 2 - 24) / 0.87);
+    const ry = Math.max(96, h / 2 - NODE_H / 2 - 14);
+    return { cx: w / 2, cy: h / 2, rx, ry };
+  }, [size.w, size.h, nodeW, height]);
+  const initial = React.useMemo(() => {
+    const { cx, cy, rx, ry } = geom;
+    const m = { BOSS: { x: cx, y: cy } };
+    const n = nodes.length || 1;
+    nodes.forEach((nd, i) => { const a = (-90 + i * (360 / n)) * Math.PI / 180; m[nd.uid] = { x: cx + rx * Math.cos(a), y: cy + ry * Math.sin(a) }; });
+    return m;
+  }, [geom, nodes]);
+  const [posns, setPosns] = React.useState(initial);
+  const [zoom, setZoom] = React.useState(1);
+  const [hover, setHover] = React.useState(null);
+  const [dragKey, setDragKey] = React.useState(null);
+  React.useEffect(() => { setPosns(initial); }, [initial]);
+  const dragRef = React.useRef(null);
+  const toLocal = (clientX, clientY) => {
+    const el = wrapRef.current; const rect = el.getBoundingClientRect();
+    const s = rect.width / (el.clientWidth || rect.width);
+    const lx = (clientX - rect.left) / s, ly = (clientY - rect.top) / s;
+    const ox = el.clientWidth / 2, oy = el.clientHeight / 2;
+    return { x: ox + (lx - ox) / zoom, y: oy + (ly - oy) / zoom };
+  };
+  const onMove = (e) => { const d = dragRef.current; if (!d) return; const L = toLocal(e.clientX, e.clientY); setPosns(p => ({ ...p, [d.key]: { x: L.x + d.dx, y: L.y + d.dy } })); };
+  const onUp = () => { dragRef.current = null; setDragKey(null); window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+  const startDrag = (key, e) => { e.preventDefault(); e.stopPropagation(); const L = toLocal(e.clientX, e.clientY); const cur = posns[key] || { x: 0, y: 0 }; dragRef.current = { key, dx: cur.x - L.x, dy: cur.y - L.y }; setDragKey(key); window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp); };
+  const reset = () => { setPosns(initial); setZoom(1); };
+  const nudge = (d) => setZoom(z => Math.min(2, Math.max(0.6, +(z + d * 0.2).toFixed(2))));
+  const edgeLit = (e) => hover && (hover === e.a || hover === e.b);
+  const B = posns.BOSS || { x: geom.cx, y: geom.cy };
+  const tier = plScoreTier(boss.score);
+
+  const NodeCard = ({ nd }) => {
+    const p = posns[nd.uid] || { x: geom.cx, y: geom.cy };
+    const active = dragKey === nd.uid;
+    const dim = hover && hover !== 'BOSS' && hover !== nd.uid && !edges.some(e => (e.a === hover && e.b === nd.uid) || (e.b === hover && e.a === nd.uid));
+    let nm = <span>{nd.name}</span>;
+    if (nd.frag) { const i = nd.name.toLowerCase().indexOf(String(nd.frag).toLowerCase()); if (i >= 0) nm = <span>{nd.name.slice(0, i)}<span style={{ color: PL_REL.name }}>{nd.name.slice(i, i + nd.frag.length)}</span>{nd.name.slice(i + nd.frag.length)}</span>; }
+    return (
+      <div onPointerDown={(e) => startDrag(nd.uid, e)} onMouseEnter={() => setHover(nd.uid)} onMouseLeave={() => setHover(null)}
+        style={{ position: 'absolute', left: p.x, top: p.y, transform: `translate(-50%,-50%) scale(${active ? 1.04 : 1})`, width: nodeW, background: '#121b35', border: `1px solid ${active || hover === nd.uid ? '#4fc3e8' : '#2e3f6a'}`, borderRadius: 9, padding: '8px 10px', boxShadow: active ? '0 14px 34px rgba(0,0,0,.55)' : '0 6px 18px rgba(0,0,0,.4)', cursor: active ? 'grabbing' : 'grab', opacity: dim ? 0.4 : 1, transition: 'opacity .12s, border-color .12s', userSelect: 'none', touchAction: 'none', zIndex: active ? 5 : 2 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
+          <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11.5, fontWeight: 600, color: '#eaf0ff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nm}</span>
+          <a href={`https://app.warera.io/user/${nd.id}`} target="_blank" rel="noopener noreferrer" onPointerDown={(e) => e.stopPropagation()} style={{ color: '#5d6e96', flexShrink: 0 }}><ExternalLink size={9} /></a>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#5d6e96' }}>Lv.{nd.level ?? '?'}</span>
+          <span style={{ marginLeft: 'auto' }}><WealthTag x={nd.wealthX} /></span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#ffab3d' }}>{nd.wage != null ? Number(nd.wage).toFixed(3) : '—'}</span>
+          <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#ffab3d', marginLeft: 'auto' }}>fid {nd.fid ?? 0}</span>
+        </div>
+      </div>
+    );
+  };
+  const ZBtn = ({ children, onClick }) => <button onClick={onClick} style={{ width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: 'none', color: '#9fb0d4', fontSize: 15, fontWeight: 700, cursor: 'pointer', lineHeight: 1 }}>{children}</button>;
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
+      <div style={{ position: 'absolute', inset: 0, transform: `scale(${zoom})`, transformOrigin: 'center center' }}>
+        <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}>
+          {nodes.map(nd => { const p = posns[nd.uid] || B; const on = hover === 'BOSS' || hover === nd.uid; return <line key={nd.uid} x1={B.x} y1={B.y} x2={p.x} y2={p.y} stroke={on ? '#5d6e96' : '#2e3f6a'} strokeWidth={on ? 1.7 : 1.3} strokeDasharray="3 4" opacity={hover && !on ? 0.35 : 1} />; })}
+          {edges.map((e, i) => {
+            const A = posns[e.a] || B, C = posns[e.b] || B;
+            const on = edgeLit(e), faded = hover && !on;
+            const mx = (A.x + C.x) / 2, my = (A.y + C.y) / 2;
+            return (
+              <g key={i} opacity={faded ? 0.25 : 1} style={{ transition: 'opacity .12s' }}>
+                <path d={`M ${A.x} ${A.y} L ${C.x} ${C.y}`} fill="none" stroke={PL_REL[e.type]} strokeWidth={on ? 2.6 : 2} opacity="0.9" />
+                <g transform={`translate(${mx},${my})`}>
+                  <rect x="-26" y="-8" width="52" height="16" rx="4" fill="#070b18" stroke={PL_REL[e.type]} strokeWidth="0.8" />
+                  <text x="0" y="3" textAnchor="middle" fontFamily="IBM Plex Mono, monospace" fontSize="8.5" fontWeight="700" fill={PL_REL[e.type]}>{e.type === 'name' ? 'NAME' : 'CLONE'}</text>
+                </g>
+              </g>
+            );
+          })}
+        </svg>
+        <div onPointerDown={(e) => startDrag('BOSS', e)} onMouseEnter={() => setHover('BOSS')} onMouseLeave={() => setHover(null)}
+          style={{ position: 'absolute', left: B.x, top: B.y, transform: `translate(-50%,-50%) scale(${dragKey === 'BOSS' ? 1.03 : 1})`, width: 184, textAlign: 'center', background: PL_SEV[tier].bg, border: `2px solid ${PL_SEV[tier].line}`, borderRadius: 12, padding: '12px 14px', boxShadow: '0 10px 30px rgba(0,0,0,.5)', cursor: dragKey === 'BOSS' ? 'grabbing' : 'grab', userSelect: 'none', touchAction: 'none', zIndex: dragKey === 'BOSS' ? 5 : 3 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, marginBottom: 5 }}>
+            <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 16, fontWeight: 700, color: '#eaf0ff' }}>{boss.name}</span>
+            <a href={`https://app.warera.io/user/${boss.id}`} target="_blank" rel="noopener noreferrer" onPointerDown={(e) => e.stopPropagation()} style={{ color: '#5d6e96' }}><ExternalLink size={11} /></a>
+          </div>
+          <div style={{ fontSize: 10, color: '#9fb0d4', marginBottom: 7 }}>{boss.region} · Lv.{boss.level ?? '?'}</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            <WealthTag x={boss.wealthX} size={11} />
+            <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 13, fontWeight: 700, color: PL_SEV[tier].c }}>{boss.score}</span>
+          </div>
+        </div>
+        {nodes.map(nd => <NodeCard key={nd.uid} nd={nd} />)}
+      </div>
+      <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', flexDirection: 'column', gap: 6, background: 'rgba(12,18,38,0.86)', border: '1px solid #1f2b4e', borderRadius: 8, padding: '9px 11px', pointerEvents: 'none', zIndex: 6 }}>
+        <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.07em', color: '#5d6e96', marginBottom: 1 }}>HOW THEY'RE LINKED</div>
+        {[['#2e3f6a', 'Boss → worker (employs)', true], [PL_REL.name, 'Shares a name fragment', false], [PL_REL.clone, 'Identical skill build', false]].map((l, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={l[0]} strokeWidth="2.2" strokeDasharray={l[2] ? '3 3' : '0'} /></svg>
+            <span style={{ fontSize: 10.5, color: '#9fb0d4' }}>{l[1]}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', alignItems: 'center', gap: 8, zIndex: 6 }}>
+        <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#5d6e96' }}>drag to rearrange</span>
+        <div style={{ display: 'flex', alignItems: 'center', background: '#121b35', border: '1px solid #2e3f6a', borderRadius: 6, overflow: 'hidden' }}>
+          <ZBtn onClick={() => nudge(-1)}>−</ZBtn>
+          <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 10, color: '#9fb0d4', width: 38, textAlign: 'center', borderLeft: '1px solid #2e3f6a', borderRight: '1px solid #2e3f6a' }}>{Math.round(zoom * 100)}%</span>
+          <ZBtn onClick={() => nudge(1)}>+</ZBtn>
+        </div>
+        <span onClick={reset} style={{ fontSize: 10, fontWeight: 600, color: '#9fb0d4', background: '#121b35', border: '1px solid #2e3f6a', borderRadius: 6, padding: '5px 9px', cursor: 'pointer' }}>⟲ Reset</span>
+      </div>
+    </div>
+  );
+};
+
+// Builds the cluster map (or a placeholder) from a suspect's analysis result.
+const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX }) => {
+  const { rows, overlapString } = buildMatrixModel(activeResult.suspicions, globalCache);
+  const nodes = rows.filter(r => r.id !== activeResult.player.id).map(r => ({ ...r, frag: overlapString }));
+  const edges = buildClusterEdges(nodes, overlapString);
+  const boss = { name: String(activeResult.player.name), id: activeResult.player.id, level: activeResult.player.level, score: activeResult.adjustedDetections ?? activeResult.detections, region: activeResult.country, wealthX: bossWealthX };
+  return (
+    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 7 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', color: '#9fb0d4', textTransform: 'uppercase' }}>Relationship Map</span>
+        <span style={{ fontSize: 11, color: '#5d6e96' }}>— the boss at the hub; edges show how the alts are linked</span>
+      </div>
+      <div style={{ flex: 1, minHeight: 384, border: '1px solid #1f2b4e', borderRadius: 10, background: '#0c1226', overflow: 'hidden' }}>
+        {nodes.length >= 2
+          ? <ClusterMap boss={boss} nodes={nodes} edges={edges} />
+          : <div style={{ height: '100%', minHeight: 384, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#5d6e96', gap: 8, textAlign: 'center', padding: 24 }}>
+              <Network size={30} style={{ opacity: 0.25 }} />
+              <div style={{ fontSize: 12 }}>No linked-account cluster for this suspect.</div>
+              <div style={{ fontSize: 11, opacity: 0.7 }}>Flags here come from solo or transaction-level signals — see the detail below.</div>
+            </div>}
+      </div>
+    </div>
+  );
+};
+
+// Sidebar beside the map: identity, verdict, summary, actions, signal ledger.
+const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, workforceSize }) => {
+  const sc = activeResult.adjustedDetections ?? activeResult.detections;
+  const tier = plScoreTier(sc);
+  const ringCount = Object.keys(activeResult.washPartners || {}).length;
+  const verdict = ringCount > 0
+    ? { txt: `WASH RING · ${ringCount + 1} ACCOUNTS`, tier: 'crit' }
+    : workforceSize >= 2
+      ? { txt: `SUSPECTED WORKFORCE · ${workforceSize} ALTS`, tier: 'crit' }
+      : { txt: tier === 'crit' ? 'HIGH-CONFIDENCE FLAG' : tier === 'high' ? 'NOTABLE SIGNALS' : 'SUPPORTING SIGNALS', tier };
+  const btn = { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '7px 10px', borderRadius: 6, fontSize: 11.5, fontWeight: 600, cursor: 'pointer' };
+  return (
+    <div style={{ width: 322, flex: '0 0 auto', alignSelf: 'stretch', background: '#0c1226', border: '1px solid #1f2b4e', borderRadius: 10, padding: '15px 16px', display: 'flex', flexDirection: 'column', gap: 12, marginTop: 25 }}>
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
+          <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 18, fontWeight: 700, color: '#eaf0ff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(activeResult.player.name)}</span>
+          <a href={`https://app.warera.io/user/${activeResult.player.id}`} target="_blank" rel="noopener noreferrer" style={{ color: '#5d6e96', flexShrink: 0 }}><ExternalLink size={13} /></a>
+          <div style={{ marginLeft: 'auto', padding: '4px 11px', background: PL_SEV[tier].bg, border: `2px solid ${PL_SEV[tier].line}`, borderRadius: 8, textAlign: 'center', flexShrink: 0 }}>
+            <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 17, fontWeight: 700, color: PL_SEV[tier].c }}>{sc}</span>
+          </div>
+        </div>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 9, fontSize: 10.5, fontWeight: 700, letterSpacing: '.04em', color: PL_SEV[verdict.tier].c, background: PL_SEV[verdict.tier].bg, border: `1px solid ${PL_SEV[verdict.tier].line}`, borderRadius: 5, padding: '3px 8px' }}>{verdict.txt}</div>
+        <div style={{ fontSize: 11, color: '#5d6e96', marginBottom: 8 }}>{activeResult.country}{activeResult.player.level && <span style={{ fontFamily: "IBM Plex Mono, monospace" }}> · Lv.{activeResult.player.level}</span>}{activeResult.player.isBanned && <span style={{ marginLeft: 6, color: '#ff5d6c', fontWeight: 700 }}>BANNED</span>}</div>
+        <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5, color: '#9fb0d4' }}>{String(activeResult.summary)}</p>
+        {activeResult.phase2Status === 'pending' && <p style={{ marginTop: 8, fontSize: 11, color: '#4fc3e8' }}>Worker analysis pending.</p>}
+        {activeResult.phase2Status === 'running' && <p style={{ marginTop: 8, fontSize: 11, color: '#9fb0d4' }}>Fetching companies and workers…</p>}
+        {activeResult.phase2Status === 'error' && <p style={{ marginTop: 8, fontSize: 11, color: '#ff5d6c' }}>Worker analysis failed — only transaction flags shown.</p>}
+      </div>
+      <div style={{ display: 'flex', gap: 7 }}>
+        <button onClick={onReport} style={{ ...btn, flex: 1, background: '#4fc3e8', color: '#06121a', border: '1px solid #4fc3e8' }}><Download size={12} /> Report</button>
+        <button onClick={onWatch} style={{ ...btn, background: isWatching ? 'rgba(255,171,61,0.20)' : '#121b35', color: isWatching ? '#ffab3d' : '#9fb0d4', border: `1px solid ${isWatching ? 'rgba(255,171,61,0.50)' : '#2e3f6a'}` }}><Star size={12} /> Watch</button>
+        <button onClick={onRescan} style={{ ...btn, background: '#121b35', color: '#9fb0d4', border: '1px solid #2e3f6a' }}><RefreshCw size={12} /> Rescan</button>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.08em', color: '#9fb0d4', marginBottom: 8, textTransform: 'uppercase' }}>Signal Ledger</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {(activeResult.suspicions || []).map((s, i) => {
+            const st = PL_SEV[plSevTier(s.severity)];
+            const title = String(s.type).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const count = s.workers?.length || s.partners?.length || 1;
+            return (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#121b35', border: '1px solid #1f2b4e', borderLeft: `3px solid ${st.c}`, borderRadius: 6, padding: '6px 10px' }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: st.c, flexShrink: 0 }} />
+                <span style={{ fontSize: 12, fontWeight: 600, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#eaf0ff' }}>{title}</span>
+                <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 10, fontWeight: 700, color: st.c }}>×{count}</span>
+              </div>
+            );
+          })}
+          {(!activeResult.suspicions || activeResult.suspicions.length === 0) && <div style={{ fontSize: 11, color: '#5d6e96' }}>No signals recorded.</div>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Engagement network — tipper cards with share-of-received / share-of-own bars.
+const EngagementNetwork = ({ activeResult, names }) => {
+  const sus = (activeResult.suspicions || []).find(s => s.type === 'tip_farming');
+  if (!sus) return null;
+  const counts = sus.tipperCounts || {};
+  const ids = Object.keys(counts).sort((a, b) => counts[b] - counts[a]).slice(0, 6);
+  if (!ids.length) return null;
+  const total = sus.totalTipsReceived || 0;
+  return (
+    <div style={{ padding: '0 24px 18px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', color: '#9fb0d4', textTransform: 'uppercase' }}>Engagement Network</span>
+        <span style={{ fontSize: 9.5, fontWeight: 700, color: '#ffd84d', background: 'rgba(255,216,77,0.11)', border: '1px solid rgba(255,216,77,0.36)', borderRadius: 4, padding: '1px 6px' }}>MEDIUM</span>
+        <span style={{ fontSize: 11, color: '#5d6e96' }}>— who is tipping {String(activeResult.player.name)}, and how concentrated their tipping is</span>
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        {ids.map(id => {
+          const cnt = counts[id];
+          const sent = sus.tipperSentTotals?.[id] || 0;
+          const recvPct = total > 0 ? Math.round(cnt / total * 100) : 0;
+          const ownPct = sent > 0 ? Math.round(cnt / sent * 100) : 0;
+          const conc = ownPct >= 75;
+          const nm = names?.[id] || id;
+          const Bar = ({ pct, color }) => <div style={{ height: 4, background: '#060a16', borderRadius: 99, overflow: 'hidden' }}><div style={{ width: Math.min(100, pct) + '%', height: '100%', background: color, borderRadius: 99 }} /></div>;
+          return (
+            <a key={id} href={`https://app.warera.io/user/${id}`} target="_blank" rel="noopener noreferrer" style={{ flex: '1 1 160px', minWidth: 160, background: '#0c1226', border: '1px solid #1f2b4e', borderRadius: 8, padding: '10px 13px', textDecoration: 'none' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 9 }}>
+                <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5, color: '#4fc3e8', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nm}</span>
+                <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#5d6e96', marginLeft: 'auto', flexShrink: 0 }}>{cnt} tips</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}><span style={{ fontSize: 10, color: '#5d6e96' }}>of received tips</span><span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11, fontWeight: 700, color: '#9fb0d4' }}>{recvPct}%</span></div>
+              <div style={{ marginBottom: 8 }}><Bar pct={recvPct} color="#9fb0d4" /></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}><span style={{ fontSize: 10, color: '#5d6e96' }}>of their own tipping</span><span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11, fontWeight: 700, color: conc ? '#ffab3d' : '#9fb0d4' }}>{ownPct}%</span></div>
+              <Bar pct={ownPct} color={conc ? '#ffab3d' : '#9fb0d4'} />
+            </a>
+          );
+        })}
       </div>
     </div>
   );
@@ -2699,59 +2989,33 @@ export function WarEraOracle() {
             </div>
           ):(
             <div>
-              {/* Header */}
-              <div style={{background:'#0c1226',borderBottom:'1px solid #1f2b4e',padding:'16px 24px'}}>
-                <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:12}}>
-                  <div style={{minWidth:0,flex:1}}>
-                    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}>
-                      <span style={{fontSize:20,fontWeight:700,fontFamily:"IBM Plex Mono, monospace",color:'#eaf0ff'}}>{String(activeResult.player.name)}</span>
-                      {activeResult.player.isBanned&&<span style={{fontSize:8.5,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:4,padding:'2px 6px'}}>BANNED</span>}
-                      {watchlist[activeResult.player.id]&&<span style={{fontSize:8.5,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:4,padding:'2px 6px'}}>WATCHING</span>}
-                      <a href={`https://app.warera.io/user/${activeResult.player.id}`} target="_blank" rel="noopener noreferrer" style={{color:'#4fc3e8',flexShrink:0}}><ExternalLink size={13}/></a>
-                    </div>
-                    <div style={{fontSize:12,color:'#9fb0d4',marginBottom:10}}>
-                      - {activeResult.country}{activeResult.player.level&&<span style={{fontFamily:"IBM Plex Mono, monospace"}}> - Lv.{activeResult.player.level}</span>}
-                    </div>
-                    <p style={{fontSize:12.5,lineHeight:1.55,color:'#9fb0d4',maxWidth:660}}>{String(activeResult.summary)}</p>
-                    {activeResult.phase2Status==='pending'&&<p style={{marginTop:8,fontSize:11.5,color:'#4fc3e8',display:'flex',alignItems:'center',gap:6}}><Users size={11}/> Worker analysis pending - click Load Worker Analysis in the rail.</p>}
-                    {activeResult.phase2Status==='running'&&<p style={{marginTop:8,fontSize:11.5,color:'#9fb0d4',display:'flex',alignItems:'center',gap:6}}><Activity size={11}/> Fetching companies and workers...</p>}
-                    {activeResult.phase2Status==='error'&&<p style={{marginTop:8,fontSize:11.5,color:'#ff5d6c',display:'flex',alignItems:'center',gap:6}}><AlertTriangle size={11}/> Worker analysis failed - only transaction flags shown.</p>}
+              {/* Concept G top row: relationship map + sidebar */}
+              {(()=>{
+                const _cw=extractCoinWealth(activeResult.player);
+                const _lv=extractUserLevel(activeResult.player)??activeResult.player.level;
+                const _ar=_lv!=null?getWealthAverageExtended(globalCacheRef.current,_lv):null;
+                const _bx=(_cw!=null&&_ar&&_ar.avg>0)?_cw/_ar.avg:null;
+                const _wf=buildMatrixModel(activeResult.suspicions,globalCacheRef.current).rows.filter(r=>r.id!==activeResult.player.id).length;
+                return (
+                  <div style={{padding:'14px 24px 0',display:'flex',gap:14,alignItems:'stretch'}}>
+                    <ClusterMapPanel activeResult={activeResult} globalCache={globalCacheRef.current} bossWealthX={_bx}/>
+                    <MapSidebar activeResult={activeResult} isWatching={!!watchlist[activeResult.player.id]} workforceSize={_wf}
+                      onWatch={()=>toggleWatchlist(activeResult.player.id,activeResult.player.name,activeResult.country)}
+                      onRescan={()=>runPhase2(activeResult.player.id,activeResult.country)}
+                      onReport={()=>exportSinglePlayer(activeResult)}/>
                   </div>
-                  {/* Score chip */}
-                  {(()=>{
-                    const sc=activeResult.adjustedDetections??activeResult.detections;
-                    const tier=scoreTierOf(sc);
-                    return (
-                      <div className="group" style={{position:'relative',flexShrink:0,cursor:'default'}}>
-                        <div style={{padding:'8px 14px',background:T_BG[tier],border:`2px solid ${T_LINE[tier]}`,borderRadius:9,textAlign:'center',minWidth:56}}>
-                          <div style={{fontSize:22,fontWeight:700,fontFamily:"IBM Plex Mono, monospace",color:T_COLOR[tier],lineHeight:1}}>{sc}</div>
-                          <div style={{fontSize:9,color:T_COLOR[tier],letterSpacing:'0.08em',fontWeight:700,marginTop:2,textTransform:'uppercase'}}>{tier==='crit'?'Critical':tier==='high'?'High':'Medium'}</div>
-                        </div>
-                        {activeResult.scoreBreakdown&&activeResult.scoreBreakdown.length>0&&(
-                          <div className="hidden group-hover:block" style={{position:'absolute',right:0,top:'110%',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:8,padding:12,zIndex:50,minWidth:220,boxShadow:'0 8px 24px rgba(0,0,0,0.6)'}}>
-                            <div style={{fontSize:10,fontWeight:700,color:'#9fb0d4',marginBottom:8,letterSpacing:'0.06em',textTransform:'uppercase'}}>Score Breakdown</div>
-                            {activeResult.scoreBreakdown.map((item,i)=>{
-                              const sv=item.severity||'medium';
-                              const tc=sv==='critical'?'#ff5d6c':sv==='high'?'#ffab3d':'#ffd84d';
-                              return <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',paddingBottom:4,marginBottom:4,borderBottom:i<activeResult.scoreBreakdown.length-1?'1px solid #1f2b4e':'none'}}>
-                                <span style={{fontSize:10.5,color:'#9fb0d4'}}>{item.label||item.type}</span>
-                                <span style={{fontSize:11,fontFamily:"IBM Plex Mono, monospace",fontWeight:700,color:tc}}>+{item.weight||item.score||1}</span>
-                              </div>;
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
-              </div>
+                );
+              })()}
 
               {/* Linked-Account Matrix (Concept G) */}
               <div style={{paddingTop:18}}>
                 <LinkedAccountMatrix suspicions={activeResult.suspicions} wageThreshold={settings.suspiciousWageThreshold}/>
               </div>
 
-              {/* Findings timeline */}
+              {/* Engagement network (Concept G) */}
+              <EngagementNetwork activeResult={activeResult} names={globalCacheRef.current.names}/>
+
+              {/* Findings timeline (evidence detail) */}
               <div style={{padding:'20px 24px'}}>
                 <div style={{fontSize:11,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase',marginBottom:20}}>
                   Observed Signals - {orderedSuspicions.length}, ordered by strength
