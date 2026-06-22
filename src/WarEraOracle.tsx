@@ -854,6 +854,122 @@ class UnionFind {
   union(id1, id2) { this.add(id1); this.add(id2); const r1=this.find(id1),r2=this.find(id2); if(r1!==r2) this.parent[r2]=r1; }
 }
 
+// ── Linked-Account Matrix (Concept G / Cobalt) ──────────────────────────────
+// One row per linked account; each detection becomes a column you read DOWN to
+// see the pattern. Derived entirely from the existing analyzePlayer suspicions.
+const MATRIX_LINK_LABEL = {
+  wage_uniformity: 'WAGE', low_wage: 'WAGE', fidelity_ring: 'FID',
+  naming_pattern: 'NAME', cloned_progression: 'CLONE', no_production_bonus: 'SHELL',
+  wealth_anomaly: 'WEALTH', money_laundering: 'LAUNDER', coordinated_donation: 'DONATE',
+  newborn_wealthy: 'WEALTH',
+};
+const CLONE_COLOR = ['#4fc3e8', '#c98bff', '#5aa0ff', '#3fd0a3'];
+
+const buildMatrixModel = (suspicions) => {
+  const byUid = new Map();
+  const order = [];
+  let overlapString = null;
+  (suspicions || []).forEach(s => {
+    if (['tip_farming', 'transaction_abuse', 'temporal_clustering'].includes(s.type)) return;
+    if (s.type === 'naming_pattern' && s.overlapString) overlapString = s.overlapString;
+    (s.workers || []).forEach(w => {
+      const uid = w.uid || w.resolvedUser?._id;
+      if (!uid) return;
+      const name = String(w.normalizedName || '').replace(' (SELF)', '').replace(' (HERMIT NODE)', '');
+      if (!byUid.has(uid)) {
+        byUid.set(uid, {
+          uid, name, wage: w.normalizedWage, level: w.normalizedLevel,
+          fid: w.normalizedFidelity, build: w.normalizedBuild,
+          age: w.accountAgeDays ?? (w.resolvedUser?.createdAt ? Math.floor((Date.now() - new Date(w.resolvedUser.createdAt).getTime()) / 86400000) : null),
+          id: w.resolvedUser?._id || uid, links: new Set(),
+        });
+        order.push(uid);
+      }
+      byUid.get(uid).links.add(s.type);
+    });
+  });
+  const rows = order.map(uid => byUid.get(uid));
+  // Clone groups: identical non-trivial builds appearing 2+ times share a tag.
+  const counts = {};
+  rows.forEach(r => { const b = r.build; if (b && b !== 'NO_DATA' && b !== 'DEFAULT_ECO') counts[b] = (counts[b] || 0) + 1; });
+  const letters = {}; let li = 0;
+  Object.keys(counts).forEach(b => { if (counts[b] >= 2) { letters[b] = String.fromCharCode(65 + li); li++; } });
+  rows.forEach(r => { r.cloneGroup = letters[r.build] || null; r.cloneColor = r.cloneGroup ? CLONE_COLOR[r.cloneGroup.charCodeAt(0) - 65] : null; });
+  return { rows, overlapString };
+};
+
+const MatrixNameCell = ({ name, frag }) => {
+  if (!frag) return <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 12, color: '#eaf0ff', fontWeight: 600 }}>{name}</span>;
+  const i = name.toLowerCase().indexOf(String(frag).toLowerCase());
+  if (i < 0) return <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 12, color: '#eaf0ff', fontWeight: 600 }}>{name}</span>;
+  return <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 12, color: '#eaf0ff', fontWeight: 600 }}>
+    {name.slice(0, i)}<span style={{ color: '#4fc3e8', background: 'rgba(79,195,232,0.13)', borderRadius: 3, padding: '0 2px' }}>{name.slice(i, i + frag.length)}</span>{name.slice(i + frag.length)}
+  </span>;
+};
+
+const LinkedAccountMatrix = ({ suspicions, wageThreshold = 0.11 }) => {
+  const { rows, overlapString } = buildMatrixModel(suspicions);
+  if (rows.length < 2) return null;
+  const header = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 10 }}>
+      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', color: '#9fb0d4', textTransform: 'uppercase' }}>Linked-Account Matrix</span>
+      <span style={{ fontSize: 11, color: '#5d6e96' }}>— same accounts, each column is a signal; read down to see the pattern</span>
+    </div>
+  );
+  const td = { padding: '9px 12px', borderBottom: '1px solid #1f2b4e', verticalAlign: 'middle' };
+  const th = { textAlign: 'left', padding: '8px 12px', borderBottom: '1px solid #2e3f6a', fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', color: '#5d6e96' };
+  const cols = ['LINKED ACCOUNT', 'LVL', 'CREATED', 'WAGE', 'FIDELITY', 'SKILL BUILD', 'LINKED BY'];
+  return (
+    <div style={{ padding: '0 24px 18px' }}>
+      {header}
+      <div style={{ border: '1px solid #1f2b4e', borderRadius: 9, overflow: 'hidden', background: '#0c1226' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr style={{ background: '#121b35' }}>{cols.map(c => <th key={c} style={th}>{c}</th>)}</tr></thead>
+        <tbody>
+          {rows.map((w, i) => {
+            const lowWage = w.wage != null && w.wage <= wageThreshold;
+            const fid = Math.max(0, Math.min(10, Math.round(w.fid || 0)));
+            return (
+              <tr key={w.uid} style={i === rows.length - 1 ? { ...td, borderBottom: 'none' } : undefined}>
+                <td style={td}>
+                  <a href={`https://app.warera.io/user/${w.id}`} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}>
+                    <MatrixNameCell name={w.name} frag={overlapString} /><ExternalLink size={10} style={{ color: '#5d6e96' }} />
+                  </a>
+                </td>
+                <td style={{ ...td, fontFamily: "IBM Plex Mono, monospace", fontSize: 12, color: '#9fb0d4' }}>{w.level ?? '?'}</td>
+                <td style={{ ...td, fontFamily: "IBM Plex Mono, monospace", fontSize: 12, color: '#9fb0d4' }}>{w.age != null ? `${w.age}d` : '—'}</td>
+                <td style={td}>
+                  <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 12, fontWeight: 700, color: lowWage ? '#ffab3d' : '#eaf0ff', background: lowWage ? 'rgba(255,171,61,0.12)' : 'transparent', border: lowWage ? '1px solid rgba(255,171,61,0.40)' : '1px solid transparent', borderRadius: 5, padding: '2px 7px' }}>{w.wage != null ? Number(w.wage).toFixed(3) : '—'}</span>
+                </td>
+                <td style={td}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ display: 'flex', gap: 1.5 }}>{Array.from({ length: 10 }).map((_, j) => <span key={j} style={{ width: 4, height: 12, borderRadius: 1, background: j < fid ? (fid === 10 ? '#ffab3d' : '#9fb0d4') : '#2e3f6a' }} />)}</div>
+                    <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11, fontWeight: 700, color: fid === 10 ? '#ffab3d' : '#9fb0d4' }}>{fid}/10</span>
+                  </div>
+                </td>
+                <td style={td}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11, color: w.cloneColor || '#9fb0d4', fontWeight: w.cloneGroup ? 700 : 500 }}>{w.build && w.build !== 'NO_DATA' ? w.build : '—'}</span>
+                    {w.cloneGroup && <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: w.cloneColor, border: `1px solid ${w.cloneColor}`, borderRadius: 3, padding: '0 4px' }}>CLONE {w.cloneGroup}</span>}
+                  </div>
+                </td>
+                <td style={td}>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    {[...w.links].map(t => MATRIX_LINK_LABEL[t]).filter(Boolean).filter((v, idx, a) => a.indexOf(v) === idx).map(l => (
+                      <span key={l} style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9, fontWeight: 700, letterSpacing: '0.04em', color: '#9fb0d4', background: '#1b2748', border: '1px solid #2e3f6a', borderRadius: 4, padding: '1.5px 5px' }}>{l}</span>
+                    ))}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  );
+};
+
 const WashNetworkTree = ({ rootId, washPartners, processedNodes, globalBans, globalNames, isRoot=true, edgeFromParent=null }) => {
   if (processedNodes.has(rootId)) return null;
   processedNodes.add(rootId);
@@ -2628,6 +2744,11 @@ export function WarEraOracle() {
                     );
                   })()}
                 </div>
+              </div>
+
+              {/* Linked-Account Matrix (Concept G) */}
+              <div style={{paddingTop:18}}>
+                <LinkedAccountMatrix suspicions={activeResult.suspicions} wageThreshold={settings.suspiciousWageThreshold}/>
               </div>
 
               {/* Findings timeline */}
