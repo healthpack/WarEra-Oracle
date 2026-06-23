@@ -723,7 +723,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   const coordDonation = allSuspicions.find(s => s.type === 'coordinated_donation');
   if (coordDonation) summaryParts.push(`Donations coordinated within 10-min windows.`);
   const ageSus = allSuspicions.find(s => s.type === 'wealth_anomaly');
-  if (ageSus) summaryParts.push(`Account wealth disproportionately high for level.`);
+  if (ageSus) { const _bw=extractCoinWealth(player), _bl=extractUserLevel(player)??player.level, _bar=_bl!=null?getWealthAverageExtended(globalCache,_bl):null; summaryParts.push(_bw!=null&&_bar&&_bar.avg>0&&(_bw/_bar.avg)<1?`Account wealth unusually low for level.`:`Account wealth disproportionately high for level.`); }
   const tempSus = allSuspicions.find(s => s.type === 'temporal_clustering');
   if (tempSus) summaryParts.push(`Activity locked to narrow time window.`);
   const cloneSus = allSuspicions.filter(s => s.type === 'cloned_progression');
@@ -824,7 +824,7 @@ const analyzePhase1 = (player, settings, globalCache, addLog = null) => {
   const abuseSus = allSuspicions.find(s => s.type === 'transaction_abuse');
   if (abuseSus) summaryParts.push(`Wash Trading ring with ${abuseSus?.partners?.length || 0} partners.`);
   const ageSus = allSuspicions.find(s => s.type === 'wealth_anomaly');
-  if (ageSus) summaryParts.push(`Account wealth disproportionately high for level.`);
+  if (ageSus) { const _bw=extractCoinWealth(player), _bl=extractUserLevel(player)??player.level, _bar=_bl!=null?getWealthAverageExtended(globalCache,_bl):null; summaryParts.push(_bw!=null&&_bar&&_bar.avg>0&&(_bw/_bar.avg)<1?`Account wealth unusually low for level.`:`Account wealth disproportionately high for level.`); }
 
   const detections = allSuspicions.reduce((acc, s) => acc + (s.detectionWeight !== undefined ? s.detectionWeight : (s.workers?.length || s.partners?.length || 1)), 0);
 
@@ -877,17 +877,18 @@ const buildMatrixModel = (suspicions, globalCache) => {
       if (!uid) return;
       const name = String(w.normalizedName || '').replace(' (SELF)', '').replace(' (HERMIT NODE)', '');
       if (!byUid.has(uid)) {
-        let wealthX = null;
+        let wealthX = null, wealth = null;
         const ru = w.resolvedUser;
         if (globalCache && ru) {
           const cw = extractCoinWealth(ru);
+          if (cw != null) wealth = cw;
           const lv = extractUserLevel(ru) ?? w.normalizedLevel;
           const ar = lv != null ? getWealthAverageExtended(globalCache, lv) : null;
           if (cw != null && ar && ar.avg > 0) wealthX = cw / ar.avg;
         }
         byUid.set(uid, {
           uid, name, wage: w.normalizedWage, level: w.normalizedLevel,
-          fid: w.normalizedFidelity, build: w.normalizedBuild, wealthX,
+          fid: w.normalizedFidelity, build: w.normalizedBuild, wealthX, wealth,
           age: w.accountAgeDays ?? (w.resolvedUser?.createdAt ? Math.floor((Date.now() - new Date(w.resolvedUser.createdAt).getTime()) / 86400000) : null),
           id: w.resolvedUser?._id || uid, links: new Set(),
         });
@@ -987,7 +988,7 @@ const PL_SEV = {
 };
 const plScoreTier = (s) => s >= 10 ? 'crit' : s >= 5 ? 'high' : 'med';
 const plSevTier = (sev) => sev === 'critical' ? 'crit' : sev === 'high' ? 'high' : 'med';
-const PL_REL = { name: '#5aa0ff', clone: '#c98bff' };
+const PL_REL = { name: '#5aa0ff', clone: '#c98bff', wash: '#ff5d6c', donation: '#3fd0a3' };
 const wealthColor = (x) => x == null ? '#9fb0d4' : (x < 0.5 ? '#4fc3e8' : x > 2 ? '#ff5d6c' : '#ffab3d');
 
 // Cluster-shape glyph for the case list — Workforce (employees) / Ring / Solo.
@@ -1004,22 +1005,44 @@ const clusterKindOf = (r, globalCache) => {
   return wf >= 2 ? { kind: 'Workforce', size: wf } : { kind: 'Solo', size: 0 };
 };
 
-const buildClusterEdges = (rows, overlapString) => {
+// Builds the relationship graph for the map from ALL relevant suspicions:
+// worker nodes (employed alts) + wash-trade partners, with name / clone / wash edges.
+const buildClusterGraph = (activeResult, globalCache) => {
+  const bossId = activeResult.player.id;
+  const { rows } = buildMatrixModel(activeResult.suspicions, globalCache);
+  const nodes = new Map();
+  rows.forEach(r => {
+    if (r.id === bossId || r.uid === bossId) return;
+    nodes.set(r.uid, { uid: r.uid, id: r.id, name: r.name, level: r.level, wage: r.wage, fid: r.fid, build: r.build, wealthX: r.wealthX, wealth: r.wealth, cloneGroup: r.cloneGroup, cloneColor: r.cloneColor, kind: 'worker' });
+  });
   const edges = [];
-  if (overlapString) {
-    const named = rows.filter(r => String(r.name).toLowerCase().includes(String(overlapString).toLowerCase()));
-    for (let i = 1; i < named.length; i++) edges.push({ a: named[i - 1].uid, b: named[i].uid, type: 'name' });
-  }
+  // Name edges — one chain per naming_pattern group (there can be several).
+  (activeResult.suspicions || []).forEach(s => {
+    if (s.type !== 'naming_pattern') return;
+    const ids = (s.workers || []).map(w => w.uid || w.resolvedUser?._id).filter(u => u && u !== bossId && nodes.has(u));
+    ids.forEach(u => { if (s.overlapString) nodes.get(u).frag = s.overlapString; });
+    for (let i = 1; i < ids.length; i++) edges.push({ a: ids[i - 1], b: ids[i], type: 'name' });
+  });
+  // Clone edges — chain within each shared-build group.
   const groups = {};
-  rows.forEach(r => { if (r.cloneGroup) (groups[r.cloneGroup] = groups[r.cloneGroup] || []).push(r); });
-  Object.values(groups).forEach(g => { for (let i = 1; i < g.length; i++) edges.push({ a: g[i - 1].uid, b: g[i].uid, type: 'clone' }); });
-  return edges;
+  nodes.forEach(n => { if (n.cloneGroup) (groups[n.cloneGroup] = groups[n.cloneGroup] || []).push(n.uid); });
+  Object.values(groups).forEach(g => { for (let i = 1; i < g.length; i++) edges.push({ a: g[i - 1], b: g[i], type: 'clone' }); });
+  // Wash-trade partners — directional coin-flow edges from the boss.
+  const wash = (activeResult.suspicions || []).find(s => s.type === 'transaction_abuse');
+  if (wash) (wash.partners || []).forEach(p => {
+    if (!p.id || p.id === bossId) return;
+    if (!nodes.has(p.id)) nodes.set(p.id, { uid: p.id, id: p.id, name: String(p.name || p.id), level: p.level, banned: p.isBanned, kind: 'partner' });
+    else nodes.get(p.id).banned = nodes.get(p.id).banned || p.isBanned;
+    edges.push({ a: bossId, b: p.id, type: 'wash', net: p.netProfit || 0, trades: p.txCount });
+  });
+  return { nodes: [...nodes.values()], edges };
 };
 
-const WealthTag = ({ x, size = 10 }) => {
+const WealthTag = ({ x, size = 10, coins }) => {
   if (x == null) return null;
   const c = wealthColor(x);
-  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontFamily: "IBM Plex Mono, monospace", fontSize: size, fontWeight: 700, color: c }}>
+  const title = coins != null ? `${Math.round(coins)} coins · ${x.toFixed(2)}× the level median` : undefined;
+  return <span title={title} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontFamily: "IBM Plex Mono, monospace", fontSize: size, fontWeight: 700, color: c, cursor: coins != null ? 'help' : 'default' }}>
     <span style={{ width: size - 1, height: size - 1, borderRadius: '50%', border: `1.5px solid ${c}`, flexShrink: 0 }} />{x.toFixed(1)}×
   </span>;
 };
@@ -1086,17 +1109,22 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
       <div onPointerDown={(e) => startDrag(nd.uid, e)} onMouseEnter={() => setHover(nd.uid)} onMouseLeave={() => setHover(null)}
         style={{ position: 'absolute', left: p.x, top: p.y, transform: `translate(-50%,-50%) scale(${active ? 1.04 : 1})`, width: nodeW, background: '#121b35', border: `1px solid ${active || hover === nd.uid ? '#4fc3e8' : '#2e3f6a'}`, borderRadius: 9, padding: '8px 10px', boxShadow: active ? '0 14px 34px rgba(0,0,0,.55)' : '0 6px 18px rgba(0,0,0,.4)', cursor: active ? 'grabbing' : 'grab', opacity: dim ? 0.4 : 1, transition: 'opacity .12s, border-color .12s', userSelect: 'none', touchAction: 'none', zIndex: active ? 5 : 2 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
-          <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11.5, fontWeight: 600, color: '#eaf0ff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nm}</span>
-          <a href={`https://app.warera.io/user/${nd.id}`} target="_blank" rel="noopener noreferrer" onPointerDown={(e) => e.stopPropagation()} style={{ color: '#5d6e96', flexShrink: 0 }}><ExternalLink size={9} /></a>
+          <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11.5, fontWeight: 600, color: nd.banned ? '#ff5d6c' : '#eaf0ff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nm}</span>
+          {nd.banned && <span style={{ fontSize: 7.5, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0 }}>BAN</span>}
+          <a href={`https://app.warera.io/user/${nd.id}`} target="_blank" rel="noopener noreferrer" onPointerDown={(e) => e.stopPropagation()} style={{ color: '#5d6e96', flexShrink: 0, marginLeft: 'auto' }}><ExternalLink size={9} /></a>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: nd.kind === 'partner' ? 0 : 4 }}>
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#5d6e96' }}>Lv.{nd.level ?? '?'}</span>
-          <span style={{ marginLeft: 'auto' }}><WealthTag x={nd.wealthX} /></span>
+          {nd.kind === 'partner'
+            ? <span style={{ marginLeft: 'auto', fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: '#ff5d6c' }}>WASH PARTNER</span>
+            : <span style={{ marginLeft: 'auto' }}><WealthTag x={nd.wealthX} coins={nd.wealth} /></span>}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#ffab3d' }}>{nd.wage != null ? Number(nd.wage).toFixed(3) : '—'}</span>
-          <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#ffab3d', marginLeft: 'auto' }}>fid {nd.fid ?? 0}</span>
-        </div>
+        {nd.kind !== 'partner' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#ffab3d' }}>{nd.wage != null ? Number(nd.wage).toFixed(3) : '—'}</span>
+            <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#ffab3d', marginLeft: 'auto' }}>fid {nd.fid ?? 0}</span>
+          </div>
+        )}
       </div>
     );
   };
@@ -1106,17 +1134,19 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
     <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
       <div style={{ position: 'absolute', inset: 0, transform: `scale(${zoom})`, transformOrigin: 'center center' }}>
         <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}>
-          {nodes.map(nd => { const p = posns[nd.uid] || B; const on = hover === 'BOSS' || hover === nd.uid; return <line key={nd.uid} x1={B.x} y1={B.y} x2={p.x} y2={p.y} stroke={on ? '#5d6e96' : '#2e3f6a'} strokeWidth={on ? 1.7 : 1.3} strokeDasharray="3 4" opacity={hover && !on ? 0.35 : 1} />; })}
+          {nodes.filter(nd => nd.kind !== 'partner').map(nd => { const p = posns[nd.uid] || B; const on = hover === 'BOSS' || hover === nd.uid; return <line key={nd.uid} x1={B.x} y1={B.y} x2={p.x} y2={p.y} stroke={on ? '#5d6e96' : '#2e3f6a'} strokeWidth={on ? 1.7 : 1.3} strokeDasharray="3 4" opacity={hover && !on ? 0.35 : 1} />; })}
           {edges.map((e, i) => {
             const A = posns[e.a] || B, C = posns[e.b] || B;
             const on = edgeLit(e), faded = hover && !on;
             const mx = (A.x + C.x) / 2, my = (A.y + C.y) / 2;
+            const lbl = e.type === 'wash' ? `${e.net > 0 ? '+' : ''}${Math.round(e.net)}` : e.type === 'name' ? 'NAME' : 'CLONE';
+            const w = e.type === 'wash' ? 46 : 52;
             return (
               <g key={i} opacity={faded ? 0.25 : 1} style={{ transition: 'opacity .12s' }}>
                 <path d={`M ${A.x} ${A.y} L ${C.x} ${C.y}`} fill="none" stroke={PL_REL[e.type]} strokeWidth={on ? 2.6 : 2} opacity="0.9" />
                 <g transform={`translate(${mx},${my})`}>
-                  <rect x="-26" y="-8" width="52" height="16" rx="4" fill="#070b18" stroke={PL_REL[e.type]} strokeWidth="0.8" />
-                  <text x="0" y="3" textAnchor="middle" fontFamily="IBM Plex Mono, monospace" fontSize="8.5" fontWeight="700" fill={PL_REL[e.type]}>{e.type === 'name' ? 'NAME' : 'CLONE'}</text>
+                  <rect x={-w / 2} y="-8" width={w} height="16" rx="4" fill="#070b18" stroke={PL_REL[e.type]} strokeWidth="0.8" />
+                  <text x="0" y="3" textAnchor="middle" fontFamily="IBM Plex Mono, monospace" fontSize="8.5" fontWeight="700" fill={PL_REL[e.type]}>{lbl}</text>
                 </g>
               </g>
             );
@@ -1130,7 +1160,7 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
           </div>
           <div style={{ fontSize: 10, color: '#9fb0d4', marginBottom: 7 }}>{boss.region} · Lv.{boss.level ?? '?'}</div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-            <WealthTag x={boss.wealthX} size={11} />
+            <WealthTag x={boss.wealthX} size={11} coins={boss.wealth} />
             <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 13, fontWeight: 700, color: PL_SEV[tier].c }}>{boss.score}</span>
           </div>
         </div>
@@ -1138,7 +1168,7 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
       </div>
       <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', flexDirection: 'column', gap: 6, background: 'rgba(12,18,38,0.86)', border: '1px solid #1f2b4e', borderRadius: 8, padding: '9px 11px', pointerEvents: 'none', zIndex: 6 }}>
         <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.07em', color: '#5d6e96', marginBottom: 1 }}>HOW THEY'RE LINKED</div>
-        {[['#2e3f6a', 'Boss → worker (employs)', true], [PL_REL.name, 'Shares a name fragment', false], [PL_REL.clone, 'Identical skill build', false]].map((l, i) => (
+        {[['#2e3f6a', 'Boss → worker (employs)', true], [PL_REL.name, 'Shares a name fragment', false], [PL_REL.clone, 'Identical skill build', false], [PL_REL.wash, 'Wash-trade partner (net coins)', false]].map((l, i) => (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={l[0]} strokeWidth="2.2" strokeDasharray={l[2] ? '3 3' : '0'} /></svg>
             <span style={{ fontSize: 10.5, color: '#9fb0d4' }}>{l[1]}</span>
@@ -1159,11 +1189,9 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
 };
 
 // Builds the cluster map (or a placeholder) from a suspect's analysis result.
-const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX }) => {
-  const { rows, overlapString } = buildMatrixModel(activeResult.suspicions, globalCache);
-  const nodes = rows.filter(r => r.id !== activeResult.player.id).map(r => ({ ...r, frag: overlapString }));
-  const edges = buildClusterEdges(nodes, overlapString);
-  const boss = { name: String(activeResult.player.name), id: activeResult.player.id, level: activeResult.player.level, score: activeResult.adjustedDetections ?? activeResult.detections, region: activeResult.country, wealthX: bossWealthX };
+const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX, bossWealth }) => {
+  const { nodes, edges } = buildClusterGraph(activeResult, globalCache);
+  const boss = { name: String(activeResult.player.name), id: activeResult.player.id, level: activeResult.player.level, score: activeResult.adjustedDetections ?? activeResult.detections, region: activeResult.country, wealthX: bossWealthX, wealth: bossWealth };
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 7 }}>
@@ -1171,7 +1199,7 @@ const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX }) => {
         <span style={{ fontSize: 11, color: '#5d6e96' }}>— the boss at the hub; edges show how the alts are linked</span>
       </div>
       <div style={{ flex: 1, minHeight: 384, border: '1px solid #1f2b4e', borderRadius: 10, background: '#0c1226', overflow: 'hidden' }}>
-        {nodes.length >= 2
+        {nodes.length >= 1
           ? <ClusterMap boss={boss} nodes={nodes} edges={edges} />
           : <div style={{ height: '100%', minHeight: 384, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#5d6e96', gap: 8, textAlign: 'center', padding: 24 }}>
               <Network size={30} style={{ opacity: 0.25 }} />
@@ -1257,9 +1285,12 @@ const EngagementNetwork = ({ activeResult, names }) => {
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         {ids.map(id => {
           const cnt = counts[id];
-          const sent = sus.tipperSentTotals?.[id] || 0;
+          // "of their own tipping" = coins this tipper gave the suspect ÷ the tipper's
+          // total tip coins sent anywhere (both in coins; the count alone has no total).
+          const given = sus.tipperAmounts?.[id] || 0;
+          const sentTotal = sus.tipperSentTotals?.[id] || 0;
           const recvPct = total > 0 ? Math.round(cnt / total * 100) : 0;
-          const ownPct = sent > 0 ? Math.round(cnt / sent * 100) : 0;
+          const ownPct = sentTotal > 0 ? Math.round(given / sentTotal * 100) : 0;
           const conc = ownPct >= 75;
           const nm = names?.[id] || id;
           const Bar = ({ pct, color }) => <div style={{ height: 4, background: '#060a16', borderRadius: 99, overflow: 'hidden' }}><div style={{ width: Math.min(100, pct) + '%', height: '100%', background: color, borderRadius: 99 }} /></div>;
@@ -2671,6 +2702,21 @@ export function WarEraOracle() {
     if (tipSus.length > 0) parts.push(`Tip farming: ${tipSus.length} coordinated tipping pattern${tipSus.length>1?'s':''} detected.`);
     const hermitSus = result.suspicions.find((s) => s.type === 'hermit_network' || s.type === 'mutual_hermit');
     if (hermitSus) parts.push(`Hermit trade network: transactions confined to a closed group of accounts.`);
+    const apmSus = result.suspicions.find(s => s.type === 'superhuman_apm');
+    if (apmSus) parts.push(`Superhuman APM: ${result.player.maxConcurrentTxs} listings within ${settings.apmWindowMs}ms.`);
+    const wageUnifSus = result.suspicions.find(s => s.type === 'wage_uniformity');
+    if (wageUnifSus) parts.push(`Workers paid suspiciously uniform wages.`);
+    const fidSus = result.suspicions.find(s => s.type === 'fidelity_ring');
+    if (fidSus) parts.push(`${fidSus.workers.length} workers at max fidelity (10/10).`);
+    const coordSus = result.suspicions.find(s => s.type === 'coordinated_donation');
+    if (coordSus) parts.push(`Donations coordinated within 10-minute windows.`);
+    const wealthSus = result.suspicions.find(s => s.type === 'wealth_anomaly');
+    if (wealthSus) {
+      const _bw=extractCoinWealth(result.player), _bl=extractUserLevel(result.player)??result.player.level, _bar=_bl!=null?getWealthAverageExtended(globalCacheRef.current,_bl):null;
+      parts.push(_bw!=null&&_bar&&_bar.avg>0&&(_bw/_bar.avg)<1?`Account wealth unusually low for level.`:`Account wealth disproportionately high for level.`);
+    }
+    const tempSus = result.suspicions.find(s => s.type === 'temporal_clustering');
+    if (tempSus) parts.push(`Activity locked to a narrow time window.`);
     let summary = parts.join(' ');
     if (summary.length > 500) summary = summary.substring(0, 497).replace(/\s\S*$/, '') + '...';
     return summary;
@@ -3021,7 +3067,7 @@ export function WarEraOracle() {
                 const _wf=buildMatrixModel(activeResult.suspicions,globalCacheRef.current).rows.filter(r=>r.id!==activeResult.player.id).length;
                 return (
                   <div style={{padding:'14px 24px 0',display:'flex',gap:14,alignItems:'stretch'}}>
-                    <ClusterMapPanel activeResult={activeResult} globalCache={globalCacheRef.current} bossWealthX={_bx}/>
+                    <ClusterMapPanel activeResult={activeResult} globalCache={globalCacheRef.current} bossWealthX={_bx} bossWealth={_cw}/>
                     <MapSidebar activeResult={activeResult} isWatching={!!watchlist[activeResult.player.id]} workforceSize={_wf}
                       copied={copiedId===activeResult.player.id}
                       onWatch={()=>toggleWatchlist(activeResult.player.id,activeResult.player.name,activeResult.country)}
@@ -3086,7 +3132,7 @@ export function WarEraOracle() {
                               const tipperName=globalCacheRef.current.names?.[tipperId];
                               const meta=suspicion.tipperMeta?.[tipperId];
                               const receivedPct=suspicion.totalTipsReceived>0?Math.round(count/suspicion.totalTipsReceived*100):null;
-                              const sentPct=(suspicion.tipperSentTotals?.[tipperId]||0)>0?Math.round(count/suspicion.tipperSentTotals[tipperId]*100):null;
+                              const sentPct=(suspicion.tipperSentTotals?.[tipperId]||0)>0?Math.round((suspicion.tipperAmounts?.[tipperId]||0)/suspicion.tipperSentTotals[tipperId]*100):null;
                               const coinsFromTipper=suspicion.tipperAmounts?.[tipperId];
                               return (
                                 <a key={tIdx} href={`https://app.warera.io/user/${tipperId}`} target="_blank" rel="noopener noreferrer"
