@@ -915,8 +915,9 @@ const MatrixNameCell = ({ name, frag }) => {
   </span>;
 };
 
-const LinkedAccountMatrix = ({ suspicions, wageThreshold = 0.11 }) => {
-  const { rows, overlapString } = buildMatrixModel(suspicions);
+const LinkedAccountMatrix = ({ suspicions, wageThreshold = 0.11, bossId }) => {
+  const { rows: allRows, overlapString } = buildMatrixModel(suspicions);
+  const rows = bossId ? allRows.filter(r => r.id !== bossId && r.uid !== bossId) : allRows;
   if (rows.length < 2) return null;
   const header = (
     <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 10 }}>
@@ -989,6 +990,20 @@ const plSevTier = (sev) => sev === 'critical' ? 'crit' : sev === 'high' ? 'high'
 const PL_REL = { name: '#5aa0ff', clone: '#c98bff' };
 const wealthColor = (x) => x == null ? '#9fb0d4' : (x < 0.5 ? '#4fc3e8' : x > 2 ? '#ff5d6c' : '#ffab3d');
 
+// Cluster-shape glyph for the case list — Workforce (employees) / Ring / Solo.
+const KindGlyph = ({ kind, c = '#5d6e96' }) => {
+  if (kind === 'Workforce') return <svg width="12" height="12" viewBox="0 0 14 14"><circle cx="7" cy="4" r="2" fill="none" stroke={c} strokeWidth="1.2" /><circle cx="3" cy="10" r="1.6" fill="none" stroke={c} strokeWidth="1.2" /><circle cx="11" cy="10" r="1.6" fill="none" stroke={c} strokeWidth="1.2" /><path d="M7 6 L3.6 8.6M7 6 L10.4 8.6" stroke={c} strokeWidth="1.1" /></svg>;
+  if (kind === 'Ring') return <svg width="12" height="12" viewBox="0 0 14 14"><circle cx="7" cy="7" r="4.2" fill="none" stroke={c} strokeWidth="1.2" /><path d="M9.6 4.4 L11 3M4.4 9.6 L3 11" stroke={c} strokeWidth="1.2" strokeLinecap="round" /></svg>;
+  return <svg width="12" height="12" viewBox="0 0 14 14"><circle cx="7" cy="5" r="2.2" fill="none" stroke={c} strokeWidth="1.2" /><path d="M3 11.5c0-2.2 1.8-3.5 4-3.5s4 1.3 4 3.5" fill="none" stroke={c} strokeWidth="1.2" /></svg>;
+};
+// Classifies a result into its cluster shape + size for the case-list sub-line.
+const clusterKindOf = (r, globalCache) => {
+  const ringCount = Object.keys(r.washPartners || {}).length;
+  if (ringCount > 0) return { kind: 'Ring', size: ringCount + 1 };
+  const wf = buildMatrixModel(r.suspicions, globalCache).rows.filter(x => x.id !== r.player.id && x.uid !== r.player.id).length;
+  return wf >= 2 ? { kind: 'Workforce', size: wf } : { kind: 'Solo', size: 0 };
+};
+
 const buildClusterEdges = (rows, overlapString) => {
   const edges = [];
   if (overlapString) {
@@ -1021,10 +1036,11 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
     return () => ro.disconnect();
   }, []);
   const NODE_H = 72;
+  const SPREAD = 0.68; // pull the alts in toward the boss so the cluster reads tighter
   const geom = React.useMemo(() => {
     const w = size.w || 820, h = size.h || height;
-    const rx = Math.max(150, (w / 2 - nodeW / 2 - 24) / 0.87);
-    const ry = Math.max(96, h / 2 - NODE_H / 2 - 14);
+    const rx = Math.max(120, ((w / 2 - nodeW / 2 - 24) / 0.87) * SPREAD);
+    const ry = Math.max(78, (h / 2 - NODE_H / 2 - 14) * SPREAD);
     return { cx: w / 2, cy: h / 2, rx, ry };
   }, [size.w, size.h, nodeW, height]);
   const initial = React.useMemo(() => {
@@ -2948,11 +2964,11 @@ export function WarEraOracle() {
                     const tier=maxSevTierOf(r);
                     const score=r.adjustedDetections??r.detections;
                     const isActive=r.player.id===activeSuspectId;
-                    const ringCount=Object.keys(r.washPartners||{}).length;
                     const _pw=extractCoinWealth(r.player);
                     const _pl=extractUserLevel(r.player)??r.player.level;
                     const _pavg=_pl!=null?getWealthAverageExtended(globalCacheRef.current,_pl):null;
                     const wealthRatio=(_pw!=null&&_pavg&&_pavg.avg>0)?(_pw/_pavg.avg):null;
+                    const _kind=clusterKindOf(r,globalCacheRef.current);
                     return (
                       <div key={r.player.id} onClick={()=>setActiveSuspectId(r.player.id)}
                         style={{display:'flex',alignItems:'stretch',cursor:'pointer',
@@ -2967,8 +2983,10 @@ export function WarEraOracle() {
                             {r.player.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px',flexShrink:0}}>BANNED</span>}
                           </div>
                           <div style={{fontSize:10,color:'#5d6e96',display:'flex',gap:5,alignItems:'center'}}>
-                            <span>{ringCount>0?`Ring - ${ringCount+1}`:'Solo'}</span>
-                            {wealthRatio!=null&&<span style={{fontWeight:700,color:wealthRatio>=1?'#ffab3d':'#4fc3e8'}}>{wealthRatio.toFixed(1)}X avg coins</span>}
+                            <KindGlyph kind={_kind.kind}/>
+                            <span>{_kind.kind}{_kind.size>0?` · ${_kind.size}`:''}</span>
+                            {wealthRatio!=null&&<span style={{color:'#2e3f6a'}}>·</span>}
+                            {wealthRatio!=null&&<span style={{fontWeight:700,color:wealthRatio>=1?'#ffab3d':'#4fc3e8'}}>{wealthRatio.toFixed(1)}× avg</span>}
                             {watchlist[r.player.id]&&<span style={{fontSize:9,fontWeight:700,color:'#ffab3d'}}>WATCH</span>}
                           </div>
                         </div>
@@ -3016,7 +3034,7 @@ export function WarEraOracle() {
 
               {/* Linked-Account Matrix (Concept G) */}
               <div style={{paddingTop:18}}>
-                <LinkedAccountMatrix suspicions={activeResult.suspicions} wageThreshold={settings.suspiciousWageThreshold}/>
+                <LinkedAccountMatrix suspicions={activeResult.suspicions} wageThreshold={settings.suspiciousWageThreshold} bossId={activeResult.player.id}/>
               </div>
 
               {/* Engagement network (Concept G) */}
