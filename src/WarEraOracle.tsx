@@ -180,7 +180,7 @@ const detectAutomation = (player, settings) => {
     });
     const maxHour = Object.entries(hourCounts).sort((a,b)=>b[1]-a[1])[0];
     const concentrationNote = maxHour && maxHour[1] >= Math.ceil(player.sniperHits * 0.6)
-      ? ` All ${maxHour[1]} snipes concentrated in UTC hour ${maxHour[0]}:00 - strongly indicates automated scheduling.`
+      ? ` All ${maxHour[1]} snipes concentrated in UTC hour ${maxHour[0]}:00 - a concentration consistent with automated scheduling.`
       : '';
     suspicions.push({
       type: 'market_automation', severity: 'critical',
@@ -201,7 +201,7 @@ const detectAutomation = (player, settings) => {
 
   if (player.pacingHits >= settings.pacingMinHits) {
     const singleTypePacing = player.pacingSingleType
-      ? ` All paced actions are of type "${player.pacingSingleType}" - single-action-type pacing is a near-certain script indicator.`
+      ? ` All paced actions are of type "${player.pacingSingleType}" - single-action-type pacing of this regularity is hard to explain as manual play.`
       : '';
     suspicions.push({
       type: 'script_pacing', severity: 'critical',
@@ -224,7 +224,7 @@ const detectAutomation = (player, settings) => {
   if (player.isMutualHermit) {
     suspicions.push({
       type: 'mutual_hermit', severity: 'critical',
-      desc: `Mutual Hermit Pair: This account and "${player.mutualHermitPartnerName}" trade almost exclusively with each other (bidirectional isolation). High probability of being the same operator.`,
+      desc: `Mutual Hermit Pair: This account and "${player.mutualHermitPartnerName}" trade almost exclusively with each other (bidirectional isolation) — a pattern consistent with a single operator running both.`,
       workers: [{ uid: player.id, normalizedName: player.name + " (SELF)", normalizedLevel: player.level || '?' }],
       detectionWeight: player.hermitTxCount || 5
     });
@@ -355,7 +355,7 @@ const detectWorkerPatterns = (allWorkers, settings, globalCache) => {
     const fidelityPct = totalActiveWorkers > 0 ? Math.round((maxFidelityWorkers.length / totalActiveWorkers) * 100) : 100;
     suspicions.push({
       type: 'fidelity_ring', severity: 'medium',
-      desc: `Fidelity Ring: ${maxFidelityWorkers.length}/${totalActiveWorkers} active workers (${fidelityPct}%) have max fidelity (10/10). loyal workforce suggests controlled alt accounts.`,
+      desc: `Fidelity Ring: ${maxFidelityWorkers.length}/${totalActiveWorkers} active workers (${fidelityPct}%) have max fidelity (10/10) — an unusually loyal workforce that can be consistent with controlled alt accounts.`,
       workers: maxFidelityWorkers, detectionWeight: maxFidelityWorkers.length
     });
     maxFidelityWorkers.forEach(w => suspiciousWorkers.add(w));
@@ -454,7 +454,7 @@ const detectLaundering = (allWorkers, player, settings, globalCache) => {
     let existingLaunderSus = suspicions.find(s => s.type === 'money_laundering');
     if (existingLaunderSus) { existingLaunderSus.workers.push(selfWorker); existingLaunderSus.detectionWeight += 3; }
     else {
-      suspicions.push({ type: 'money_laundering', severity: 'critical', desc: `Massive outbound donations from this account. Likely a burner funnel.`, workers: [selfWorker], detectionWeight: 3 });
+      suspicions.push({ type: 'money_laundering', severity: 'critical', desc: `Large outbound donations from this account — a pattern consistent with a burner funnel.`, workers: [selfWorker], detectionWeight: 3 });
     }
     totalLaunderedCoins += player.directLaunderAmount;
     hasLaundering = true;
@@ -780,7 +780,7 @@ const analyzePhase1 = (player, settings, globalCache, addLog = null) => {
     if (existingLaunder) { existingLaunder.workers.push(selfWorker); existingLaunder.detectionWeight += 3; }
     else allSuspicions.push({
       type: 'money_laundering', severity: 'critical',
-      desc: 'Massive outbound donations from this account. Likely a burner funnel.',
+      desc: 'Large outbound donations from this account — a pattern consistent with a burner funnel.',
       workers: [selfWorker], detectionWeight: 3
     });
   }
