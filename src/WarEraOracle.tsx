@@ -1138,18 +1138,7 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
           {edges.map((e, i) => {
             const A = posns[e.a] || B, C = posns[e.b] || B;
             const on = edgeLit(e), faded = hover && !on;
-            const mx = (A.x + C.x) / 2, my = (A.y + C.y) / 2;
-            const lbl = e.type === 'wash' ? `${e.net > 0 ? '+' : ''}${Math.round(e.net)}` : e.type === 'name' ? 'NAME' : 'CLONE';
-            const w = e.type === 'wash' ? 46 : 52;
-            return (
-              <g key={i} opacity={faded ? 0.25 : 1} style={{ transition: 'opacity .12s' }}>
-                <path d={`M ${A.x} ${A.y} L ${C.x} ${C.y}`} fill="none" stroke={PL_REL[e.type]} strokeWidth={on ? 2.6 : 2} opacity="0.9" />
-                <g transform={`translate(${mx},${my})`}>
-                  <rect x={-w / 2} y="-8" width={w} height="16" rx="4" fill="#070b18" stroke={PL_REL[e.type]} strokeWidth="0.8" />
-                  <text x="0" y="3" textAnchor="middle" fontFamily="IBM Plex Mono, monospace" fontSize="8.5" fontWeight="700" fill={PL_REL[e.type]}>{lbl}</text>
-                </g>
-              </g>
-            );
+            return <path key={i} d={`M ${A.x} ${A.y} L ${C.x} ${C.y}`} fill="none" stroke={PL_REL[e.type]} strokeWidth={on ? 2.6 : 2} opacity={faded ? 0.25 : 0.9} style={{ transition: 'opacity .12s' }} />;
           })}
         </svg>
         <div onPointerDown={(e) => startDrag('BOSS', e)} onMouseEnter={() => setHover('BOSS')} onMouseLeave={() => setHover(null)}
@@ -1165,6 +1154,13 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
           </div>
         </div>
         {nodes.map(nd => <NodeCard key={nd.uid} nd={nd} />)}
+        {/* Edge labels in an opaque layer ABOVE the node cards so they're never hidden. */}
+        {edges.map((e, i) => {
+          const A = posns[e.a] || B, C = posns[e.b] || B;
+          const on = edgeLit(e), faded = hover && !on;
+          const lbl = e.type === 'wash' ? `${e.net > 0 ? '+' : ''}${Math.round(e.net)}` : e.type === 'name' ? 'NAME' : 'CLONE';
+          return <div key={'lbl' + i} style={{ position: 'absolute', left: (A.x + C.x) / 2, top: (A.y + C.y) / 2, transform: 'translate(-50%,-50%)', zIndex: 4, fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: PL_REL[e.type], background: '#070b18', border: `1px solid ${PL_REL[e.type]}`, borderRadius: 4, padding: '1px 5px', opacity: faded ? 0.25 : 1, pointerEvents: 'none', whiteSpace: 'nowrap' }}>{lbl}</div>;
+        })}
       </div>
       <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', flexDirection: 'column', gap: 6, background: 'rgba(12,18,38,0.86)', border: '1px solid #1f2b4e', borderRadius: 8, padding: '9px 11px', pointerEvents: 'none', zIndex: 6 }}>
         <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.07em', color: '#5d6e96', marginBottom: 1 }}>HOW THEY'RE LINKED</div>
@@ -1292,7 +1288,7 @@ const EngagementNetwork = ({ activeResult, names }) => {
           const recvPct = total > 0 ? Math.round(cnt / total * 100) : 0;
           const ownPct = sentTotal > 0 ? Math.round(given / sentTotal * 100) : 0;
           const conc = ownPct >= 75;
-          const nm = names?.[id] || id;
+          const nm = names?.[id] || ('user_' + String(id).slice(-6));
           const Bar = ({ pct, color }) => <div style={{ height: 4, background: '#060a16', borderRadius: 99, overflow: 'hidden' }}><div style={{ width: Math.min(100, pct) + '%', height: '100%', background: color, borderRadius: 99 }} /></div>;
           return (
             <a key={id} href={`https://app.warera.io/user/${id}`} target="_blank" rel="noopener noreferrer" style={{ flex: '1 1 160px', minWidth: 160, background: '#0c1226', border: '1px solid #1f2b4e', borderRadius: 8, padding: '10px 13px', textDecoration: 'none' }}>
@@ -2105,7 +2101,7 @@ export function WarEraOracle() {
           const recipientId = typeof tx.recipient==='object' ? (tx.recipient?._id||tx.recipient?.id) : (tx.sellerId||tx.recipientId||tx.receiverId||tx.receiver||tx.toId||tx.to);
           const tipperId = typeof tx.sender==='object' ? (tx.sender?._id||tx.sender?.id) : (tx.buyerId||tx.senderId||tx.sender||tx.fromId||tx.from||tx.authorId);
           if (recipientId===uId && tipperId && tipperId!==uId) {
-            const amt = typeof tx.amount==='number' ? tx.amount : typeof tx.coins==='number' ? tx.coins : typeof tx.value==='number' ? tx.value : typeof tx.price==='number' ? tx.price : 0;
+            const amt = typeof tx.amount==='number' ? tx.amount : typeof tx.coins==='number' ? tx.coins : typeof tx.value==='number' ? tx.value : typeof tx.price==='number' ? tx.price : typeof tx.money==='number' ? tx.money : 0;
             tipperCounts[tipperId] = (tipperCounts[tipperId]||0) + 1;
             tipperAmounts[tipperId] = (tipperAmounts[tipperId]||0) + amt;
             totalTipsReceived++;
@@ -2116,18 +2112,18 @@ export function WarEraOracle() {
         if (Object.keys(tipperCounts).filter(id => tipperCounts[id] >= 10).length >= 1 || validTipperIds.length >= 2) {
           const tipperSentTotals = {};
           const tipperMeta = {};
-          for (const tipperId of validTipperIds) {
-            if (!globalCacheRef.current.names[tipperId]) {
-              try {
-                const td = await smartFetch('user.getUserLite', { userId: tipperId });
-                const tName = td?.username || td?.name || td?.displayName || null;
+          // Enrich the top tippers shown in the engagement view (not just the >=5 set),
+          // so their names resolve and "of their own tipping" % can be computed.
+          const enrichIds = Object.keys(tipperCounts).sort((a, b) => tipperCounts[b] - tipperCounts[a]).slice(0, 8);
+          for (const tipperId of enrichIds) {
+            try {
+              const td = globalCacheRef.current.names[tipperId] ? null : await smartFetch('user.getUserLite', { userId: tipperId });
+              if (td) {
+                const tName = td.username || td.name || td.displayName || td.nickname || td.user?.username || td.profile?.username || null;
                 if (tName) globalCacheRef.current.names[tipperId] = tName;
-                tipperMeta[tipperId] = {
-                  level: td?.leveling?.level ?? td?.userLevel?.value ?? null,
-                  isBanned: !!(td?.isBanned || td?.banned || td?.infos?.isBanned),
-                };
-              } catch { /* best-effort */ }
-            }
+                tipperMeta[tipperId] = { level: td.leveling?.level ?? td.userLevel?.value ?? null, isBanned: !!(td.isBanned || td.banned || td.infos?.isBanned) };
+              }
+            } catch { /* best-effort */ }
             try {
               const tipperTxData = await smartFetch('transaction.getPaginatedTransactions', { transactionType: 'articleTip', userId: tipperId, limit: 100 });
               const tipperItems = Array.isArray(tipperTxData) ? tipperTxData : (tipperTxData?.items||tipperTxData?.data||tipperTxData?.transactions||[]);
@@ -2135,19 +2131,11 @@ export function WarEraOracle() {
               tipperItems.forEach(tx => {
                 const senderId = typeof tx.sender==='object' ? (tx.sender?._id||tx.sender?.id) : (tx.buyerId||tx.senderId||tx.sender||tx.fromId||tx.from||tx.authorId);
                 if (senderId === tipperId) {
-                    const amt = typeof tx.amount==='number' ? tx.amount : typeof tx.coins==='number' ? tx.coins : typeof tx.value==='number' ? tx.value : typeof tx.price==='number' ? tx.price : 0;
+                    const amt = typeof tx.amount==='number' ? tx.amount : typeof tx.coins==='number' ? tx.coins : typeof tx.value==='number' ? tx.value : typeof tx.price==='number' ? tx.price : typeof tx.money==='number' ? tx.money : 0;
                     totalSentCoins += amt;
                 }
               });
-              if (totalSentCoins > 0) {
-                const givenToTarget = tipperAmounts[tipperId] || 0;
-                if ((givenToTarget / totalSentCoins) < 0.15) {
-                    delete tipperCounts[tipperId];
-                    delete tipperAmounts[tipperId];
-                    continue;
-                }
-                tipperSentTotals[tipperId] = totalSentCoins;
-              }
+              if (totalSentCoins > 0) tipperSentTotals[tipperId] = totalSentCoins;
             } catch { /* best-effort */ }
           }
           const finalHeavy = Object.values(tipperCounts).filter(c => c >= 10).length;
@@ -2810,6 +2798,7 @@ export function WarEraOracle() {
     return 'med';
   };
   const filteredResults = allResults.filter(r => {
+    if (r.player.isBanned) return false; // banned accounts are hidden from the case list (still shown in maps/findings where flagged)
     if (listSearch && !String(r.player.name).toLowerCase().includes(listSearch.toLowerCase())) return false;
     if (listFilter !== 'all') {
       const tier = maxSevTierOf(r);
@@ -3026,7 +3015,7 @@ export function WarEraOracle() {
                           <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:2}}>
                             <div style={{width:5,height:5,borderRadius:'50%',background:T_COLOR[tier],flexShrink:0}}/>
                             <span style={{fontSize:12.5,fontWeight:600,fontFamily:"IBM Plex Mono, monospace",color:isActive?'#4fc3e8':'#eaf0ff',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{String(r.player.name)}</span>
-                            {r.player.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px',flexShrink:0}}>BANNED</span>}
+                            {r.player.level&&<span style={{fontSize:9.5,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96',flexShrink:0}}>Lv.{r.player.level}</span>}
                           </div>
                           <div style={{fontSize:10,color:'#5d6e96',display:'flex',gap:5,alignItems:'center'}}>
                             <KindGlyph kind={_kind.kind}/>
@@ -3067,13 +3056,13 @@ export function WarEraOracle() {
                 const _wf=buildMatrixModel(activeResult.suspicions,globalCacheRef.current).rows.filter(r=>r.id!==activeResult.player.id).length;
                 return (
                   <div style={{padding:'14px 24px 0',display:'flex',gap:14,alignItems:'stretch'}}>
-                    <ClusterMapPanel activeResult={activeResult} globalCache={globalCacheRef.current} bossWealthX={_bx} bossWealth={_cw}/>
                     <MapSidebar activeResult={activeResult} isWatching={!!watchlist[activeResult.player.id]} workforceSize={_wf}
                       copied={copiedId===activeResult.player.id}
                       onWatch={()=>toggleWatchlist(activeResult.player.id,activeResult.player.name,activeResult.country)}
                       onRescan={()=>rescanPlayer(activeResult.player.id,activeResult.country)}
                       onReport={()=>exportSinglePlayer(activeResult)}
                       onCopy={()=>{copySummaryToClipboard(activeResult);setCopiedId(activeResult.player.id);setTimeout(()=>setCopiedId(null),2500);}}/>
+                    <ClusterMapPanel activeResult={activeResult} globalCache={globalCacheRef.current} bossWealthX={_bx} bossWealth={_cw}/>
                   </div>
                 );
               })()}
