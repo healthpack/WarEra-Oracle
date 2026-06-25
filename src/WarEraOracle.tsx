@@ -1093,7 +1093,7 @@ const buildClusterGraph = (activeResult, globalCache) => {
   const emp = activeResult.player?.employer;
   if (emp?.id && emp.id !== bossId) {
     if (!nodes.has(emp.id)) {
-      nodes.set(emp.id, { uid: emp.id, id: emp.id, name: emp.name || ('user_' + String(emp.id).slice(-6)), level: emp.level, banned: !!emp.banned, kind: 'employer', companyName: emp.companyName, sameMint: !!emp.sameMint });
+      nodes.set(emp.id, { uid: emp.id, id: emp.id, name: emp.name || ('user_' + String(emp.id).slice(-6)), level: emp.level, banned: !!emp.banned, kind: 'employer', companyName: emp.companyName });
     } else {
       nodes.get(emp.id).banned = nodes.get(emp.id).banned || !!emp.banned;
     }
@@ -1239,10 +1239,9 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
             <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#ffab3d', marginLeft: 'auto' }}>fid {nd.fid ?? 0}</span>
           </div>
         )}
-        {nd.kind === 'employer' && (nd.companyName || nd.sameMint) && (
+        {nd.kind === 'employer' && nd.companyName && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-            {nd.companyName && <span title={`Employs the scanned account at ${nd.companyName}`} style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9, color: '#5d6e96', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>via {nd.companyName}</span>}
-            {nd.sameMint && <span title="Owner account and this company have sequential IDs — minted in the same operation (shell-company tell)." style={{ fontSize: 7.5, fontWeight: 700, color: '#ffab3d', background: 'rgba(255,171,61,0.12)', border: '1px solid rgba(255,171,61,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0, marginLeft: 'auto' }}>SAME-MINT</span>}
+            <span title={`Employs the scanned account at ${nd.companyName}`} style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9, color: '#5d6e96', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>via {nd.companyName}</span>
           </div>
         )}
       </div>
@@ -2627,11 +2626,8 @@ export function WarEraOracle() {
             globalCacheRef.current.names[ownerId] = ownerName;
             const ownerBanned = !!(oData?.infos?.isBanned || oData?.isBanned || oData?.banned);
             if (ownerBanned) globalBans.current[ownerId] = true;
-            // Owner account + its company sharing an ObjectId prefix = minted in the same
-            // operation (shell-company tell).
-            const sameMint = String(ownerId).slice(0, 18) === String(employerCompanyId).slice(0, 18);
-            livePlayer.employer = { id: ownerId, name: ownerName, level: oData?.leveling?.level ?? null, banned: ownerBanned, companyName: co?.name || null, sameMint };
-            addLog(`[INFO] ${foundName} is employed by ${ownerName}${sameMint ? ' (acct+company same-mint)' : ''}.`, 'info');
+            livePlayer.employer = { id: ownerId, name: ownerName, level: oData?.leveling?.level ?? null, banned: ownerBanned, companyName: co?.name || null };
+            addLog(`[INFO] ${foundName} is employed by ${ownerName}.`, 'info');
           }
         }
       } catch(e) { addLog(`[DEBUG] Employer resolve failed for ${foundName}: ${e.message}`, 'debug'); }
