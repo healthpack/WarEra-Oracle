@@ -71,6 +71,14 @@ why, centred on a relationship map.
   `{ userIds[], muIds[], countryIds[], ... }` (returns multiple — don't assume index 0).
 
 ## What was built this session (most recent first)
+- **Inactive badge + wealth-sort fix.** `isInactiveUser(u)` = no login in >5 days
+  (`getUserLite.dates.lastConnectionAt`, no extra fetch); an `inactive` flag now flows
+  parallel to `banned` (boss, workers, wash partners, employer, tippers) plus a
+  `globalInactive` ref, and a grey-blue **INACTIVE** badge renders in every slot the BAN
+  badge does (map node, sidebar, case-list row, deep-dive partner/worker/tipper). Rationale:
+  quitting players often dump their whole balance to a country / friend's MU. Also fixed the
+  case-list **Wealth** sort to rank by the ×median ratio (what the cards show) instead of raw
+  coins — relabelled "Wealth ×".
 - **Case-list filtering/sorting + wealth thresholds.** Wealth-anomaly bounds retuned to
   **< 0.45× / > 2×** the level median (defaults `wealthAnomalyLowerMultiplier:0.45`,
   `wealthAnomalyMultiplier:2`; upper still relaxed for sub-lvl-11 newbies via

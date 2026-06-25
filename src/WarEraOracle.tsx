@@ -633,6 +633,13 @@ const objIdSeconds = (id) => { const h = String(id || '').slice(0, 8); return /^
 const isObjId = (id) => /^[0-9a-f]{24}$/i.test(String(id || ''));
 const COCREATE_WINDOW_S = 10;
 
+// "Inactive" = no login in the last 5 days (getUserLite.dates.lastConnectionAt). Players
+// quitting the game often dump their whole balance to their country / a friend's MU, so a
+// flagged outflow account that has also gone quiet is worth surfacing — badged in the same
+// slots as a ban. Computed from the lite payload, so no extra fetch.
+const INACTIVE_DAYS = 5;
+const isInactiveUser = (u) => { const t = u?.dates?.lastConnectionAt; const ms = t ? Date.parse(t) : NaN; return Number.isFinite(ms) && (Date.now() - ms) > INACTIVE_DAYS * 86400000; };
+
 // Coordinated account creation — two accounts that are ALREADY linked to this one
 // (worker, wash partner, employer) AND were created within COCREATE_WINDOW_S of it.
 // Two humans don't sign up the same second; a script minting accounts in a burst does.
@@ -1135,8 +1142,8 @@ const buildClusterGraph = (activeResult, globalCache) => {
   const wash = (activeResult.suspicions || []).find(s => s.type === 'transaction_abuse');
   if (wash) (wash.partners || []).forEach(p => {
     if (!p.id || p.id === bossId) return;
-    if (!nodes.has(p.id)) nodes.set(p.id, { uid: p.id, id: p.id, name: String(p.name || p.id), level: p.level, banned: p.isBanned, kind: 'partner' });
-    else nodes.get(p.id).banned = nodes.get(p.id).banned || p.isBanned;
+    if (!nodes.has(p.id)) nodes.set(p.id, { uid: p.id, id: p.id, name: String(p.name || p.id), level: p.level, banned: p.isBanned, inactive: p.inactive, kind: 'partner' });
+    else { const n = nodes.get(p.id); n.banned = n.banned || p.isBanned; n.inactive = n.inactive || p.inactive; }
     edges.push({ a: bossId, b: p.id, type: 'wash', net: p.netProfit || 0, trades: p.txCount });
   });
   // Employer — the account this player works FOR (its current company's owner). The
@@ -1148,9 +1155,9 @@ const buildClusterGraph = (activeResult, globalCache) => {
   const emp = activeResult.player?.employer;
   if (emp?.id && emp.id !== bossId) {
     if (!nodes.has(emp.id)) {
-      nodes.set(emp.id, { uid: emp.id, id: emp.id, name: emp.name || ('user_' + String(emp.id).slice(-6)), level: emp.level, banned: !!emp.banned, kind: 'employer', companyName: emp.companyName });
+      nodes.set(emp.id, { uid: emp.id, id: emp.id, name: emp.name || ('user_' + String(emp.id).slice(-6)), level: emp.level, banned: !!emp.banned, inactive: !!emp.inactive, kind: 'employer', companyName: emp.companyName });
     } else {
-      nodes.get(emp.id).banned = nodes.get(emp.id).banned || !!emp.banned;
+      const n = nodes.get(emp.id); n.banned = n.banned || !!emp.banned; n.inactive = n.inactive || !!emp.inactive;
     }
     edges.push({ a: emp.id, b: bossId, type: 'employer', companyName: emp.companyName });
   }
@@ -1284,6 +1291,7 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11.5, fontWeight: 600, color: nd.banned ? '#ff5d6c' : '#eaf0ff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nm}</span>
           {nd.banned && <span style={{ fontSize: 7.5, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0 }}>BAN</span>}
+          {!nd.banned && nd.inactive && <span title={`No login in over ${INACTIVE_DAYS} days — possibly quit (often dumps wealth on the way out)`} style={{ fontSize: 7.5, fontWeight: 700, color: '#9fb0d4', background: 'rgba(159,176,212,0.12)', border: '1px solid rgba(159,176,212,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0 }}>INACTIVE</span>}
           {nd.coCreatedDelta != null && <span title={`Created within ${nd.coCreatedDelta}s of the scanned account — possible scripted batch signup`} style={{ fontSize: 7.5, fontWeight: 700, color: '#ffd84d', background: 'rgba(255,216,77,0.12)', border: '1px solid rgba(255,216,77,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0, whiteSpace: 'nowrap' }}>⏱+{nd.coCreatedDelta}s</span>}
           {(nd.kind !== 'funnel' || nd.sinkKind === 'user') && <a href={`https://app.warera.io/user/${nd.id}`} target="_blank" rel="noopener noreferrer" onPointerDown={(e) => e.stopPropagation()} style={{ color: '#5d6e96', flexShrink: 0, marginLeft: 'auto' }}><ExternalLink size={9} /></a>}
         </div>
@@ -1389,7 +1397,7 @@ const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX, bossWealth })
 };
 
 // Sidebar beside the map: identity, verdict, summary, actions, signal ledger.
-const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onCopy, copied, workforceSize, banned }) => {
+const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onCopy, copied, workforceSize, banned, inactive }) => {
   const sc = activeResult.adjustedDetections ?? activeResult.detections;
   const tier = plScoreTier(sc);
   const ringCount = Object.keys(activeResult.washPartners || {}).length;
@@ -1406,12 +1414,13 @@ const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onC
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 18, fontWeight: 700, color: '#eaf0ff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(activeResult.player.name)}</span>
           <a href={`https://app.warera.io/user/${activeResult.player.id}`} target="_blank" rel="noopener noreferrer" style={{ color: '#5d6e96', flexShrink: 0 }}><ExternalLink size={13} /></a>
           {banned && <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 4, padding: '3px 7px', flexShrink: 0 }}>BANNED</span>}
-          <div style={{ marginLeft: banned ? 8 : 'auto', padding: '4px 11px', background: PL_SEV[tier].bg, border: `2px solid ${PL_SEV[tier].line}`, borderRadius: 8, textAlign: 'center', flexShrink: 0 }}>
+          {!banned && inactive && <span title={`No login in over ${INACTIVE_DAYS} days — possibly quit`} style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#9fb0d4', background: 'rgba(159,176,212,0.12)', border: '1px solid rgba(159,176,212,0.42)', borderRadius: 4, padding: '3px 7px', flexShrink: 0 }}>INACTIVE</span>}
+          <div style={{ marginLeft: (banned || inactive) ? 8 : 'auto', padding: '4px 11px', background: PL_SEV[tier].bg, border: `2px solid ${PL_SEV[tier].line}`, borderRadius: 8, textAlign: 'center', flexShrink: 0 }}>
             <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 17, fontWeight: 700, color: PL_SEV[tier].c }}>{sc}</span>
           </div>
         </div>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 9, fontSize: 10.5, fontWeight: 700, letterSpacing: '.04em', color: PL_SEV[verdict.tier].c, background: PL_SEV[verdict.tier].bg, border: `1px solid ${PL_SEV[verdict.tier].line}`, borderRadius: 5, padding: '3px 8px' }}>{verdict.txt}</div>
-        <div style={{ fontSize: 11, color: '#5d6e96', marginBottom: 8 }}>{activeResult.country}{activeResult.player.level && <span style={{ fontFamily: "IBM Plex Mono, monospace" }}> · Lv.{activeResult.player.level}</span>}{activeResult.player.isBanned && <span style={{ marginLeft: 6, color: '#ff5d6c', fontWeight: 700 }}>BANNED</span>}</div>
+        <div style={{ fontSize: 11, color: '#5d6e96', marginBottom: 8 }}>{activeResult.country}{activeResult.player.level && <span style={{ fontFamily: "IBM Plex Mono, monospace" }}> · Lv.{activeResult.player.level}</span>}{activeResult.player.isBanned && <span style={{ marginLeft: 6, color: '#ff5d6c', fontWeight: 700 }}>BANNED</span>}{!activeResult.player.isBanned && (activeResult.player.inactive || inactive) && <span style={{ marginLeft: 6, color: '#9fb0d4', fontWeight: 700 }}>INACTIVE</span>}</div>
         <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5, color: '#9fb0d4' }}>{String(activeResult.summary)}</p>
         {activeResult.phase2Status === 'pending' && <p style={{ marginTop: 8, fontSize: 11, color: '#4fc3e8' }}>Worker analysis pending.</p>}
         {activeResult.phase2Status === 'running' && <p style={{ marginTop: 8, fontSize: 11, color: '#9fb0d4' }}>Fetching companies and workers…</p>}
@@ -1652,6 +1661,7 @@ export function WarEraOracle() {
   
   const globalWashPartners = useRef({});
   const globalBans = useRef({});
+  const globalInactive = useRef({});
   const globalHermitPrimaries = useRef({});
   const phase2DataRef = useRef({});
   const didLogTipPayloadRef = useRef(false);
@@ -2047,6 +2057,8 @@ export function WarEraOracle() {
         // Ban status lives under infos.isBanned (and isActive:false). Mark it but keep
         // analysing — a flagged banned account should still surface, badged as BANNED.
         playerObj.isBanned = !!(uData.isBanned || uData.banned || uData.infos?.isBanned);
+        playerObj.inactive = isInactiveUser(uData);
+        if (playerObj.inactive) globalInactive.current[uId] = true;
         bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
       }
     } catch(e) { addLog(`[DEBUG] getUserLite failed for ${uId}: ${e.message}`, 'debug'); }
@@ -2209,6 +2221,8 @@ export function WarEraOracle() {
           globalCacheRef.current.names[partnerId]=washPartners[partnerId].name;
           const isPBanned=!!(pData.isBanned||pData.banned||pData.infos?.isBanned);
           washPartners[partnerId].isBanned=isPBanned; globalBans.current[partnerId]=isPBanned;
+          const isPInactive=isInactiveUser(pData);
+          washPartners[partnerId].inactive=isPInactive; if (isPInactive) globalInactive.current[partnerId]=true;
         }
       } catch(e) { washPartners[partnerId].name=partnerId; washPartners[partnerId].level='?'; }
       if (!playerObj.isSecondaryScan) scanQueueRef.current.push({ _id: partnerId, scanContext: playerObj.scanContext, isSecondaryScan: true });
@@ -2335,7 +2349,7 @@ export function WarEraOracle() {
               if (td) {
                 const tName = td.username || td.name || td.displayName || td.nickname || td.user?.username || td.profile?.username || null;
                 if (tName) globalCacheRef.current.names[tipperId] = tName;
-                tipperMeta[tipperId] = { level: td.leveling?.level ?? td.userLevel?.value ?? null, isBanned: !!(td.isBanned || td.banned || td.infos?.isBanned) };
+                tipperMeta[tipperId] = { level: td.leveling?.level ?? td.userLevel?.value ?? null, isBanned: !!(td.isBanned || td.banned || td.infos?.isBanned), inactive: isInactiveUser(td) };
               }
             } catch { /* best-effort */ }
             try {
@@ -2466,7 +2480,7 @@ export function WarEraOracle() {
     }
 
     const livePlayer = {
-      id: uId, name: foundName, level: playerObj.level, isBanned: playerObj.isBanned, country: playerObj.scanContext||'Unknown Target',
+      id: uId, name: foundName, level: playerObj.level, isBanned: playerObj.isBanned, inactive: playerObj.inactive, country: playerObj.scanContext||'Unknown Target',
       companies: [],
       washPartners, isDirectLaunderer, directLaunderAmount,
       sniperHits, sniperDetails, maxConcurrentTxs, apmDetails: { avgGapMs: apmAvgGapMs, txs: worstApmWindow },
@@ -2610,6 +2624,7 @@ export function WarEraOracle() {
                   const uData = w.resolvedUser?.username ? w.resolvedUser : await smartFetch('user.getUserLite', { userId });
                   if (uData) {
                     w.resolvedUser=uData; w.isBanned=!!(uData.isBanned||uData.banned||uData.infos?.isBanned);
+                    w.inactive=isInactiveUser(uData); if (w.inactive) globalInactive.current[userId]=true;
                     if (uData.rankings) { uData.userWealth = uData.userWealth || uData.rankings.userWealth; uData.userLevel = uData.userLevel || uData.rankings.userLevel; }
                     logUserWealth(uData.username||uData.name||userId, uData);
                     { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w, userId); }
@@ -2688,7 +2703,9 @@ export function WarEraOracle() {
             globalCacheRef.current.names[ownerId] = ownerName;
             const ownerBanned = !!(oData?.infos?.isBanned || oData?.isBanned || oData?.banned);
             if (ownerBanned) globalBans.current[ownerId] = true;
-            livePlayer.employer = { id: ownerId, name: ownerName, level: oData?.leveling?.level ?? null, banned: ownerBanned, companyName: co?.name || null };
+            const ownerInactive = isInactiveUser(oData);
+            if (ownerInactive) globalInactive.current[ownerId] = true;
+            livePlayer.employer = { id: ownerId, name: ownerName, level: oData?.leveling?.level ?? null, banned: ownerBanned, inactive: ownerInactive, companyName: co?.name || null };
             addLog(`[INFO] ${foundName} is employed by ${ownerName}.`, 'info');
           }
         }
@@ -2729,7 +2746,7 @@ export function WarEraOracle() {
   const startScan = async (overrideUserId = null) => {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
-    globalWashPartners.current={}; globalBans.current={}; globalHermitPrimaries.current={};
+    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={};
     phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false; didLogDonationShapeRef.current=false;
     effectiveConcurrencyRef.current=settings.concurrencyLimit; concurrencyLastReducedRef.current=0;
     alwaysPhase2Ref.current=false;
@@ -3091,7 +3108,15 @@ export function WarEraOracle() {
   // Sort accessors (wealth/level/age all derived from already-loaded player data; age comes
   // straight off the account ObjectId — bigger seconds = newer account).
   const scoreOf = (r) => r.adjustedDetections ?? r.detections ?? 0;
-  const wealthOf = (r) => extractCoinWealth(r.player) ?? -1;
+  // Sort by the wealth ×median ratio (what the cards actually show), not raw coins — a
+  // 0.4× account must rank above a 0.2× one regardless of their absolute coin totals.
+  const wealthOf = (r) => {
+    const cw = extractCoinWealth(r.player);
+    if (cw == null) return -1;
+    const lv = extractUserLevel(r.player) ?? r.player.level;
+    const ar = lv != null ? getWealthAverageExtended(globalCacheRef.current, lv) : null;
+    return (ar && ar.avg > 0) ? cw / ar.avg : -1;
+  };
   const levelOf = (r) => extractUserLevel(r.player) ?? r.player.level ?? 0;
   const ageSecOf = (r) => objIdSeconds(r.player.id) ?? 0;
   const nameOf = (r) => String(r.player.name || '').toLowerCase();
@@ -3287,7 +3312,7 @@ export function WarEraOracle() {
                 <div style={{display:'flex',alignItems:'center',gap:4}}>
                   <span style={{fontSize:9.5,color:'#5d6e96',flexShrink:0}}>Sort</span>
                   <select value={listSort.key} onChange={e=>setListSort(s=>({...s,key:e.target.value}))} style={sel} title="Sort by">
-                    {[['score','Score'],['wealth','Wealth'],['level','Level'],['age','Newest'],['name','Name']].map(([v,l])=><option key={v} value={v} style={{background:'#121b35'}}>{l}</option>)}
+                    {[['score','Score'],['wealth','Wealth ×'],['level','Level'],['age','Newest'],['name','Name']].map(([v,l])=><option key={v} value={v} style={{background:'#121b35'}}>{l}</option>)}
                   </select>
                   <button onClick={()=>setListSort(s=>({...s,dir:s.dir==='asc'?'desc':'asc'}))} title={listSort.dir==='asc'?'Ascending — click for descending':'Descending — click for ascending'} style={{...sel,padding:'3px 7px',color:'#4fc3e8'}}>{listSort.dir==='asc'?'▲':'▼'}</button>
                   <select value={listType} onChange={e=>setListType(e.target.value)} style={{...sel,flex:1,minWidth:0}} title="Filter by heuristic">
@@ -3334,7 +3359,9 @@ export function WarEraOracle() {
                         <div style={{flex:1,padding:'8px 8px 8px 9px',minWidth:0}}>
                           <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:2}}>
                             <div style={{width:5,height:5,borderRadius:'50%',background:T_COLOR[tier],flexShrink:0}}/>
-                            {(r.player.isBanned||globalBans.current[r.player.id])&&<span style={{fontSize:7.5,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'0 3px',flexShrink:0}}>BAN</span>}
+                            {(r.player.isBanned||globalBans.current[r.player.id])
+                              ?<span style={{fontSize:7.5,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'0 3px',flexShrink:0}}>BAN</span>
+                              :(r.player.inactive||globalInactive.current[r.player.id])&&<span title={`No login in over ${INACTIVE_DAYS} days`} style={{fontSize:7.5,fontWeight:700,color:'#9fb0d4',background:'rgba(159,176,212,0.12)',border:'1px solid rgba(159,176,212,0.42)',borderRadius:3,padding:'0 3px',flexShrink:0}}>INACTIVE</span>}
                             <span style={{fontSize:12.5,fontWeight:600,fontFamily:"IBM Plex Mono, monospace",color:isActive?'#4fc3e8':'#eaf0ff',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{String(r.player.name)}</span>
                             {r.player.level&&<span style={{fontSize:9.5,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96',flexShrink:0}}>Lv.{r.player.level}</span>}
                           </div>
@@ -3379,6 +3406,7 @@ export function WarEraOracle() {
                   <div style={{padding:'14px 24px 0',display:'flex',gap:14,alignItems:'stretch'}}>
                     <MapSidebar activeResult={activeResult} isWatching={!!watchlist[activeResult.player.id]} workforceSize={_wf}
                       banned={!!(activeResult.player.isBanned||globalBans.current[activeResult.player.id])}
+                      inactive={!!(activeResult.player.inactive||globalInactive.current[activeResult.player.id])}
                       copied={copiedId===activeResult.player.id}
                       onWatch={()=>toggleWatchlist(activeResult.player.id,activeResult.player.name,activeResult.country)}
                       onRescan={()=>rescanPlayer(activeResult.player.id,activeResult.country)}
@@ -3487,6 +3515,7 @@ export function WarEraOracle() {
                                       {tipperName||<span style={{color:'#5d6e96'}}>{tipperId}</span>}
                                       {meta?.level!=null&&<span style={{color:'#5d6e96',fontSize:9.5}}>Lv.{meta.level}</span>}
                                       {meta?.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>BANNED</span>}
+                                      {!meta?.isBanned&&meta?.inactive&&<span title={`No login in over ${INACTIVE_DAYS} days`} style={{fontSize:8,fontWeight:700,color:'#9fb0d4',background:'rgba(159,176,212,0.12)',border:'1px solid rgba(159,176,212,0.42)',borderRadius:3,padding:'1px 4px'}}>INACTIVE</span>}
                                     </span>
                                     <span style={{fontSize:9.5,background:'rgba(255,171,61,0.15)',color:'#ffab3d',border:'1px solid rgba(255,171,61,0.40)',borderRadius:4,padding:'2px 6px',fontWeight:700,display:'flex',alignItems:'center',gap:3,flexShrink:0}}>{count}<Star size={8}/></span>
                                   </div>
@@ -3512,6 +3541,7 @@ export function WarEraOracle() {
                                     <div>
                                       <span style={{fontFamily:"IBM Plex Mono, monospace",fontSize:11,color:'#4fc3e8'}}>{String(p.name)}</span>
                                       {p.isBanned&&<span style={{display:'inline-block',marginLeft:4,fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>BANNED</span>}
+                                      {!p.isBanned&&p.inactive&&<span title={`No login in over ${INACTIVE_DAYS} days`} style={{display:'inline-block',marginLeft:4,fontSize:8,fontWeight:700,color:'#9fb0d4',background:'rgba(159,176,212,0.12)',border:'1px solid rgba(159,176,212,0.42)',borderRadius:3,padding:'1px 4px'}}>INACTIVE</span>}
                                       {p.isWorker&&<span style={{display:'inline-block',marginLeft:4,fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>WORKER ×2</span>}
                                     </div>
                                     <span style={{fontSize:10,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace",flexShrink:0}}>Lv.{p.level}</span>
@@ -3581,7 +3611,7 @@ export function WarEraOracle() {
                                         {suspicion.type==='hermit_network'&&isHermitNode&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>HERMIT NODE</span>}
                                         {suspicion.type==='wealth_anomaly'&&w.accountAgeDays!==undefined&&<span style={{fontSize:8,fontWeight:700,color:'#4fc3e8',background:'rgba(79,195,232,0.10)',border:'1px solid rgba(79,195,232,0.30)',borderRadius:3,padding:'1px 4px'}}>{w.accountAgeDays}d OLD</span>}
                                         {w.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>BANNED</span>}
-                                        {w.isActive===false&&!w.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>INACTIVE</span>}
+                                        {!w.isBanned&&(w.inactive||w.isActive===false)&&<span title={w.inactive?`No login in over ${INACTIVE_DAYS} days`:'Account marked inactive'} style={{fontSize:8,fontWeight:700,color:'#9fb0d4',background:'rgba(159,176,212,0.12)',border:'1px solid rgba(159,176,212,0.42)',borderRadius:3,padding:'1px 4px'}}>INACTIVE</span>}
                                         {w.noBonusPercentage>0&&suspicion.type==='no_production_bonus'&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>{w.noBonusPercentage}% NO-PROD</span>}
                                         {w.isLaundering&&suspicion.type==='money_laundering'&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px',display:'flex',alignItems:'center',gap:2}}>{w.largeDonations30Days?.toFixed(1)} <Coins size={8}/></span>}
                                         {suspicion.type==='fidelity_ring'&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>FIDELITY 10</span>}
