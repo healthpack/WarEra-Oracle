@@ -71,6 +71,13 @@ why, centred on a relationship map.
   `{ userIds[], muIds[], countryIds[], ... }` (returns multiple — don't assume index 0).
 
 ## What was built this session (most recent first)
+- **Inactive-badge fix + tippers on the map.** The `isActive===false` clause was removed
+  from the worker INACTIVE badge — WarEra's `isActive` is `false` for many *active* players
+  (e.g. Alexo, logged in 4 days ago, has `isActive:false`), so it false-fired everywhere;
+  INACTIVE is now driven solely by the 5-day `lastConnectionAt` check (verified correct).
+  Also: a concentrated **tipper** is now drawn on the map (green `tip` edge, TIPPER node)
+  when >50% of their *total* tipping coins go to the scanned account (share =
+  `tipperAmounts/tipperSentTotals` from `tip_farming`).
 - **Inactive badge + wealth-sort fix.** `isInactiveUser(u)` = no login in >5 days
   (`getUserLite.dates.lastConnectionAt`, no extra fetch); an `inactive` flag now flows
   parallel to `banned` (boss, workers, wash partners, employer, tippers) plus a

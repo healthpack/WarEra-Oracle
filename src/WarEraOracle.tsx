@@ -1099,7 +1099,7 @@ const PL_SEV = {
 };
 const plScoreTier = (s) => s >= 10 ? 'crit' : s >= 5 ? 'high' : 'med';
 const plSevTier = (sev) => sev === 'critical' ? 'crit' : sev === 'high' ? 'high' : 'med';
-const PL_REL = { name: '#5aa0ff', clone: '#c98bff', wash: '#ff5d6c', donation: '#3fd0a3', funnel: '#e6c34a', role: '#7c5cff', employer: '#2dd4bf' };
+const PL_REL = { name: '#5aa0ff', clone: '#c98bff', wash: '#ff5d6c', donation: '#3fd0a3', funnel: '#e6c34a', role: '#7c5cff', employer: '#2dd4bf', tip: '#3fd0a3' };
 const wealthColor = (x) => x == null ? '#9fb0d4' : (x < 0.5 ? '#4fc3e8' : x > 2 ? '#ff5d6c' : '#ffab3d');
 
 // Cluster-shape glyph for the case list — Workforce (employees) / Ring / Solo.
@@ -1186,6 +1186,23 @@ const buildClusterGraph = (activeResult, globalCache) => {
       edges.push({ a: r.id, b: L.id, type: 'role', role: L.role });
     });
   });
+  // Concentrated tippers — someone who routes >50% of ALL their tipping coins to this
+  // account is inflating its engagement; surface them on the map. Share = coins tipped here
+  // ÷ the tipper's total tip coins sent anywhere (from the tip_farming suspicion).
+  const tip = (activeResult.suspicions || []).find(s => s.type === 'tip_farming');
+  if (tip) {
+    const amts = tip.tipperAmounts || {}, sent = tip.tipperSentTotals || {}, cnts = tip.tipperCounts || {}, meta = tip.tipperMeta || {};
+    Object.keys(cnts).forEach(id => {
+      if (!id || id === bossId) return;
+      const st = sent[id] || 0, gv = amts[id] || 0;
+      const share = st > 0 ? Math.round((gv / st) * 100) : 0;
+      if (share <= 50) return;
+      if (!nodes.has(id)) {
+        nodes.set(id, { uid: id, id, name: globalCache?.names?.[id] || ('user_' + String(id).slice(-6)), level: meta[id]?.level ?? null, banned: !!meta[id]?.isBanned, inactive: !!meta[id]?.inactive, kind: 'tipper', tipShare: share, tipCount: cnts[id] });
+      }
+      edges.push({ a: id, b: bossId, type: 'tip', share, count: cnts[id] });
+    });
+  }
   // Coordinated-creation badge — tag nodes whose account was created within seconds of
   // the boss (scripted-batch-signup tell). Drawn as a small ⏱ badge on the node.
   const coord = (activeResult.suspicions || []).find(s => s.type === 'coordinated_creation');
@@ -1299,7 +1316,7 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#5d6e96' }}>{nd.kind === 'funnel' ? (nd.sinkKind === 'country' ? 'Country' : nd.sinkKind === 'user' ? `Lv.${nd.level ?? '?'}` : 'Military Unit') : `Lv.${nd.level ?? '?'}`}</span>
           {nd.kind === 'worker'
             ? <span style={{ marginLeft: 'auto' }}><WealthTag x={nd.wealthX} coins={nd.wealth} /></span>
-            : <span style={{ marginLeft: 'auto', fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: nd.kind === 'funnel' ? '#e6c34a' : nd.kind === 'muLeader' ? '#7c5cff' : nd.kind === 'employer' ? '#2dd4bf' : '#ff5d6c' }}>{nd.kind === 'funnel' ? 'COIN SINK' : nd.kind === 'muLeader' ? (nd.muRole === 'manager' ? 'MU MANAGER' : 'MU COMMANDER') : nd.kind === 'employer' ? 'EMPLOYER' : 'WASH PARTNER'}</span>}
+            : <span style={{ marginLeft: 'auto', fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: nd.kind === 'funnel' ? '#e6c34a' : nd.kind === 'muLeader' ? '#7c5cff' : nd.kind === 'employer' ? '#2dd4bf' : nd.kind === 'tipper' ? '#3fd0a3' : '#ff5d6c' }}>{nd.kind === 'funnel' ? 'COIN SINK' : nd.kind === 'muLeader' ? (nd.muRole === 'manager' ? 'MU MANAGER' : 'MU COMMANDER') : nd.kind === 'employer' ? 'EMPLOYER' : nd.kind === 'tipper' ? 'TIPPER' : 'WASH PARTNER'}</span>}
         </div>
         {nd.kind === 'worker' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1310,6 +1327,12 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
         {nd.kind === 'employer' && nd.companyName && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
             <span title={`Employs the scanned account at ${nd.companyName}`} style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9, color: '#5d6e96', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>via {nd.companyName}</span>
+          </div>
+        )}
+        {nd.kind === 'tipper' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+            <span title="Share of this tipper's total tipping that went to the scanned account" style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9, color: '#3fd0a3' }}>{nd.tipShare}% of own tips</span>
+            <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9, color: '#5d6e96', marginLeft: 'auto' }}>{nd.tipCount} tips</span>
           </div>
         )}
       </div>
@@ -1347,13 +1370,13 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
           const A = posns[e.a] || B, C = posns[e.b] || B;
           const on = edgeLit(e), faded = hover && !on;
           const { mx, my } = edgeGeom(e, i, A, C);
-          const lbl = (e.type === 'wash' || e.type === 'funnel') ? `${e.net > 0 ? '+' : ''}${Math.round(e.net)}` : e.type === 'role' ? String(e.role || 'role').toUpperCase() : e.type === 'employer' ? 'EMPLOYS' : e.type === 'name' ? 'NAME' : 'CLONE';
+          const lbl = (e.type === 'wash' || e.type === 'funnel') ? `${e.net > 0 ? '+' : ''}${Math.round(e.net)}` : e.type === 'role' ? String(e.role || 'role').toUpperCase() : e.type === 'employer' ? 'EMPLOYS' : e.type === 'tip' ? `${e.share}% TIPS` : e.type === 'name' ? 'NAME' : 'CLONE';
           return <div key={'lbl' + i} style={{ position: 'absolute', left: mx, top: my, transform: 'translate(-50%,-50%)', zIndex: 4, fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: PL_REL[e.type], background: '#070b18', border: `1px solid ${PL_REL[e.type]}`, borderRadius: 4, padding: '1px 5px', opacity: faded ? 0.25 : 1, pointerEvents: 'none', whiteSpace: 'nowrap' }}>{lbl}</div>;
         })}
       </div>
       <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', flexDirection: 'column', gap: 6, background: 'rgba(12,18,38,0.86)', border: '1px solid #1f2b4e', borderRadius: 8, padding: '9px 11px', pointerEvents: 'none', zIndex: 6 }}>
         <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.07em', color: '#5d6e96', marginBottom: 1 }}>HOW THEY'RE LINKED</div>
-        {[['#2e3f6a', 'Boss → worker (employs)', true], [PL_REL.name, 'Shares a name fragment', false], [PL_REL.clone, 'Identical skill build', false], [PL_REL.wash, 'Wash-trade partner (net coins)', false], [PL_REL.funnel, 'Coin sink — where wealth drained to', false], [PL_REL.role, 'Runs the sink (MU commander/manager)', false], [PL_REL.employer, 'Employer — the account this one works for', false]].map((l, i) => (
+        {[['#2e3f6a', 'Boss → worker (employs)', true], [PL_REL.name, 'Shares a name fragment', false], [PL_REL.clone, 'Identical skill build', false], [PL_REL.wash, 'Wash-trade partner (net coins)', false], [PL_REL.funnel, 'Coin sink — where wealth drained to', false], [PL_REL.role, 'Runs the sink (MU commander/manager)', false], [PL_REL.employer, 'Employer — the account this one works for', false], [PL_REL.tip, 'Tipper — routes >50% of their tips here', false]].map((l, i) => (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={l[0]} strokeWidth="2.2" strokeDasharray={l[2] ? '3 3' : '0'} /></svg>
             <span style={{ fontSize: 10.5, color: '#9fb0d4' }}>{l[1]}</span>
@@ -3611,7 +3634,7 @@ export function WarEraOracle() {
                                         {suspicion.type==='hermit_network'&&isHermitNode&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>HERMIT NODE</span>}
                                         {suspicion.type==='wealth_anomaly'&&w.accountAgeDays!==undefined&&<span style={{fontSize:8,fontWeight:700,color:'#4fc3e8',background:'rgba(79,195,232,0.10)',border:'1px solid rgba(79,195,232,0.30)',borderRadius:3,padding:'1px 4px'}}>{w.accountAgeDays}d OLD</span>}
                                         {w.isBanned&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px'}}>BANNED</span>}
-                                        {!w.isBanned&&(w.inactive||w.isActive===false)&&<span title={w.inactive?`No login in over ${INACTIVE_DAYS} days`:'Account marked inactive'} style={{fontSize:8,fontWeight:700,color:'#9fb0d4',background:'rgba(159,176,212,0.12)',border:'1px solid rgba(159,176,212,0.42)',borderRadius:3,padding:'1px 4px'}}>INACTIVE</span>}
+                                        {!w.isBanned&&w.inactive&&<span title={`No login in over ${INACTIVE_DAYS} days`} style={{fontSize:8,fontWeight:700,color:'#9fb0d4',background:'rgba(159,176,212,0.12)',border:'1px solid rgba(159,176,212,0.42)',borderRadius:3,padding:'1px 4px'}}>INACTIVE</span>}
                                         {w.noBonusPercentage>0&&suspicion.type==='no_production_bonus'&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>{w.noBonusPercentage}% NO-PROD</span>}
                                         {w.isLaundering&&suspicion.type==='money_laundering'&&<span style={{fontSize:8,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'1px 4px',display:'flex',alignItems:'center',gap:2}}>{w.largeDonations30Days?.toFixed(1)} <Coins size={8}/></span>}
                                         {suspicion.type==='fidelity_ring'&&<span style={{fontSize:8,fontWeight:700,color:'#ffab3d',background:'rgba(255,171,61,0.12)',border:'1px solid rgba(255,171,61,0.40)',borderRadius:3,padding:'1px 4px'}}>FIDELITY 10</span>}
