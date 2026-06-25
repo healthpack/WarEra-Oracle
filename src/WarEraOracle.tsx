@@ -1037,7 +1037,7 @@ const PL_SEV = {
 };
 const plScoreTier = (s) => s >= 10 ? 'crit' : s >= 5 ? 'high' : 'med';
 const plSevTier = (sev) => sev === 'critical' ? 'crit' : sev === 'high' ? 'high' : 'med';
-const PL_REL = { name: '#5aa0ff', clone: '#c98bff', wash: '#ff5d6c', donation: '#3fd0a3', funnel: '#e6c34a', role: '#7c5cff' };
+const PL_REL = { name: '#5aa0ff', clone: '#c98bff', wash: '#ff5d6c', donation: '#3fd0a3', funnel: '#e6c34a', role: '#7c5cff', employer: '#2dd4bf' };
 const wealthColor = (x) => x == null ? '#9fb0d4' : (x < 0.5 ? '#4fc3e8' : x > 2 ? '#ff5d6c' : '#ffab3d');
 
 // Cluster-shape glyph for the case list — Workforce (employees) / Ring / Solo.
@@ -1106,6 +1106,19 @@ const buildClusterGraph = (activeResult, globalCache) => {
       edges.push({ a: r.id, b: L.id, type: 'role', role: L.role });
     });
   });
+  // Employer — the account this player works FOR (its current company's owner). The
+  // inverse of the boss→worker spokes: a flagged account employed BY another account is
+  // a lead (the "Eutectic" insight). Referrer isn't in the API, so employer is the only
+  // direct-edge we can draw. (resolved in processPlayerPhase2; see player.employer)
+  const emp = activeResult.player?.employer;
+  if (emp?.id && emp.id !== bossId) {
+    if (!nodes.has(emp.id)) {
+      nodes.set(emp.id, { uid: emp.id, id: emp.id, name: emp.name || ('user_' + String(emp.id).slice(-6)), level: emp.level, banned: !!emp.banned, kind: 'employer', companyName: emp.companyName, sameMint: !!emp.sameMint });
+    } else {
+      nodes.get(emp.id).banned = nodes.get(emp.id).banned || !!emp.banned;
+    }
+    edges.push({ a: emp.id, b: bossId, type: 'employer', companyName: emp.companyName });
+  }
   return { nodes: [...nodes.values()], edges };
 };
 
@@ -1213,12 +1226,18 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#5d6e96' }}>{nd.kind === 'funnel' ? (nd.sinkKind === 'country' ? 'Country' : nd.sinkKind === 'user' ? `Lv.${nd.level ?? '?'}` : 'Military Unit') : `Lv.${nd.level ?? '?'}`}</span>
           {nd.kind === 'worker'
             ? <span style={{ marginLeft: 'auto' }}><WealthTag x={nd.wealthX} coins={nd.wealth} /></span>
-            : <span style={{ marginLeft: 'auto', fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: nd.kind === 'funnel' ? '#e6c34a' : nd.kind === 'muLeader' ? '#7c5cff' : '#ff5d6c' }}>{nd.kind === 'funnel' ? 'COIN SINK' : nd.kind === 'muLeader' ? (nd.muRole === 'manager' ? 'MU MANAGER' : 'MU COMMANDER') : 'WASH PARTNER'}</span>}
+            : <span style={{ marginLeft: 'auto', fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: nd.kind === 'funnel' ? '#e6c34a' : nd.kind === 'muLeader' ? '#7c5cff' : nd.kind === 'employer' ? '#2dd4bf' : '#ff5d6c' }}>{nd.kind === 'funnel' ? 'COIN SINK' : nd.kind === 'muLeader' ? (nd.muRole === 'manager' ? 'MU MANAGER' : 'MU COMMANDER') : nd.kind === 'employer' ? 'EMPLOYER' : 'WASH PARTNER'}</span>}
         </div>
         {nd.kind === 'worker' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#ffab3d' }}>{nd.wage != null ? Number(nd.wage).toFixed(3) : '—'}</span>
             <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#ffab3d', marginLeft: 'auto' }}>fid {nd.fid ?? 0}</span>
+          </div>
+        )}
+        {nd.kind === 'employer' && (nd.companyName || nd.sameMint) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+            {nd.companyName && <span title={`Employs the scanned account at ${nd.companyName}`} style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9, color: '#5d6e96', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>via {nd.companyName}</span>}
+            {nd.sameMint && <span title="Owner account and this company have sequential IDs — minted in the same operation (shell-company tell)." style={{ fontSize: 7.5, fontWeight: 700, color: '#ffab3d', background: 'rgba(255,171,61,0.12)', border: '1px solid rgba(255,171,61,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0, marginLeft: 'auto' }}>SAME-MINT</span>}
           </div>
         )}
       </div>
@@ -1256,13 +1275,13 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
           const A = posns[e.a] || B, C = posns[e.b] || B;
           const on = edgeLit(e), faded = hover && !on;
           const { mx, my } = edgeGeom(e, i, A, C);
-          const lbl = (e.type === 'wash' || e.type === 'funnel') ? `${e.net > 0 ? '+' : ''}${Math.round(e.net)}` : e.type === 'role' ? String(e.role || 'role').toUpperCase() : e.type === 'name' ? 'NAME' : 'CLONE';
+          const lbl = (e.type === 'wash' || e.type === 'funnel') ? `${e.net > 0 ? '+' : ''}${Math.round(e.net)}` : e.type === 'role' ? String(e.role || 'role').toUpperCase() : e.type === 'employer' ? 'EMPLOYS' : e.type === 'name' ? 'NAME' : 'CLONE';
           return <div key={'lbl' + i} style={{ position: 'absolute', left: mx, top: my, transform: 'translate(-50%,-50%)', zIndex: 4, fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: PL_REL[e.type], background: '#070b18', border: `1px solid ${PL_REL[e.type]}`, borderRadius: 4, padding: '1px 5px', opacity: faded ? 0.25 : 1, pointerEvents: 'none', whiteSpace: 'nowrap' }}>{lbl}</div>;
         })}
       </div>
       <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', flexDirection: 'column', gap: 6, background: 'rgba(12,18,38,0.86)', border: '1px solid #1f2b4e', borderRadius: 8, padding: '9px 11px', pointerEvents: 'none', zIndex: 6 }}>
         <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.07em', color: '#5d6e96', marginBottom: 1 }}>HOW THEY'RE LINKED</div>
-        {[['#2e3f6a', 'Boss → worker (employs)', true], [PL_REL.name, 'Shares a name fragment', false], [PL_REL.clone, 'Identical skill build', false], [PL_REL.wash, 'Wash-trade partner (net coins)', false], [PL_REL.funnel, 'Coin sink — where wealth drained to', false], [PL_REL.role, 'Runs the sink (MU commander/manager)', false]].map((l, i) => (
+        {[['#2e3f6a', 'Boss → worker (employs)', true], [PL_REL.name, 'Shares a name fragment', false], [PL_REL.clone, 'Identical skill build', false], [PL_REL.wash, 'Wash-trade partner (net coins)', false], [PL_REL.funnel, 'Coin sink — where wealth drained to', false], [PL_REL.role, 'Runs the sink (MU commander/manager)', false], [PL_REL.employer, 'Employer — the account this one works for', false]].map((l, i) => (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={l[0]} strokeWidth="2.2" strokeDasharray={l[2] ? '3 3' : '0'} /></svg>
             <span style={{ fontSize: 10.5, color: '#9fb0d4' }}>{l[1]}</span>
@@ -2584,6 +2603,33 @@ export function WarEraOracle() {
       livePlayer.pacingAvgMs = pacingAvgMs;
       livePlayer.pacingEdges = pacingEdges;
       livePlayer.pacingSingleType = pacingSingleType;
+
+      // Employer link — the account this player works FOR (inverse of the boss→worker
+      // spokes). getUserLite has no `company`, so getUserById gives the current
+      // employer-companyId; company.getById.user is its owner. Drawn on the map as an
+      // `employer` node when the owner is another account. (Referrer isn't exposed by
+      // the API at all — no referral.* procedure, no referred-by field.)
+      try {
+        const uFull = await smartFetch('user.getUserById', { userId: playerId });
+        const employerCompanyId = uFull?.company || null;
+        if (employerCompanyId) {
+          const co = await smartFetch('company.getById', { companyId: employerCompanyId });
+          const ownerId = co?.user || null;
+          if (ownerId && ownerId !== playerId) {
+            let oData = null;
+            try { oData = await smartFetch('user.getUserLite', { userId: ownerId }); } catch(e) {}
+            const ownerName = oData?.username || oData?.name || globalCacheRef.current.names[ownerId] || ('user_' + String(ownerId).slice(-6));
+            globalCacheRef.current.names[ownerId] = ownerName;
+            const ownerBanned = !!(oData?.infos?.isBanned || oData?.isBanned || oData?.banned);
+            if (ownerBanned) globalBans.current[ownerId] = true;
+            // Owner account + its company sharing an ObjectId prefix = minted in the same
+            // operation (shell-company tell).
+            const sameMint = String(ownerId).slice(0, 18) === String(employerCompanyId).slice(0, 18);
+            livePlayer.employer = { id: ownerId, name: ownerName, level: oData?.leveling?.level ?? null, banned: ownerBanned, companyName: co?.name || null, sameMint };
+            addLog(`[INFO] ${foundName} is employed by ${ownerName}${sameMint ? ' (acct+company same-mint)' : ''}.`, 'info');
+          }
+        }
+      } catch(e) { addLog(`[DEBUG] Employer resolve failed for ${foundName}: ${e.message}`, 'debug'); }
 
       const fullPlayer = { ...livePlayer, companies: parsedCompanies };
       const result = analyzePlayer(fullPlayer, settings, globalCacheRef.current, actionTimes, true, addLog);

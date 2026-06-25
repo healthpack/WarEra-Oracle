@@ -71,6 +71,14 @@ why, centred on a relationship map.
   `{ userIds[], muIds[], countryIds[], ... }` (returns multiple — don't assume index 0).
 
 ## What was built this session (most recent first)
+- **Eutectic feature, piece 2 — employer edge.** When a flagged account is scanned in
+  phase 2, resolve its current employer (`user.getUserById.company` →
+  `company.getById.user` = owner) and draw it as a teal **EMPLOYER** node with an
+  `EMPLOYS` edge (the live inverse of the boss→worker spokes). If the owner is already on
+  the map the edge just stacks (rainbow). Owner+company sharing an ObjectId prefix gets a
+  **SAME-MINT** badge (account+shell minted together). **Referrer was dropped: it is not
+  in the API** — no `referral.*` procedure, no referred-by field (only the outbound
+  `rankings.userReferrals` count). See `warera-referrer-employer-api` memory.
 - **Eutectic feature, piece 1** (`cf859a1`): for flagged outflow accounts, resolve each
   MU coin-sink's leadership (`roles.commanders`+`managers`, capped 5) and draw them as
   **MU COMMANDER/MANAGER** nodes off the MU node (purple `role` edges). So "the MU you
@@ -88,11 +96,11 @@ why, centred on a relationship map.
   (map + matrix + sidebar + engagement, replacing the old tree/right-rail).
 
 ## Open threads / next steps
-1. **Eutectic remainder — direct edges.** Still need **referrer** and **employer**
-   (Eutectic was Alexo's boss AND referrer). Probe for the endpoints first
-   (`user.getUserById` full payload, any `referral.*`, `workOffer.*` / employment).
-   When found, draw them as additional **stacked** edges between the two accounts
-   (the rainbow already supports it).
+1. **Eutectic direct edges — DONE / partially N/A.** Employer edge built (above).
+   Referrer is **not exposed by the API** so it can't be drawn — don't re-probe.
+   Note the employer is only the account's *current* company owner; past bosses (the
+   stale Eutectic→Alexo link) won't appear. Possible follow-up: a `same_mint` heuristic
+   (account + company sequential ObjectIds) — currently only a map badge, not scored.
 2. **Ban coverage:** only catches a ban if `getUserLite.infos.isBanned` is present or the
    account appeared as someone's wash partner (`globalBans`). A flagged account banned
    but never cross-referenced could still be missed — fine for now, just know it.
