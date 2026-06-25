@@ -1037,7 +1037,7 @@ const PL_SEV = {
 };
 const plScoreTier = (s) => s >= 10 ? 'crit' : s >= 5 ? 'high' : 'med';
 const plSevTier = (sev) => sev === 'critical' ? 'crit' : sev === 'high' ? 'high' : 'med';
-const PL_REL = { name: '#5aa0ff', clone: '#c98bff', wash: '#ff5d6c', donation: '#3fd0a3', funnel: '#e6c34a' };
+const PL_REL = { name: '#5aa0ff', clone: '#c98bff', wash: '#ff5d6c', donation: '#3fd0a3', funnel: '#e6c34a', role: '#7c5cff' };
 const wealthColor = (x) => x == null ? '#9fb0d4' : (x < 0.5 ? '#4fc3e8' : x > 2 ? '#ff5d6c' : '#ffab3d');
 
 // Cluster-shape glyph for the case list — Workforce (employees) / Ring / Solo.
@@ -1091,10 +1091,20 @@ const buildClusterGraph = (activeResult, globalCache) => {
   const launder = (activeResult.suspicions || []).find(s => s.type === 'money_laundering');
   const sinkRecips = funnel?.funnelData?.recipients?.length ? funnel.funnelData.recipients : (launder?.funnelRecipients || []);
   sinkRecips.forEach(r => {
-    if (!r.id || r.id === bossId || nodes.has(r.id)) return;
-    const nm = globalCache?.names?.[r.id] || r.name || (r.kind === 'user' ? ('user_' + String(r.id).slice(-6)) : r.kind === 'country' ? 'Country' : 'Military Unit');
-    nodes.set(r.id, { uid: r.id, id: r.id, name: nm, kind: 'funnel', sinkKind: r.kind });
-    edges.push({ a: bossId, b: r.id, type: 'funnel', net: -Math.round(r.coins) });
+    if (!r.id || r.id === bossId) return;
+    if (!nodes.has(r.id)) {
+      const nm = globalCache?.names?.[r.id] || r.name || (r.kind === 'user' ? ('user_' + String(r.id).slice(-6)) : r.kind === 'country' ? 'Country' : 'Military Unit');
+      nodes.set(r.id, { uid: r.id, id: r.id, name: nm, kind: 'funnel', sinkKind: r.kind });
+      edges.push({ a: bossId, b: r.id, type: 'funnel', net: -Math.round(r.coins) });
+    }
+    // MU leadership — who runs the sink (commander/manager) — branches off the MU node.
+    (r.leaders || []).forEach(L => {
+      if (!L.id || L.id === bossId) return;
+      if (!nodes.has(L.id)) {
+        nodes.set(L.id, { uid: L.id, id: L.id, name: globalCache?.names?.[L.id] || L.name || ('user_' + String(L.id).slice(-6)), kind: 'muLeader', muRole: L.role, banned: !!L.banned });
+      }
+      edges.push({ a: r.id, b: L.id, type: 'role', role: L.role });
+    });
   });
   return { nodes: [...nodes.values()], edges };
 };
@@ -1203,7 +1213,7 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#5d6e96' }}>{nd.kind === 'funnel' ? (nd.sinkKind === 'country' ? 'Country' : nd.sinkKind === 'user' ? `Lv.${nd.level ?? '?'}` : 'Military Unit') : `Lv.${nd.level ?? '?'}`}</span>
           {nd.kind === 'worker'
             ? <span style={{ marginLeft: 'auto' }}><WealthTag x={nd.wealthX} coins={nd.wealth} /></span>
-            : <span style={{ marginLeft: 'auto', fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: nd.kind === 'funnel' ? '#e6c34a' : '#ff5d6c' }}>{nd.kind === 'funnel' ? 'COIN SINK' : 'WASH PARTNER'}</span>}
+            : <span style={{ marginLeft: 'auto', fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: nd.kind === 'funnel' ? '#e6c34a' : nd.kind === 'muLeader' ? '#7c5cff' : '#ff5d6c' }}>{nd.kind === 'funnel' ? 'COIN SINK' : nd.kind === 'muLeader' ? (nd.muRole === 'manager' ? 'MU MANAGER' : 'MU COMMANDER') : 'WASH PARTNER'}</span>}
         </div>
         {nd.kind === 'worker' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1246,13 +1256,13 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
           const A = posns[e.a] || B, C = posns[e.b] || B;
           const on = edgeLit(e), faded = hover && !on;
           const { mx, my } = edgeGeom(e, i, A, C);
-          const lbl = (e.type === 'wash' || e.type === 'funnel') ? `${e.net > 0 ? '+' : ''}${Math.round(e.net)}` : e.type === 'name' ? 'NAME' : 'CLONE';
+          const lbl = (e.type === 'wash' || e.type === 'funnel') ? `${e.net > 0 ? '+' : ''}${Math.round(e.net)}` : e.type === 'role' ? String(e.role || 'role').toUpperCase() : e.type === 'name' ? 'NAME' : 'CLONE';
           return <div key={'lbl' + i} style={{ position: 'absolute', left: mx, top: my, transform: 'translate(-50%,-50%)', zIndex: 4, fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: PL_REL[e.type], background: '#070b18', border: `1px solid ${PL_REL[e.type]}`, borderRadius: 4, padding: '1px 5px', opacity: faded ? 0.25 : 1, pointerEvents: 'none', whiteSpace: 'nowrap' }}>{lbl}</div>;
         })}
       </div>
       <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', flexDirection: 'column', gap: 6, background: 'rgba(12,18,38,0.86)', border: '1px solid #1f2b4e', borderRadius: 8, padding: '9px 11px', pointerEvents: 'none', zIndex: 6 }}>
         <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.07em', color: '#5d6e96', marginBottom: 1 }}>HOW THEY'RE LINKED</div>
-        {[['#2e3f6a', 'Boss → worker (employs)', true], [PL_REL.name, 'Shares a name fragment', false], [PL_REL.clone, 'Identical skill build', false], [PL_REL.wash, 'Wash-trade partner (net coins)', false], [PL_REL.funnel, 'Coin sink — where wealth drained to', false]].map((l, i) => (
+        {[['#2e3f6a', 'Boss → worker (employs)', true], [PL_REL.name, 'Shares a name fragment', false], [PL_REL.clone, 'Identical skill build', false], [PL_REL.wash, 'Wash-trade partner (net coins)', false], [PL_REL.funnel, 'Coin sink — where wealth drained to', false], [PL_REL.role, 'Runs the sink (MU commander/manager)', false]].map((l, i) => (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={l[0]} strokeWidth="2.2" strokeDasharray={l[2] ? '3 3' : '0'} /></svg>
             <span style={{ fontSize: 10.5, color: '#9fb0d4' }}>{l[1]}</span>
@@ -2282,12 +2292,19 @@ export function WarEraOracle() {
         // Resolve MU / country display names (cached across players).
         const ecache = (globalCacheRef.current.entityNames = globalCacheRef.current.entityNames || {});
         for (const r of recipients) {
-          if (r.name) continue;
-          if (ecache[r.id]) { r.name = ecache[r.id]; continue; }
-          try {
-            if (r.kind === 'mu') { const m = await smartFetch('mu.getById', { muId: r.id }); const n = m?.name || m?.tag || null; if (n) { r.name = n; ecache[r.id] = n; } }
-            else if (r.kind === 'country') { const c = await smartFetch('country.getCountryById', { countryId: r.id }); const n = c?.name || null; if (n) { r.name = n; ecache[r.id] = n; } }
-          } catch { /* best-effort */ }
+          if (r.kind === 'mu') {
+            if (ecache[r.id]) r.name = ecache[r.id];
+            if (!r.name || !r._roleIds) {
+              try {
+                const m = await smartFetch('mu.getById', { muId: r.id });
+                const n = m?.name || m?.tag || null; if (n) { r.name = n; ecache[r.id] = n; }
+                r._roleIds = [...(m?.roles?.commanders || []).map(id => [id, 'commander']), ...(m?.roles?.managers || []).map(id => [id, 'manager'])].slice(0, 5);
+              } catch { /* best-effort */ }
+            }
+          } else if (r.kind === 'country' && !r.name) {
+            if (ecache[r.id]) { r.name = ecache[r.id]; continue; }
+            try { const c = await smartFetch('country.getCountryById', { countryId: r.id }); const n = c?.name || null; if (n) { r.name = n; ecache[r.id] = n; } } catch { /* best-effort */ }
+          }
         }
         playerObj.outflowRecipients = recipients;
 
@@ -2303,6 +2320,21 @@ export function WarEraOracle() {
             recipients, topRecipientId: recipients[0]?.id, topRecipientCoins: recipients[0]?.coins,
             drainedBeyondBalance: _fw != null && totalOut > _fw,
           };
+        }
+        // For flagged outflow accounts, resolve the leadership of each MU sink so the
+        // map can show WHO controls the drain destination (the Eutectic connection).
+        if (playerObj.coinFunnel || isDirectLaunderer) {
+          for (const r of recipients) {
+            if (!r._roleIds?.length) continue;
+            r.leaders = [];
+            for (const [lid, role] of r._roleIds) {
+              if (!lid) continue;
+              let lname = globalCacheRef.current.names[lid];
+              let lbanned = !!globalBans.current[lid];
+              if (!lname) { try { const lu = await smartFetch('user.getUserLite', { userId: lid }); lname = lu?.username || lu?.name || null; if (lname) globalCacheRef.current.names[lid] = lname; if (lu?.infos?.isBanned) { globalBans.current[lid] = true; lbanned = true; } } catch { /* best-effort */ } }
+              r.leaders.push({ id: lid, name: lname || ('user_' + String(lid).slice(-6)), role, banned: lbanned });
+            }
+          }
         }
       }
       playerObj.isDirectLaunderer=isDirectLaunderer; playerObj.directLaunderAmount=directLaunderAmount;
