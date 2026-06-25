@@ -76,7 +76,11 @@ why, centred on a relationship map.
   `company.getById.user` = owner) and draw it as a teal **EMPLOYER** node with an
   `EMPLOYS` edge (the live inverse of the boss→worker spokes). If the owner is already on
   the map the edge just stacks (rainbow). Owner+company sharing an ObjectId prefix gets a
-  **SAME-MINT** badge (account+shell minted together). **Referrer was dropped: it is not
+  **SAME-MINT** badge (account+shell minted together — heuristic, can false-positive on
+  starter companies; badge only, not scored). Also **MU leaders are now gated**: a sink's
+  commander/manager is only drawn when independently linked to the scanned account (already
+  a node — wash partner / alt / tip recipient / employer), instead of the whole MU roster.
+  **Referrer was dropped: it is not
   in the API** — no `referral.*` procedure, no referred-by field (only the outbound
   `rankings.userReferrals` count). See `warera-referrer-employer-api` memory.
 - **Eutectic feature, piece 1** (`cf859a1`): for flagged outflow accounts, resolve each

@@ -1084,6 +1084,21 @@ const buildClusterGraph = (activeResult, globalCache) => {
     else nodes.get(p.id).banned = nodes.get(p.id).banned || p.isBanned;
     edges.push({ a: bossId, b: p.id, type: 'wash', net: p.netProfit || 0, trades: p.txCount });
   });
+  // Employer — the account this player works FOR (its current company's owner). The
+  // inverse of the boss→worker spokes: a flagged account employed BY another account is
+  // a lead (the "Eutectic" insight). Referrer isn't in the API, so employer is the only
+  // direct-edge we can draw. (resolved in processPlayerPhase2; see player.employer)
+  // Added BEFORE the sink loop so an MU leader who is also the employer is recognised as
+  // an already-linked node below.
+  const emp = activeResult.player?.employer;
+  if (emp?.id && emp.id !== bossId) {
+    if (!nodes.has(emp.id)) {
+      nodes.set(emp.id, { uid: emp.id, id: emp.id, name: emp.name || ('user_' + String(emp.id).slice(-6)), level: emp.level, banned: !!emp.banned, kind: 'employer', companyName: emp.companyName, sameMint: !!emp.sameMint });
+    } else {
+      nodes.get(emp.id).banned = nodes.get(emp.id).banned || !!emp.banned;
+    }
+    edges.push({ a: emp.id, b: bossId, type: 'employer', companyName: emp.companyName });
+  }
   // Outflow sinks — each donation/tip recipient (MU / country / user) as a sink node
   // with an outbound edge labelled by the coins drained. Drawn for coin_funnel AND
   // money_laundering (large outbound donations), so "where it went" is always visible.
@@ -1097,28 +1112,18 @@ const buildClusterGraph = (activeResult, globalCache) => {
       nodes.set(r.id, { uid: r.id, id: r.id, name: nm, kind: 'funnel', sinkKind: r.kind });
       edges.push({ a: bossId, b: r.id, type: 'funnel', net: -Math.round(r.coins) });
     }
-    // MU leadership — who runs the sink (commander/manager) — branches off the MU node.
+    // MU leadership — who runs the sink. Only draw a leader who is INDEPENDENTLY linked
+    // to the scanned account (already a node: wash partner / worker-alt / tip recipient /
+    // employer). The full MU command roster is otherwise noise — the signal we care about
+    // is "the sink you drained to is run by someone you're ALSO tied to" (Eutectic). We
+    // attach a role edge from the MU to that existing node rather than minting a fresh one.
     (r.leaders || []).forEach(L => {
-      if (!L.id || L.id === bossId) return;
-      if (!nodes.has(L.id)) {
-        nodes.set(L.id, { uid: L.id, id: L.id, name: globalCache?.names?.[L.id] || L.name || ('user_' + String(L.id).slice(-6)), kind: 'muLeader', muRole: L.role, banned: !!L.banned });
-      }
+      if (!L.id || L.id === bossId || !nodes.has(L.id)) return;
+      const ln = nodes.get(L.id);
+      ln.muRole = ln.muRole || L.role;
       edges.push({ a: r.id, b: L.id, type: 'role', role: L.role });
     });
   });
-  // Employer — the account this player works FOR (its current company's owner). The
-  // inverse of the boss→worker spokes: a flagged account employed BY another account is
-  // a lead (the "Eutectic" insight). Referrer isn't in the API, so employer is the only
-  // direct-edge we can draw. (resolved in processPlayerPhase2; see player.employer)
-  const emp = activeResult.player?.employer;
-  if (emp?.id && emp.id !== bossId) {
-    if (!nodes.has(emp.id)) {
-      nodes.set(emp.id, { uid: emp.id, id: emp.id, name: emp.name || ('user_' + String(emp.id).slice(-6)), level: emp.level, banned: !!emp.banned, kind: 'employer', companyName: emp.companyName, sameMint: !!emp.sameMint });
-    } else {
-      nodes.get(emp.id).banned = nodes.get(emp.id).banned || !!emp.banned;
-    }
-    edges.push({ a: emp.id, b: bossId, type: 'employer', companyName: emp.companyName });
-  }
   return { nodes: [...nodes.values()], edges };
 };
 
