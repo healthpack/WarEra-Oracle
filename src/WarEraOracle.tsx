@@ -1120,20 +1120,42 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
     return () => ro.disconnect();
   }, []);
   const NODE_H = 72;
-  const SPREAD = 0.68; // pull the alts in toward the boss so the cluster reads tighter
   const geom = React.useMemo(() => {
     const w = size.w || 820, h = size.h || height;
-    const rx = Math.max(120, ((w / 2 - nodeW / 2 - 24) / 0.87) * SPREAD);
-    const ry = Math.max(78, (h / 2 - NODE_H / 2 - 14) * SPREAD);
-    return { cx: w / 2, cy: h / 2, rx, ry };
+    const bossY = NODE_H / 2 + 30;                                 // boss pinned near the top
+    const rx = Math.max(140, w / 2 - nodeW / 2 - 24);
+    const ry = Math.max(150, h - bossY - NODE_H - 28);
+    return { cx: w / 2, cy: h / 2, bossY, rx, ry };
   }, [size.w, size.h, nodeW, height]);
   const initial = React.useMemo(() => {
-    const { cx, cy, rx, ry } = geom;
-    const m = { BOSS: { x: cx, y: cy } };
+    const { cx, bossY, rx, ry } = geom;
+    const m = { BOSS: { x: cx, y: bossY } };
     const n = nodes.length || 1;
-    nodes.forEach((nd, i) => { const a = (-90 + i * (360 / n)) * Math.PI / 180; m[nd.uid] = { x: cx + rx * Math.cos(a), y: cy + ry * Math.sin(a) }; });
+    // Fan the children below the boss: centre node hangs straight down, others spread
+    // out to the sides on a downward arc (boss-at-top tree layout).
+    nodes.forEach((nd, i) => {
+      const t = n === 1 ? 0 : (i / (n - 1)) * 2 - 1;               // -1..1
+      const ang = t * (78 * Math.PI / 180);                        // ±78° from straight down
+      m[nd.uid] = { x: cx + rx * Math.sin(ang), y: bossY + ry * Math.cos(ang) };
+    });
     return m;
   }, [geom, nodes]);
+  // Group edges by node-pair so multiple links between the same two nodes can be
+  // fanned out into parallel offset curves (a "rainbow") instead of overlapping.
+  const edgeGroups = React.useMemo(() => {
+    const g = {};
+    edges.forEach((e, i) => { const k = [e.a, e.b].sort().join('|'); (g[k] = g[k] || []).push(i); });
+    return g;
+  }, [edges]);
+  const edgeGeom = (e, i, A, C) => {
+    const grp = edgeGroups[[e.a, e.b].sort().join('|')] || [i];
+    const gi = grp.indexOf(i), gc = grp.length;
+    const off = (gi - (gc - 1) / 2) * 16;
+    const dx = C.x - A.x, dy = C.y - A.y, len = Math.hypot(dx, dy) || 1;
+    const mx = (A.x + C.x) / 2 - (dy / len) * off, my = (A.y + C.y) / 2 + (dx / len) * off;
+    const d = off ? `M ${A.x} ${A.y} Q ${mx} ${my} ${C.x} ${C.y}` : `M ${A.x} ${A.y} L ${C.x} ${C.y}`;
+    return { d, mx, my };
+  };
   const [posns, setPosns] = React.useState(initial);
   const [zoom, setZoom] = React.useState(1);
   const [hover, setHover] = React.useState(null);
@@ -1157,11 +1179,11 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
   const reset = () => { setPosns(initial); setZoom(1); };
   const nudge = (d) => setZoom(z => Math.min(2, Math.max(0.6, +(z + d * 0.2).toFixed(2))));
   const edgeLit = (e) => hover && (hover === e.a || hover === e.b);
-  const B = posns.BOSS || { x: geom.cx, y: geom.cy };
+  const B = posns.BOSS || { x: geom.cx, y: geom.bossY };
   const tier = plScoreTier(boss.score);
 
   const NodeCard = ({ nd }) => {
-    const p = posns[nd.uid] || { x: geom.cx, y: geom.cy };
+    const p = posns[nd.uid] || { x: geom.cx, y: geom.bossY };
     const active = dragKey === nd.uid;
     const dim = hover && hover !== 'BOSS' && hover !== nd.uid && !edges.some(e => (e.a === hover && e.b === nd.uid) || (e.b === hover && e.a === nd.uid));
     let nm = <span>{nd.name}</span>;
@@ -1199,7 +1221,8 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
           {edges.map((e, i) => {
             const A = posns[e.a] || B, C = posns[e.b] || B;
             const on = edgeLit(e), faded = hover && !on;
-            return <path key={i} d={`M ${A.x} ${A.y} L ${C.x} ${C.y}`} fill="none" stroke={PL_REL[e.type]} strokeWidth={on ? 2.6 : 2} opacity={faded ? 0.25 : 0.9} style={{ transition: 'opacity .12s' }} />;
+            const { d } = edgeGeom(e, i, A, C);
+            return <path key={i} d={d} fill="none" stroke={PL_REL[e.type]} strokeWidth={on ? 2.6 : 2} opacity={faded ? 0.25 : 0.9} style={{ transition: 'opacity .12s' }} />;
           })}
         </svg>
         <div onPointerDown={(e) => startDrag('BOSS', e)} onMouseEnter={() => setHover('BOSS')} onMouseLeave={() => setHover(null)}
@@ -1219,8 +1242,9 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
         {edges.map((e, i) => {
           const A = posns[e.a] || B, C = posns[e.b] || B;
           const on = edgeLit(e), faded = hover && !on;
+          const { mx, my } = edgeGeom(e, i, A, C);
           const lbl = (e.type === 'wash' || e.type === 'funnel') ? `${e.net > 0 ? '+' : ''}${Math.round(e.net)}` : e.type === 'name' ? 'NAME' : 'CLONE';
-          return <div key={'lbl' + i} style={{ position: 'absolute', left: (A.x + C.x) / 2, top: (A.y + C.y) / 2, transform: 'translate(-50%,-50%)', zIndex: 4, fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: PL_REL[e.type], background: '#070b18', border: `1px solid ${PL_REL[e.type]}`, borderRadius: 4, padding: '1px 5px', opacity: faded ? 0.25 : 1, pointerEvents: 'none', whiteSpace: 'nowrap' }}>{lbl}</div>;
+          return <div key={'lbl' + i} style={{ position: 'absolute', left: mx, top: my, transform: 'translate(-50%,-50%)', zIndex: 4, fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: PL_REL[e.type], background: '#070b18', border: `1px solid ${PL_REL[e.type]}`, borderRadius: 4, padding: '1px 5px', opacity: faded ? 0.25 : 1, pointerEvents: 'none', whiteSpace: 'nowrap' }}>{lbl}</div>;
         })}
       </div>
       <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', flexDirection: 'column', gap: 6, background: 'rgba(12,18,38,0.86)', border: '1px solid #1f2b4e', borderRadius: 8, padding: '9px 11px', pointerEvents: 'none', zIndex: 6 }}>
@@ -1269,7 +1293,7 @@ const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX, bossWealth })
 };
 
 // Sidebar beside the map: identity, verdict, summary, actions, signal ledger.
-const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onCopy, copied, workforceSize }) => {
+const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onCopy, copied, workforceSize, banned }) => {
   const sc = activeResult.adjustedDetections ?? activeResult.detections;
   const tier = plScoreTier(sc);
   const ringCount = Object.keys(activeResult.washPartners || {}).length;
@@ -1285,8 +1309,8 @@ const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onC
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 18, fontWeight: 700, color: '#eaf0ff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(activeResult.player.name)}</span>
           <a href={`https://app.warera.io/user/${activeResult.player.id}`} target="_blank" rel="noopener noreferrer" style={{ color: '#5d6e96', flexShrink: 0 }}><ExternalLink size={13} /></a>
-          {activeResult.player.isBanned && <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 4, padding: '3px 7px', flexShrink: 0 }}>BANNED</span>}
-          <div style={{ marginLeft: activeResult.player.isBanned ? 8 : 'auto', padding: '4px 11px', background: PL_SEV[tier].bg, border: `2px solid ${PL_SEV[tier].line}`, borderRadius: 8, textAlign: 'center', flexShrink: 0 }}>
+          {banned && <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 4, padding: '3px 7px', flexShrink: 0 }}>BANNED</span>}
+          <div style={{ marginLeft: banned ? 8 : 'auto', padding: '4px 11px', background: PL_SEV[tier].bg, border: `2px solid ${PL_SEV[tier].line}`, borderRadius: 8, textAlign: 'center', flexShrink: 0 }}>
             <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 17, fontWeight: 700, color: PL_SEV[tier].c }}>{sc}</span>
           </div>
         </div>
@@ -2242,9 +2266,12 @@ export function WarEraOracle() {
       // coins to a single user). Shared by the coin_funnel and money_laundering
       // signals; a low-wealth account with a large total drain also flags coin_funnel.
       {
-        const TIP_FLOOR = 25;
+        // Floors: a tip-recipient (user) must have received >= 25 coins; an MU/country
+        // sink must have >= 200 coins, so trivial standard donations don't register.
+        const TIP_FLOOR = 25, ENTITY_FLOOR = 200;
+        const qualifies = (r) => r.via === 'tip' ? r.coins >= TIP_FLOOR : r.coins >= ENTITY_FLOOR;
         const entries = Object.entries(outflowByRecipient)
-          .filter(([, r]) => r.via !== 'tip' || r.coins >= TIP_FLOOR)
+          .filter(([, r]) => qualifies(r))
           .sort((a, b) => b[1].coins - a[1].coins).slice(0, 6);
         const recipients = entries.map(([id, r]) => ({ id, coins: r.coins, kind: r.kind, via: r.via, name: r.name, isBossMu: id === bossMuId }));
         // Resolve MU / country display names (cached across players).
@@ -2263,11 +2290,11 @@ export function WarEraOracle() {
         const _far = _fl != null ? getWealthAverageExtended(globalCacheRef.current, _fl) : null;
         const ratio = (_fw != null && _far && _far.avg > 0) ? _fw / _far.avg : null;
         const lowWealth = ratio != null && ratio < (settings.wealthAnomalyLowerMultiplier ?? 0.5) && _fl >= 11;
-        let qualTipsOut = 0; Object.values(outflowByRecipient).forEach(r => { if (r.via === 'tip' && r.coins >= TIP_FLOOR) qualTipsOut += r.coins; });
-        const totalOut = donationsOut + qualTipsOut;
+        let qDon = 0, qTip = 0; Object.values(outflowByRecipient).forEach(r => { if (!qualifies(r)) return; if (r.via === 'tip') qTip += r.coins; else qDon += r.coins; });
+        const totalOut = qDon + qTip;
         if (lowWealth && totalOut >= (settings.funnelMinCoins ?? 100)) {
           playerObj.coinFunnel = {
-            totalOut, donationsOut, tipsOut: qualTipsOut, ratio, wealth: _fw,
+            totalOut, donationsOut: qDon, tipsOut: qTip, ratio, wealth: _fw,
             recipients, topRecipientId: recipients[0]?.id, topRecipientCoins: recipients[0]?.coins,
             drainedBeyondBalance: _fw != null && totalOut > _fw,
           };
@@ -2609,7 +2636,9 @@ export function WarEraOracle() {
       }
     }
 
-    const effectiveTargetUserId = overrideUserId || targetUserId;
+    // A watchlist scan must ignore the User ID field (otherwise it hijacks into a
+    // single-user targeted scan).
+    const effectiveTargetUserId = overrideUserId || (watchlistScanRef.current ? '' : targetUserId);
     if (effectiveTargetUserId) {
       let actualTargetId=effectiveTargetUserId.trim();
       if (actualTargetId&&!/^[0-9a-fA-F]{24}$/.test(actualTargetId)) {
@@ -2980,7 +3009,7 @@ export function WarEraOracle() {
       <header style={{height:68,flexShrink:0,background:'#0c1226',borderBottom:'1px solid #1f2b4e',padding:'0 16px',display:'flex',alignItems:'center',gap:10,overflow:'hidden'}}>
         {/* Brand */}
         <div style={{display:'flex',alignItems:'center',gap:9,flexShrink:0}}>
-          <ShieldAlert size={19} style={{color:'#ff5d6c'}}/>
+          <img src="/logo.png" alt="" width={26} height={26} style={{objectFit:'contain',flexShrink:0}} onError={(e)=>{e.currentTarget.style.display='none';}}/>
           <div>
             <div style={{fontSize:16,fontWeight:700,color:'#eaf0ff',lineHeight:1.2}}>Palantirish</div>
             <div style={{fontSize:9.5,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace",whiteSpace:'nowrap'}}>Multi-Account & Bot Detection</div>
@@ -3125,7 +3154,7 @@ export function WarEraOracle() {
                         <div style={{flex:1,padding:'8px 8px 8px 9px',minWidth:0}}>
                           <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:2}}>
                             <div style={{width:5,height:5,borderRadius:'50%',background:T_COLOR[tier],flexShrink:0}}/>
-                            {r.player.isBanned&&<span style={{fontSize:7.5,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'0 3px',flexShrink:0}}>BAN</span>}
+                            {(r.player.isBanned||globalBans.current[r.player.id])&&<span style={{fontSize:7.5,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'0 3px',flexShrink:0}}>BAN</span>}
                             <span style={{fontSize:12.5,fontWeight:600,fontFamily:"IBM Plex Mono, monospace",color:isActive?'#4fc3e8':'#eaf0ff',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{String(r.player.name)}</span>
                             {r.player.level&&<span style={{fontSize:9.5,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96',flexShrink:0}}>Lv.{r.player.level}</span>}
                           </div>
@@ -3169,6 +3198,7 @@ export function WarEraOracle() {
                 return (
                   <div style={{padding:'14px 24px 0',display:'flex',gap:14,alignItems:'stretch'}}>
                     <MapSidebar activeResult={activeResult} isWatching={!!watchlist[activeResult.player.id]} workforceSize={_wf}
+                      banned={!!(activeResult.player.isBanned||globalBans.current[activeResult.player.id])}
                       copied={copiedId===activeResult.player.id}
                       onWatch={()=>toggleWatchlist(activeResult.player.id,activeResult.player.name,activeResult.country)}
                       onRescan={()=>rescanPlayer(activeResult.player.id,activeResult.country)}
