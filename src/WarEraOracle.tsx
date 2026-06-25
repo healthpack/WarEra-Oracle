@@ -452,9 +452,9 @@ const detectLaundering = (allWorkers, player, settings, globalCache) => {
       totalDonatedAllTime: player.directLaunderAmount, isLaundering: true, noBonusPercentage: 0
     };
     let existingLaunderSus = suspicions.find(s => s.type === 'money_laundering');
-    if (existingLaunderSus) { existingLaunderSus.workers.push(selfWorker); existingLaunderSus.detectionWeight += 3; }
+    if (existingLaunderSus) { existingLaunderSus.workers.push(selfWorker); existingLaunderSus.detectionWeight += 3; existingLaunderSus.funnelRecipients = player.outflowRecipients || []; }
     else {
-      suspicions.push({ type: 'money_laundering', severity: 'critical', desc: `Large outbound donations from this account — a pattern consistent with a burner funnel.`, workers: [selfWorker], detectionWeight: 3 });
+      suspicions.push({ type: 'money_laundering', severity: 'critical', desc: `Large outbound donations from this account — a pattern consistent with a burner funnel.`, workers: [selfWorker], detectionWeight: 3, funnelRecipients: player.outflowRecipients || [] });
     }
     totalLaunderedCoins += player.directLaunderAmount;
     hasLaundering = true;
@@ -796,11 +796,11 @@ const analyzePhase1 = (player, settings, globalCache, addLog = null) => {
       isLaundering: true, noBonusPercentage: 0
     };
     const existingLaunder = allSuspicions.find(s => s.type === 'money_laundering');
-    if (existingLaunder) { existingLaunder.workers.push(selfWorker); existingLaunder.detectionWeight += 3; }
+    if (existingLaunder) { existingLaunder.workers.push(selfWorker); existingLaunder.detectionWeight += 3; existingLaunder.funnelRecipients = player.outflowRecipients || []; }
     else allSuspicions.push({
       type: 'money_laundering', severity: 'critical',
       desc: 'Large outbound donations from this account — a pattern consistent with a burner funnel.',
-      workers: [selfWorker], detectionWeight: 3
+      workers: [selfWorker], detectionWeight: 3, funnelRecipients: player.outflowRecipients || []
     });
   }
 
@@ -1084,15 +1084,16 @@ const buildClusterGraph = (activeResult, globalCache) => {
     else nodes.get(p.id).banned = nodes.get(p.id).banned || p.isBanned;
     edges.push({ a: bossId, b: p.id, type: 'wash', net: p.netProfit || 0, trades: p.txCount });
   });
-  // Coin funnel — each outflow recipient (MU / country / user) as a sink node with
-  // an outbound edge labelled with the coins drained to it.
+  // Outflow sinks — each donation/tip recipient (MU / country / user) as a sink node
+  // with an outbound edge labelled by the coins drained. Drawn for coin_funnel AND
+  // money_laundering (large outbound donations), so "where it went" is always visible.
   const funnel = (activeResult.suspicions || []).find(s => s.type === 'coin_funnel');
-  (funnel?.funnelData?.recipients || []).forEach(r => {
-    if (!r.id || r.id === bossId) return;
-    if (!nodes.has(r.id)) {
-      const nm = globalCache?.names?.[r.id] || r.name || (r.kind === 'user' ? ('user_' + String(r.id).slice(-6)) : r.kind === 'country' ? 'Country' : 'Military Unit');
-      nodes.set(r.id, { uid: r.id, id: r.id, name: nm, kind: 'funnel', sinkKind: r.kind });
-    }
+  const launder = (activeResult.suspicions || []).find(s => s.type === 'money_laundering');
+  const sinkRecips = funnel?.funnelData?.recipients?.length ? funnel.funnelData.recipients : (launder?.funnelRecipients || []);
+  sinkRecips.forEach(r => {
+    if (!r.id || r.id === bossId || nodes.has(r.id)) return;
+    const nm = globalCache?.names?.[r.id] || r.name || (r.kind === 'user' ? ('user_' + String(r.id).slice(-6)) : r.kind === 'country' ? 'Country' : 'Military Unit');
+    nodes.set(r.id, { uid: r.id, id: r.id, name: nm, kind: 'funnel', sinkKind: r.kind });
     edges.push({ a: bossId, b: r.id, type: 'funnel', net: -Math.round(r.coins) });
   });
   return { nodes: [...nodes.values()], edges };
@@ -1284,7 +1285,8 @@ const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onC
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 18, fontWeight: 700, color: '#eaf0ff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(activeResult.player.name)}</span>
           <a href={`https://app.warera.io/user/${activeResult.player.id}`} target="_blank" rel="noopener noreferrer" style={{ color: '#5d6e96', flexShrink: 0 }}><ExternalLink size={13} /></a>
-          <div style={{ marginLeft: 'auto', padding: '4px 11px', background: PL_SEV[tier].bg, border: `2px solid ${PL_SEV[tier].line}`, borderRadius: 8, textAlign: 'center', flexShrink: 0 }}>
+          {activeResult.player.isBanned && <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 4, padding: '3px 7px', flexShrink: 0 }}>BANNED</span>}
+          <div style={{ marginLeft: activeResult.player.isBanned ? 8 : 'auto', padding: '4px 11px', background: PL_SEV[tier].bg, border: `2px solid ${PL_SEV[tier].line}`, borderRadius: 8, textAlign: 'center', flexShrink: 0 }}>
             <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 17, fontWeight: 700, color: PL_SEV[tier].c }}>{sc}</span>
           </div>
         </div>
@@ -2154,12 +2156,11 @@ export function WarEraOracle() {
           if (typeof amount==='object'&&amount!==null) amount=amount.amount??amount.value??amount.quantity??amount.gold??0;
           if (typeof amount!=='number') amount=parseFloat(amount)||0;
           if (amount===0) { const pv=Object.values(tx).filter(v=>typeof v==='number'&&v<1e12&&v>0); if(pv.length>0) amount=Math.max(...pv); }
-          // Recipient (country / MU / user) — capture id, display name, and kind.
-          const recObj = (typeof tx.recipient==='object'&&tx.recipient) || (typeof tx.mu==='object'&&tx.mu) || (typeof tx.country==='object'&&tx.country) || (typeof tx.to==='object'&&tx.to) || null;
-          const donRecip = (recObj&&(recObj._id||recObj.id)) || tx.recipientId || tx.muId || tx.countryId || tx.toId || tx.to || tx.receiverId || tx.sellerId || tx.recipient;
-          const recName = recObj?.name || tx.recipientName || tx.muName || tx.countryName || tx.sellerName || null;
-          const recKind = (tx.muId||tx.mu) ? 'mu' : (tx.countryId||tx.country) ? 'country' : (recObj?.type==='country') ? 'country' : (recObj?.type==='mu'||recObj?.type==='militaryUnit') ? 'mu' : 'mu';
-          addOutflow(donRecip, amount, recKind, 'donation', recName);
+          // Recipient — donation txs use sellerMuId (military unit) or sellerCountryId
+          // (country). Names aren't in the tx; resolved later via mu/country.getById.
+          const donRecip = tx.sellerMuId || tx.sellerCountryId || tx.recipientId || tx.muId || tx.countryId || tx.sellerId;
+          const recKind = tx.sellerMuId || tx.muId ? 'mu' : (tx.sellerCountryId || tx.countryId) ? 'country' : 'mu';
+          addOutflow(donRecip, amount, recKind, 'donation', null);
           if (Math.abs(amount-5)>0.01&&Math.abs(amount-25)>0.01) { directLaunderAmount+=amount; maxSingleOutbound=Math.max(maxSingleOutbound,amount); }
           if (txTime>=oneWeekAgo) weeklyOutbound+=amount;
           donationsOut += amount;
@@ -2237,22 +2238,37 @@ export function WarEraOracle() {
         addLog(`[DEBUG] articleTip fetch failed for ${foundName}: ${tipTxResult.reason?.message}`, 'debug');
       }
 
-      // Coin funnel: a LOW-wealth account that pushed a large amount of coins OUT
-      // (donations + tips). The signal is the total drain, not concentration to one
-      // recipient — drains often split across several MUs + the country. The
-      // recipient breakdown is for the map; it is not required to flag.
+      // Outflow recipient breakdown (donations to MUs/countries + tips >= TIP_FLOOR
+      // coins to a single user). Shared by the coin_funnel and money_laundering
+      // signals; a low-wealth account with a large total drain also flags coin_funnel.
       {
+        const TIP_FLOOR = 25;
+        const entries = Object.entries(outflowByRecipient)
+          .filter(([, r]) => r.via !== 'tip' || r.coins >= TIP_FLOOR)
+          .sort((a, b) => b[1].coins - a[1].coins).slice(0, 6);
+        const recipients = entries.map(([id, r]) => ({ id, coins: r.coins, kind: r.kind, via: r.via, name: r.name, isBossMu: id === bossMuId }));
+        // Resolve MU / country display names (cached across players).
+        const ecache = (globalCacheRef.current.entityNames = globalCacheRef.current.entityNames || {});
+        for (const r of recipients) {
+          if (r.name) continue;
+          if (ecache[r.id]) { r.name = ecache[r.id]; continue; }
+          try {
+            if (r.kind === 'mu') { const m = await smartFetch('mu.getById', { muId: r.id }); const n = m?.name || m?.tag || null; if (n) { r.name = n; ecache[r.id] = n; } }
+            else if (r.kind === 'country') { const c = await smartFetch('country.getCountryById', { countryId: r.id }); const n = c?.name || null; if (n) { r.name = n; ecache[r.id] = n; } }
+          } catch { /* best-effort */ }
+        }
+        playerObj.outflowRecipients = recipients;
+
         const _fw = extractCoinWealth(playerObj), _fl = extractUserLevel(playerObj) ?? playerObj.level;
         const _far = _fl != null ? getWealthAverageExtended(globalCacheRef.current, _fl) : null;
         const ratio = (_fw != null && _far && _far.avg > 0) ? _fw / _far.avg : null;
         const lowWealth = ratio != null && ratio < (settings.wealthAnomalyLowerMultiplier ?? 0.5) && _fl >= 11;
-        const totalOut = donationsOut + tipsOut;
+        let qualTipsOut = 0; Object.values(outflowByRecipient).forEach(r => { if (r.via === 'tip' && r.coins >= TIP_FLOOR) qualTipsOut += r.coins; });
+        const totalOut = donationsOut + qualTipsOut;
         if (lowWealth && totalOut >= (settings.funnelMinCoins ?? 100)) {
-          const entries = Object.entries(outflowByRecipient).sort((a, b) => b[1].coins - a[1].coins);
-          const recipients = entries.slice(0, 6).map(([id, r]) => ({ id, coins: r.coins, kind: r.kind, via: r.via, name: r.name, isBossMu: id === bossMuId }));
           playerObj.coinFunnel = {
-            totalOut, donationsOut, tipsOut, ratio, wealth: _fw,
-            recipients, topRecipientId: entries[0]?.[0], topRecipientCoins: entries[0]?.[1]?.coins,
+            totalOut, donationsOut, tipsOut: qualTipsOut, ratio, wealth: _fw,
+            recipients, topRecipientId: recipients[0]?.id, topRecipientCoins: recipients[0]?.coins,
             drainedBeyondBalance: _fw != null && totalOut > _fw,
           };
         }
@@ -2315,6 +2331,7 @@ export function WarEraOracle() {
       userLevel: playerObj.userLevel,
       tipAbuse,
       coinFunnel: playerObj.coinFunnel || null,
+      outflowRecipients: playerObj.outflowRecipients || [],
     };
 
     phase2DataRef.current[uId] = { livePlayer, actionTimes, hasMuLeadership, bossMuId, foundName, country: livePlayer.country };
@@ -2892,7 +2909,6 @@ export function WarEraOracle() {
     return 'med';
   };
   const filteredResults = allResults.filter(r => {
-    if (r.player.isBanned) return false; // banned accounts are hidden from the case list (still shown in maps/findings where flagged)
     if (listSearch && !String(r.player.name).toLowerCase().includes(listSearch.toLowerCase())) return false;
     if (listFilter !== 'all') {
       const tier = maxSevTierOf(r);
@@ -3109,6 +3125,7 @@ export function WarEraOracle() {
                         <div style={{flex:1,padding:'8px 8px 8px 9px',minWidth:0}}>
                           <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:2}}>
                             <div style={{width:5,height:5,borderRadius:'50%',background:T_COLOR[tier],flexShrink:0}}/>
+                            {r.player.isBanned&&<span style={{fontSize:7.5,fontWeight:700,color:'#ff5d6c',background:'rgba(255,93,108,0.12)',border:'1px solid rgba(255,93,108,0.42)',borderRadius:3,padding:'0 3px',flexShrink:0}}>BAN</span>}
                             <span style={{fontSize:12.5,fontWeight:600,fontFamily:"IBM Plex Mono, monospace",color:isActive?'#4fc3e8':'#eaf0ff',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{String(r.player.name)}</span>
                             {r.player.level&&<span style={{fontSize:9.5,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96',flexShrink:0}}>Lv.{r.player.level}</span>}
                           </div>
@@ -3208,7 +3225,41 @@ export function WarEraOracle() {
                           ))}
                         </p>
                         {suspicion.type==='temporal_clustering'&&suspicion.hourBuckets&&<ActivityHeatmap hourBuckets={suspicion.hourBuckets}/>}
-                        
+
+                        {/* Coin-flow destinations (coin_funnel + money_laundering) */}
+                        {(()=>{
+                          const recips = suspicion.type==='coin_funnel' ? suspicion.funnelData?.recipients : suspicion.type==='money_laundering' ? suspicion.funnelRecipients : null;
+                          if (!recips||!recips.length) return null;
+                          const cf = suspicion.funnelData;
+                          const MONO="IBM Plex Mono, monospace";
+                          return (
+                            <div style={{marginTop:2,marginBottom:8}}>
+                              {cf&&<div style={{display:'flex',gap:18,marginBottom:9,flexWrap:'wrap'}}>
+                                {[['Total out',Math.round(cf.totalOut)],['Via donations',Math.round(cf.donationsOut)],['Via tips',Math.round(cf.tipsOut)],['Now holds',Math.round(cf.wealth??0)]].map(([k,v],i)=>(
+                                  <div key={i} style={{display:'flex',flexDirection:'column'}}>
+                                    <span style={{fontSize:9,color:'#5d6e96',letterSpacing:'0.05em',textTransform:'uppercase'}}>{k}</span>
+                                    <span style={{fontFamily:MONO,fontSize:13,fontWeight:700,color:'#eaf0ff'}}>{v}</span>
+                                  </div>
+                                ))}
+                              </div>}
+                              <div style={{fontSize:9.5,fontWeight:700,letterSpacing:'0.06em',color:'#5d6e96',textTransform:'uppercase',marginBottom:6}}>Coins out — destinations</div>
+                              <div style={{display:'flex',flexDirection:'column',gap:5,maxWidth:560}}>
+                                {recips.map((r,ri)=>{
+                                  const nm=globalCacheRef.current.names?.[r.id]||r.name||(r.kind==='user'?('user_'+String(r.id).slice(-6)):r.kind==='country'?'Country':'Military Unit');
+                                  const kindLabel=r.kind==='country'?'COUNTRY':r.kind==='mu'?'MILITARY UNIT':'USER · TIP';
+                                  return (
+                                    <div key={ri} style={{display:'flex',alignItems:'center',gap:8,background:'#060a16',border:'1px solid #1f2b4e',borderLeft:'3px solid #e6c34a',borderRadius:6,padding:'7px 11px'}}>
+                                      <span style={{fontFamily:MONO,fontSize:11.5,color:'#eaf0ff',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{nm}</span>
+                                      <span style={{fontSize:8,fontWeight:700,color:'#9fb0d4',background:'#1b2748',border:'1px solid #2e3f6a',borderRadius:3,padding:'1px 5px',flexShrink:0}}>{kindLabel}</span>
+                                      <span style={{marginLeft:'auto',fontFamily:MONO,fontSize:12,fontWeight:700,color:'#e6c34a',flexShrink:0}}>{Math.round(r.coins)} <Coins size={9} style={{display:'inline',verticalAlign:'middle'}}/></span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })()}
+
                         {/* Tip farming cards */}
                         {suspicion.type==='tip_farming'&&suspicion.tipperCounts&&Object.keys(suspicion.tipperCounts).length>0?(
                           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:8}}>
