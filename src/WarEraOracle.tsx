@@ -626,6 +626,53 @@ const pushCoinFunnel = (allSuspicions, player, globalCache) => {
   });
 };
 
+// A MongoDB ObjectId embeds its creation time in the first 4 bytes (unix seconds), so
+// an account's signup time is readable straight from its id — no API call. Verified
+// exact to the second against getUserLite.createdAt.
+const objIdSeconds = (id) => { const h = String(id || '').slice(0, 8); return /^[0-9a-f]{8}$/i.test(h) ? parseInt(h, 16) : null; };
+const isObjId = (id) => /^[0-9a-f]{24}$/i.test(String(id || ''));
+const COCREATE_WINDOW_S = 10;
+
+// Coordinated account creation — two accounts that are ALREADY linked to this one
+// (worker, wash partner, employer) AND were created within COCREATE_WINDOW_S of it.
+// Two humans don't sign up the same second; a script minting accounts in a burst does.
+// (Account↔own-company same-second is universal in WarEra — every account is born with a
+// starter company — so we compare account↔account only, never account↔company.)
+const detectCoordinatedCreation = (player, allWorkers, globalCache) => {
+  const bossSec = objIdSeconds(player.id);
+  if (bossSec == null) return [];
+  const nameOf = (id, fallback) => globalCache?.names?.[id] || fallback || ('user_' + String(id).slice(-6));
+  const linked = [];
+  (allWorkers || []).forEach(w => {
+    const id = w.resolvedUser?._id || (typeof w.user === 'string' ? w.user : null) || w.uid;
+    if (isObjId(id)) linked.push({ id, name: w.normalizedName || w.resolvedUser?.username || nameOf(id), link: 'worker' });
+  });
+  Object.keys(player.washPartners || {}).forEach(id => {
+    if (isObjId(id)) linked.push({ id, name: player.washPartners[id]?.name || nameOf(id), link: 'wash partner' });
+  });
+  if (player.employer?.id && isObjId(player.employer.id)) linked.push({ id: player.employer.id, name: player.employer.name || nameOf(player.employer.id), link: 'employer' });
+
+  const seen = new Set(), hits = [];
+  linked.forEach(a => {
+    if (!a.id || a.id === player.id || seen.has(a.id)) return;
+    seen.add(a.id);
+    const sec = objIdSeconds(a.id);
+    if (sec == null) return;
+    const delta = Math.abs(sec - bossSec);
+    if (delta <= COCREATE_WINDOW_S) hits.push({ ...a, delta });
+  });
+  if (!hits.length) return [];
+  hits.sort((a, b) => a.delta - b.delta);
+  const list = hits.map(h => `${h.name} (${h.link}, +${h.delta}s)`).join(', ');
+  return [{
+    type: 'coordinated_creation', severity: 'high',
+    desc: `Coordinated account creation: ${hits.length} linked account${hits.length === 1 ? '' : 's'} created within ${COCREATE_WINDOW_S}s of this account — ${list}. Near-simultaneous signups between accounts that ALSO share a relationship is consistent with scripted account farming.`,
+    workers: hits.map(h => ({ uid: h.id, normalizedName: h.name })),
+    coCreated: hits,
+    detectionWeight: hits.length * 2,
+  }];
+};
+
 const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRun = false, addLog = null) => {
   if (!player) return null;
 
@@ -695,6 +742,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   ({ suspicions: workerSuspicions, suspiciousWorkers: workerSuspiciousSet } = detectWorkerPatterns(allWorkers, settings, globalCache));
   ({ suspicions: launderSuspicions, suspiciousWorkers: launderSuspiciousSet, hasLaundering, launderingWorkerCount, totalLaunderedCoins } = detectLaundering(allWorkers, player, settings, globalCache));
   ({ suspicions: shellSuspicions, suspiciousWorkers: shellSuspiciousSet, zeroBonusCompanyCount, bossNoBonusPercentage } = detectShellCompanies(allWorkers, settings, globalCache));
+  const coordCreateSuspicions = detectCoordinatedCreation(player, allWorkers, globalCache);
 
   const allSuspicions = [
     ...automationSuspicions,
@@ -704,6 +752,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
     ...launderSuspicions,
     ...workerSuspicions,
     ...shellSuspicions,
+    ...coordCreateSuspicions,
   ];
 
   if (player.tipAbuse) {
@@ -756,6 +805,8 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   }
   const abuseSus = allSuspicions.find(s => s.type === 'transaction_abuse');
   if (abuseSus) summaryParts.push(`Wash Trading ring with ${abuseSus?.partners?.length || 0} partners.`);
+  const coordCreateSus = allSuspicions.find(s => s.type === 'coordinated_creation');
+  if (coordCreateSus) summaryParts.push(`${coordCreateSus.coCreated.length} linked account(s) created within seconds of this one.`);
 
   allSuspicions.sort((a, b) => {
     const order = ['coordinated_donation','money_laundering','transaction_abuse','market_automation','superhuman_apm','script_pacing','mutual_hermit','hermit_network','wealth_anomaly'];
@@ -905,6 +956,7 @@ const HEURISTICS = {
   wage_uniformity:      { matrixChip:'WAGE', detail:{ observed:'All workers paid identical wages', rule:()=>'Wage variance across workforce is zero', note:'Uniform wages may suggest batch configuration rather than individual negotiation.' } },
   no_production_bonus:  { matrixChip:'SHELL', detail:{ observed:'Companies issuing no production bonuses', rule:()=>'>=1 company with 0% bonus rate', note:'Bonus suppression can reduce worker incentive to audit their employment.' } },
   tip_farming:          { detail:{ observed:'Heavy, concentrated tip traffic from a small set of accounts', rule:()=>'Single tipper accounts for >=50% of all received tips', note:'Tip farming networks route coins through repeated small donations to obscure origin.' } },
+  coordinated_creation: { tier:'high', detail:{ observed:'A linked account was created within seconds of this one', rule:()=>`A worker, wash partner, or employer was created within ${COCREATE_WINDOW_S}s of this account`, note:'Account ObjectIds embed creation time. Two accounts that are independently linked (employment, trading) AND created near-simultaneously is consistent with scripted batch signup — humans do not register the same second. Account↔own-company timing is ignored (every WarEra account is born with a starter company the same second); only account↔account is compared.' } },
   newborn_wealthy:      { matrixChip:'WEALTH' }, // legacy alias of wealth_anomaly (kept for old saved/imported findings)
 };
 const CRIT_TYPES = new Set(Object.keys(HEURISTICS).filter(t => HEURISTICS[t].tier === 'crit'));
@@ -919,7 +971,10 @@ const buildMatrixModel = (suspicions, globalCache) => {
   const order = [];
   let overlapString = null;
   (suspicions || []).forEach(s => {
-    if (['tip_farming', 'transaction_abuse', 'temporal_clustering'].includes(s.type)) return;
+    // coordinated_creation is excluded so its wash-partner / employer accounts don't get
+    // minted as phantom 'worker' matrix rows — those nodes already exist on the map via
+    // their own paths, and the co-creation is shown as a node badge instead.
+    if (['tip_farming', 'transaction_abuse', 'temporal_clustering', 'coordinated_creation'].includes(s.type)) return;
     if (s.type === 'naming_pattern' && s.overlapString) overlapString = s.overlapString;
     (s.workers || []).forEach(w => {
       const uid = w.uid || w.resolvedUser?._id;
@@ -1124,6 +1179,10 @@ const buildClusterGraph = (activeResult, globalCache) => {
       edges.push({ a: r.id, b: L.id, type: 'role', role: L.role });
     });
   });
+  // Coordinated-creation badge — tag nodes whose account was created within seconds of
+  // the boss (scripted-batch-signup tell). Drawn as a small ⏱ badge on the node.
+  const coord = (activeResult.suspicions || []).find(s => s.type === 'coordinated_creation');
+  (coord?.coCreated || []).forEach(c => { if (nodes.has(c.id)) nodes.get(c.id).coCreatedDelta = c.delta; });
   return { nodes: [...nodes.values()], edges };
 };
 
@@ -1225,6 +1284,7 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11.5, fontWeight: 600, color: nd.banned ? '#ff5d6c' : '#eaf0ff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nm}</span>
           {nd.banned && <span style={{ fontSize: 7.5, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0 }}>BAN</span>}
+          {nd.coCreatedDelta != null && <span title={`Created within ${nd.coCreatedDelta}s of the scanned account — possible scripted batch signup`} style={{ fontSize: 7.5, fontWeight: 700, color: '#ffd84d', background: 'rgba(255,216,77,0.12)', border: '1px solid rgba(255,216,77,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0, whiteSpace: 'nowrap' }}>⏱+{nd.coCreatedDelta}s</span>}
           {(nd.kind !== 'funnel' || nd.sinkKind === 'user') && <a href={`https://app.warera.io/user/${nd.id}`} target="_blank" rel="noopener noreferrer" onPointerDown={(e) => e.stopPropagation()} style={{ color: '#5d6e96', flexShrink: 0, marginLeft: 'auto' }}><ExternalLink size={9} /></a>}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: nd.kind === 'worker' ? 4 : 0 }}>
@@ -2945,6 +3005,8 @@ export function WarEraOracle() {
     }
     const tempSus = result.suspicions.find(s => s.type === 'temporal_clustering');
     if (tempSus) parts.push(`Activity locked to a narrow time window.`);
+    const coordCreateSus = result.suspicions.find(s => s.type === 'coordinated_creation');
+    if (coordCreateSus) parts.push(`${coordCreateSus.coCreated.length} linked account(s) created within ${COCREATE_WINDOW_S}s of this one (possible batch signup).`);
     const funnelSus = result.suspicions.find(s => s.type === 'coin_funnel');
     if (funnelSus?.funnelData) { const f = funnelSus.funnelData; parts.push(`Coin funnel: low-wealth account routed ${Math.round(f.share*100)}% of ${Math.round(f.accountOut)} coins out via ${f.recipientVia === 'tip' ? 'tips' : 'donations'} to a single recipient.`); }
     let summary = parts.join(' ');

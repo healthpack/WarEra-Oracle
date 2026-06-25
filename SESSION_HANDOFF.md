@@ -71,13 +71,21 @@ why, centred on a relationship map.
   `{ userIds[], muIds[], countryIds[], ... }` (returns multiple — don't assume index 0).
 
 ## What was built this session (most recent first)
+- **`coordinated_creation` heuristic.** A MongoDB ObjectId embeds creation time in its
+  first 4 bytes (unix seconds) — `objIdSeconds(id)` reads an account's signup time with no
+  fetch (verified exact vs `createdAt`). `detectCoordinatedCreation` flags any account
+  already linked to the scanned one (worker / wash partner / employer) that was created
+  **within 10s** of it — scripted batch signup; two linked humans don't register the same
+  second. Scored (tier high, weight 2×hits), shown in the Signal Ledger + deep-dive, and a
+  yellow **⏱+Ns** badge on the co-created map nodes. Excluded from the matrix so partner/
+  employer accounts don't become phantom worker rows. **The earlier SAME-MINT badge was
+  removed** — account↔own-company same-second is universal in WarEra (every account is
+  born with a starter company), so only account↔account timing is compared.
 - **Eutectic feature, piece 2 — employer edge.** When a flagged account is scanned in
   phase 2, resolve its current employer (`user.getUserById.company` →
   `company.getById.user` = owner) and draw it as a teal **EMPLOYER** node with an
   `EMPLOYS` edge (the live inverse of the boss→worker spokes). If the owner is already on
-  the map the edge just stacks (rainbow). Owner+company sharing an ObjectId prefix gets a
-  **SAME-MINT** badge (account+shell minted together — heuristic, can false-positive on
-  starter companies; badge only, not scored). Also **MU leaders are now gated**: a sink's
+  the map the edge just stacks (rainbow). Also **MU leaders are now gated**: a sink's
   commander/manager is only drawn when independently linked to the scanned account (already
   a node — wash partner / alt / tip recipient / employer), instead of the whole MU roster.
   **Referrer was dropped: it is not
@@ -103,8 +111,11 @@ why, centred on a relationship map.
 1. **Eutectic direct edges — DONE / partially N/A.** Employer edge built (above).
    Referrer is **not exposed by the API** so it can't be drawn — don't re-probe.
    Note the employer is only the account's *current* company owner; past bosses (the
-   stale Eutectic→Alexo link) won't appear. Possible follow-up: a `same_mint` heuristic
-   (account + company sequential ObjectIds) — currently only a map badge, not scored.
+   stale Eutectic→Alexo link) won't appear. The `same_mint` (account+company) idea was
+   tried and **rejected as universal** (starter companies); the useful version —
+   account↔account same-second creation — shipped as `coordinated_creation`. Possible
+   extension: check ALL pairs in a cluster, not just boss-vs-linked (catches two alts
+   co-created but not with the boss). Threshold currently 10s (`COCREATE_WINDOW_S`).
 2. **Ban coverage:** only catches a ban if `getUserLite.infos.isBanned` is present or the
    account appeared as someone's wash partner (`globalBans`). A flagged account banned
    but never cross-referenced could still be missed — fine for now, just know it.
