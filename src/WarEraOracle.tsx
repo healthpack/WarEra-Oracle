@@ -1152,8 +1152,11 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
     const gi = grp.indexOf(i), gc = grp.length;
     const off = (gi - (gc - 1) / 2) * 16;
     const dx = C.x - A.x, dy = C.y - A.y, len = Math.hypot(dx, dy) || 1;
-    const mx = (A.x + C.x) / 2 - (dy / len) * off, my = (A.y + C.y) / 2 + (dx / len) * off;
-    const d = off ? `M ${A.x} ${A.y} Q ${mx} ${my} ${C.x} ${C.y}` : `M ${A.x} ${A.y} L ${C.x} ${C.y}`;
+    const ux = dx / len, uy = dy / len;
+    const inset = Math.min(48, len * 0.34); // stop the line at the box edge, not over the text
+    const ax = A.x + ux * inset, ay = A.y + uy * inset, bx = C.x - ux * inset, by = C.y - uy * inset;
+    const mx = (ax + bx) / 2 - uy * off, my = (ay + by) / 2 + ux * off;
+    const d = off ? `M ${ax} ${ay} Q ${mx} ${my} ${bx} ${by}` : `M ${ax} ${ay} L ${bx} ${by}`;
     return { d, mx, my };
   };
   const [posns, setPosns] = React.useState(initial);
@@ -1226,7 +1229,7 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
           })}
         </svg>
         <div onPointerDown={(e) => startDrag('BOSS', e)} onMouseEnter={() => setHover('BOSS')} onMouseLeave={() => setHover(null)}
-          style={{ position: 'absolute', left: B.x, top: B.y, transform: `translate(-50%,-50%) scale(${dragKey === 'BOSS' ? 1.03 : 1})`, width: 184, textAlign: 'center', background: PL_SEV[tier].bg, border: `2px solid ${PL_SEV[tier].line}`, borderRadius: 12, padding: '12px 14px', boxShadow: '0 10px 30px rgba(0,0,0,.5)', cursor: dragKey === 'BOSS' ? 'grabbing' : 'grab', userSelect: 'none', touchAction: 'none', zIndex: dragKey === 'BOSS' ? 5 : 3 }}>
+          style={{ position: 'absolute', left: B.x, top: B.y, transform: `translate(-50%,-50%) scale(${dragKey === 'BOSS' ? 1.03 : 1})`, width: 184, textAlign: 'center', background: '#1b2440', border: `2px solid ${PL_SEV[tier].line}`, borderRadius: 12, padding: '12px 14px', boxShadow: `0 0 0 4px ${PL_SEV[tier].bg}, 0 10px 30px rgba(0,0,0,.5)`, cursor: dragKey === 'BOSS' ? 'grabbing' : 'grab', userSelect: 'none', touchAction: 'none', zIndex: dragKey === 'BOSS' ? 5 : 3 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, marginBottom: 5 }}>
             <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 16, fontWeight: 700, color: '#eaf0ff' }}>{boss.name}</span>
             <a href={`https://app.warera.io/user/${boss.id}`} target="_blank" rel="noopener noreferrer" onPointerDown={(e) => e.stopPropagation()} style={{ color: '#5d6e96' }}><ExternalLink size={11} /></a>
@@ -1946,7 +1949,9 @@ export function WarEraOracle() {
           }
         }
         if (foundName && foundName !== 'Unknown') globalCacheRef.current.names[uId] = foundName;
-        if (uData.isBanned || uData.banned) { addLog(`[OK] ${foundName} cleared (banned).`, 'info'); return; }
+        // Ban status lives under infos.isBanned (and isActive:false). Mark it but keep
+        // analysing — a flagged banned account should still surface, badged as BANNED.
+        playerObj.isBanned = !!(uData.isBanned || uData.banned || uData.infos?.isBanned);
         bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
       }
     } catch(e) { addLog(`[DEBUG] getUserLite failed for ${uId}: ${e.message}`, 'debug'); }
