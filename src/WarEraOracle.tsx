@@ -610,14 +610,17 @@ const detectTemporalClustering = (player, actionTimes) => {
 
 // Emits the coin_funnel suspicion (low wealth + concentrated outflow) — computed
 // in phase 1 and carried on player.coinFunnel; shared by both analyzers.
+const funnelRecipName = (r, globalCache) => globalCache?.names?.[r.id] || r.name || (r.kind === 'country' ? 'a country' : r.kind === 'mu' ? 'a military unit' : 'user_' + String(r.id).slice(-6));
 const pushCoinFunnel = (allSuspicions, player, globalCache) => {
   const cf = player.coinFunnel;
   if (!cf) return;
-  const nm = globalCache?.names?.[cf.recipientId];
-  const recipName = nm || (cf.recipientKind === 'user' ? ('user ' + String(cf.recipientId).slice(-6)) : cf.toBossMu ? "the account's military unit" : 'a military unit / country');
+  const recips = cf.recipients || [];
+  const topName = recips[0] ? funnelRecipName(recips[0], globalCache) : 'recipients';
+  const dest = recips.length === 0 ? '' : recips.length === 1 ? ` to ${topName}` : ` across ${recips.length} recipients (top: ${topName})`;
+  const via = cf.tipsOut > cf.donationsOut ? 'article tips' : 'donations';
   allSuspicions.push({
     type: 'coin_funnel', severity: 'high',
-    desc: `Low-wealth account (${(cf.ratio * 100).toFixed(0)}% of the level median) routed ${(cf.share * 100).toFixed(0)}% of its ${cf.accountOut.toFixed(0)} coins out to ${recipName} via ${cf.recipientVia === 'tip' ? 'article tips' : 'donations'}. Traces where the coins went rather than assuming they were never earned.`,
+    desc: `Low-wealth account (${(cf.ratio * 100).toFixed(0)}% of the level median) pushed ${Math.round(cf.totalOut)} coins out${cf.drainedBeyondBalance ? ' — more than it now holds' : ''} via ${via}${dest}. Traces where the coins went rather than assuming they were never earned.`,
     workers: [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?' }],
     funnelData: cf, detectionWeight: 3,
   });
@@ -893,7 +896,7 @@ const HEURISTICS = {
   hermit_network:       { tier:'high', detail:{ observed:'Workers employed nowhere except this account', rule:()=>'All known employment is with this single employer', note:'Exclusive worker networks can indicate account manufacturing, though niche legitimate employers exist.' } },
   mutual_hermit:        { tier:'high', detail:{ observed:'Mutual exclusive employment between boss and worker', rule:()=>'Boss is also exclusively employed by this account', note:'Reciprocal hermit relationships substantially increase the likelihood of coordination.' } },
   wealth_anomaly:       { tier:'high', matrixChip:'WEALTH', detail:{ observed:'Account coin wealth far from level peers', rule:(s)=>`Coin wealth > ${s.wealthAnomalyMultiplier}x or < ${s.wealthAnomalyLowerMultiplier}x the level median (low bound applies at level 11+)`, note:'Wealth far above the level median may indicate external funding; far below may indicate a drained mule. Check account age and transaction history for context.' } },
-  coin_funnel:          { tier:'high', matrixChip:'FUNNEL', detail:{ observed:'Low-wealth account with a concentrated outbound coin flow', rule:(s)=>`Wealth < ${s.wealthAnomalyLowerMultiplier}x median AND >= ${Math.round((s.funnelConcentration ?? 0.5)*100)}% of >= ${s.funnelMinCoins ?? 25} coins out went to one recipient`, note:'Explains low wealth by tracing where the coins went. The recipient need not be the employer — follow the coins. A genuinely poor/slow player shows no concentrated outflow. Cannot see every sink (equipment, consumables, training), so treat as a lead.' } },
+  coin_funnel:          { tier:'high', matrixChip:'FUNNEL', detail:{ observed:'Low-wealth account that pushed a large amount of coins out', rule:(s)=>`Wealth < ${s.wealthAnomalyLowerMultiplier}x the level median AND >= ${s.funnelMinCoins ?? 100} coins donated/tipped out`, note:'Explains low wealth by tracing where the coins went (donations to MUs/countries, tips to authors) — the destinations need not be the employer. A genuinely poor/slow player shows little outflow. Cannot see every sink (equipment, consumables, training), so treat as a lead.' } },
   fidelity_ring:        { tier:'high', matrixChip:'FID', detail:{ observed:'Workers holding maximum fidelity across the workforce', rule:()=>'Fidelity = 10/10 across workers', note:'Perfect fidelity cluster is unusual - may indicate artificially maintained relationships.' } },
   cloned_progression:   { tier:'high', matrixChip:'CLONE', detail:{ observed:'Progression stats mirror another account', rule:()=>'Level/wealth within 2% of a known clone signature', note:'Near-identical progression curves can indicate copy-cat account farming.' } },
   low_wage:             { matrixChip:'WAGE', detail:{ observed:'Workers paid below suspicious wage threshold', rule:(s)=>`Wage <= ${s.suspiciousWageThreshold.toFixed(3)}`, note:'Low wages alone are not conclusive; combine with other signals for stronger inference.' } },
@@ -1081,16 +1084,17 @@ const buildClusterGraph = (activeResult, globalCache) => {
     else nodes.get(p.id).banned = nodes.get(p.id).banned || p.isBanned;
     edges.push({ a: bossId, b: p.id, type: 'wash', net: p.netProfit || 0, trades: p.txCount });
   });
-  // Coin funnel — the top outflow recipient as a node with an outbound edge.
+  // Coin funnel — each outflow recipient (MU / country / user) as a sink node with
+  // an outbound edge labelled with the coins drained to it.
   const funnel = (activeResult.suspicions || []).find(s => s.type === 'coin_funnel');
-  if (funnel?.funnelData?.recipientId && funnel.funnelData.recipientId !== bossId) {
-    const f = funnel.funnelData;
-    if (!nodes.has(f.recipientId)) {
-      const nm = globalCache?.names?.[f.recipientId] || (f.recipientKind === 'user' ? ('user_' + String(f.recipientId).slice(-6)) : 'Military Unit');
-      nodes.set(f.recipientId, { uid: f.recipientId, id: f.recipientId, name: nm, kind: 'funnel', isMU: f.recipientKind !== 'user' });
+  (funnel?.funnelData?.recipients || []).forEach(r => {
+    if (!r.id || r.id === bossId) return;
+    if (!nodes.has(r.id)) {
+      const nm = globalCache?.names?.[r.id] || r.name || (r.kind === 'user' ? ('user_' + String(r.id).slice(-6)) : r.kind === 'country' ? 'Country' : 'Military Unit');
+      nodes.set(r.id, { uid: r.id, id: r.id, name: nm, kind: 'funnel', sinkKind: r.kind });
     }
-    edges.push({ a: bossId, b: f.recipientId, type: 'funnel', net: -Math.round(f.recipientCoins) });
-  }
+    edges.push({ a: bossId, b: r.id, type: 'funnel', net: -Math.round(r.coins) });
+  });
   return { nodes: [...nodes.values()], edges };
 };
 
@@ -1167,10 +1171,10 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11.5, fontWeight: 600, color: nd.banned ? '#ff5d6c' : '#eaf0ff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nm}</span>
           {nd.banned && <span style={{ fontSize: 7.5, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0 }}>BAN</span>}
-          <a href={`https://app.warera.io/user/${nd.id}`} target="_blank" rel="noopener noreferrer" onPointerDown={(e) => e.stopPropagation()} style={{ color: '#5d6e96', flexShrink: 0, marginLeft: 'auto' }}><ExternalLink size={9} /></a>
+          {(nd.kind !== 'funnel' || nd.sinkKind === 'user') && <a href={`https://app.warera.io/user/${nd.id}`} target="_blank" rel="noopener noreferrer" onPointerDown={(e) => e.stopPropagation()} style={{ color: '#5d6e96', flexShrink: 0, marginLeft: 'auto' }}><ExternalLink size={9} /></a>}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: nd.kind === 'worker' ? 4 : 0 }}>
-          <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#5d6e96' }}>{nd.kind === 'funnel' && nd.isMU ? 'Military Unit' : `Lv.${nd.level ?? '?'}`}</span>
+          <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#5d6e96' }}>{nd.kind === 'funnel' ? (nd.sinkKind === 'country' ? 'Country' : nd.sinkKind === 'user' ? `Lv.${nd.level ?? '?'}` : 'Military Unit') : `Lv.${nd.level ?? '?'}`}</span>
           {nd.kind === 'worker'
             ? <span style={{ marginLeft: 'auto' }}><WealthTag x={nd.wealthX} coins={nd.wealth} /></span>
             : <span style={{ marginLeft: 'auto', fontFamily: "IBM Plex Mono, monospace", fontSize: 8.5, fontWeight: 700, color: nd.kind === 'funnel' ? '#e6c34a' : '#ff5d6c' }}>{nd.kind === 'funnel' ? 'COIN SINK' : 'WASH PARTNER'}</span>}
@@ -1488,8 +1492,7 @@ export function WarEraOracle() {
     concurrencyLimit: 50,
     wealthAnomalyMultiplier: 1.5,
     wealthAnomalyLowerMultiplier: 0.5,
-    funnelConcentration: 0.5,
-    funnelMinCoins: 25,
+    funnelMinCoins: 100,
     sniperThresholdMs: 1000,
     apmWindowMs: 500,
     pacingToleranceMs: 3,
@@ -1532,6 +1535,7 @@ export function WarEraOracle() {
   const didLogTipPayloadRef = useRef(false);
   const didLogUserLiteShapeRef = useRef(false);
   const didLogWorkerShapeRef = useRef(false);
+  const didLogDonationShapeRef = useRef(false);
   const effectiveConcurrencyRef = useRef(50);
   const concurrencyLastReducedRef = useRef(0);
   const alwaysPhase2Ref = useRef(false);
@@ -2128,28 +2132,34 @@ export function WarEraOracle() {
       // outbound flows (donations sent, tips sent) per recipient so a low-wealth
       // account's drain can be traced to its destination.
       const outflowByRecipient = {}; let donationsOut = 0, tipsOut = 0;
-      const addOutflow = (rid, coins, kind, via) => {
+      const addOutflow = (rid, coins, kind, via, name) => {
         if (!rid || !(coins > 0) || rid === uId) return;
-        if (!outflowByRecipient[rid]) outflowByRecipient[rid] = { coins: 0, kind, via };
+        if (!outflowByRecipient[rid]) outflowByRecipient[rid] = { coins: 0, kind, via, name: name || null };
         outflowByRecipient[rid].coins += coins;
+        if (name && !outflowByRecipient[rid].name) outflowByRecipient[rid].name = name;
       };
 
       if (outTxResult.status === 'fulfilled') {
         const outItems = Array.isArray(outTxResult.value) ? outTxResult.value : (outTxResult.value?.items||outTxResult.value?.data||outTxResult.value?.transactions||[]);
+        if (!didLogDonationShapeRef.current && outItems.length > 0) { didLogDonationShapeRef.current = true; addLog(`[DONATION PAYLOAD] item[0]: ${JSON.stringify(outItems[0]).substring(0,400)}`, 'info'); }
         const oneWeekAgo=Date.now()-7*24*60*60*1000;
         let weeklyOutbound=0, maxSingleOutbound=0;
         outItems.forEach(tx => {
           const txTime=new Date(tx.createdAt||tx.timestamp||tx.date||Date.now()).getTime();
           actionTimes.push({ time: txTime, type: 'Donation' });
           if (txTime<cutoffTime) return;
-          const senderId=typeof tx.sender==='object'?(tx.sender?._id||tx.sender?.id):(tx.sender||tx.senderId||tx.from||tx.userId);
+          const senderId=typeof tx.sender==='object'?(tx.sender?._id||tx.sender?.id):(tx.sender||tx.senderId||tx.buyerId||tx.from||tx.fromId||tx.userId);
           if (senderId!==uId) return;
           let amount=tx.amount??tx.quantity??tx.value??tx.gold??tx.money??tx.total;
           if (typeof amount==='object'&&amount!==null) amount=amount.amount??amount.value??amount.quantity??amount.gold??0;
           if (typeof amount!=='number') amount=parseFloat(amount)||0;
           if (amount===0) { const pv=Object.values(tx).filter(v=>typeof v==='number'&&v<1e12&&v>0); if(pv.length>0) amount=Math.max(...pv); }
-          const donRecip = tx.recipientId || tx.muId || (typeof tx.mu==='object'?(tx.mu?._id||tx.mu?.id):tx.mu) || tx.toId || tx.to || tx.receiverId || tx.countryId || (typeof tx.recipient==='object'?(tx.recipient?._id||tx.recipient?.id):tx.recipient);
-          addOutflow(donRecip, amount, donRecip===bossMuId?'mu':'mu', 'donation');
+          // Recipient (country / MU / user) — capture id, display name, and kind.
+          const recObj = (typeof tx.recipient==='object'&&tx.recipient) || (typeof tx.mu==='object'&&tx.mu) || (typeof tx.country==='object'&&tx.country) || (typeof tx.to==='object'&&tx.to) || null;
+          const donRecip = (recObj&&(recObj._id||recObj.id)) || tx.recipientId || tx.muId || tx.countryId || tx.toId || tx.to || tx.receiverId || tx.sellerId || tx.recipient;
+          const recName = recObj?.name || tx.recipientName || tx.muName || tx.countryName || tx.sellerName || null;
+          const recKind = (tx.muId||tx.mu) ? 'mu' : (tx.countryId||tx.country) ? 'country' : (recObj?.type==='country') ? 'country' : (recObj?.type==='mu'||recObj?.type==='militaryUnit') ? 'mu' : 'mu';
+          addOutflow(donRecip, amount, recKind, 'donation', recName);
           if (Math.abs(amount-5)>0.01&&Math.abs(amount-25)>0.01) { directLaunderAmount+=amount; maxSingleOutbound=Math.max(maxSingleOutbound,amount); }
           if (txTime>=oneWeekAgo) weeklyOutbound+=amount;
           donationsOut += amount;
@@ -2227,21 +2237,24 @@ export function WarEraOracle() {
         addLog(`[DEBUG] articleTip fetch failed for ${foundName}: ${tipTxResult.reason?.message}`, 'debug');
       }
 
-      // Coin funnel: a LOW-wealth account whose outflow is concentrated to one
-      // recipient — "where the coins went" rather than "never earned".
+      // Coin funnel: a LOW-wealth account that pushed a large amount of coins OUT
+      // (donations + tips). The signal is the total drain, not concentration to one
+      // recipient — drains often split across several MUs + the country. The
+      // recipient breakdown is for the map; it is not required to flag.
       {
         const _fw = extractCoinWealth(playerObj), _fl = extractUserLevel(playerObj) ?? playerObj.level;
         const _far = _fl != null ? getWealthAverageExtended(globalCacheRef.current, _fl) : null;
         const ratio = (_fw != null && _far && _far.avg > 0) ? _fw / _far.avg : null;
         const lowWealth = ratio != null && ratio < (settings.wealthAnomalyLowerMultiplier ?? 0.5) && _fl >= 11;
-        const accountOut = Object.values(outflowByRecipient).reduce((s, r) => s + r.coins, 0);
-        if (lowWealth && accountOut >= (settings.funnelMinCoins ?? 25)) {
+        const totalOut = donationsOut + tipsOut;
+        if (lowWealth && totalOut >= (settings.funnelMinCoins ?? 100)) {
           const entries = Object.entries(outflowByRecipient).sort((a, b) => b[1].coins - a[1].coins);
-          const [topId, top] = entries[0];
-          const share = top.coins / accountOut;
-          if (share >= (settings.funnelConcentration ?? 0.5)) {
-            playerObj.coinFunnel = { recipientId: topId, recipientCoins: top.coins, recipientKind: top.kind, recipientVia: top.via, share, accountOut, donationsOut, tipsOut, ratio, toBossMu: topId === bossMuId };
-          }
+          const recipients = entries.slice(0, 6).map(([id, r]) => ({ id, coins: r.coins, kind: r.kind, via: r.via, name: r.name, isBossMu: id === bossMuId }));
+          playerObj.coinFunnel = {
+            totalOut, donationsOut, tipsOut, ratio, wealth: _fw,
+            recipients, topRecipientId: entries[0]?.[0], topRecipientCoins: entries[0]?.[1]?.coins,
+            drainedBeyondBalance: _fw != null && totalOut > _fw,
+          };
         }
       }
       playerObj.isDirectLaunderer=isDirectLaunderer; playerObj.directLaunderAmount=directLaunderAmount;
@@ -2527,7 +2540,7 @@ export function WarEraOracle() {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
     globalWashPartners.current={}; globalBans.current={}; globalHermitPrimaries.current={};
-    phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false;
+    phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false; didLogDonationShapeRef.current=false;
     effectiveConcurrencyRef.current=settings.concurrencyLimit; concurrencyLastReducedRef.current=0;
     alwaysPhase2Ref.current=false;
     scanQueueRef.current=[];
@@ -2916,8 +2929,7 @@ export function WarEraOracle() {
     settings.suspiciousWageThreshold !== 0.110,
     settings.wealthAnomalyMultiplier !== 1.5,
     settings.wealthAnomalyLowerMultiplier !== 0.5,
-    settings.funnelConcentration !== 0.5,
-    settings.funnelMinCoins !== 25,
+    settings.funnelMinCoins !== 100,
     settings.sniperThresholdMs !== 1000,
     settings.apmWindowMs !== 500,
     settings.pacingToleranceMs !== 3,
@@ -3377,8 +3389,7 @@ export function WarEraOracle() {
               {label:'Suspicious Wage Threshold',key:'suspiciousWageThreshold',min:0.01,max:0.15,step:0.001,fmt:(v)=>v.toFixed(3),isFloat:true},
               {label:'Wealth Anomaly Threshold (high)',key:'wealthAnomalyMultiplier',min:1,max:10,step:0.5,fmt:(v)=>`${v}x`,isFloat:true},
               {label:'Low Wealth Threshold',key:'wealthAnomalyLowerMultiplier',min:0.05,max:0.95,step:0.05,fmt:(v)=>`${v}x`,isFloat:true},
-              {label:'Coin Funnel Concentration',key:'funnelConcentration',min:0.3,max:0.95,step:0.05,fmt:(v)=>`${Math.round(v*100)}%`,isFloat:true},
-              {label:'Coin Funnel Min Coins',key:'funnelMinCoins',min:5,max:200,step:5,fmt:(v)=>`${v}`,isFloat:false},
+              {label:'Coin Funnel Min Coins',key:'funnelMinCoins',min:25,max:1000,step:25,fmt:(v)=>`${v}`,isFloat:false},
               {label:'Sniper Threshold (ms)',key:'sniperThresholdMs',min:100,max:5000,step:100,fmt:(v)=>`${v}`,isFloat:false},
               {label:'Superhuman APM Window (ms)',key:'apmWindowMs',min:100,max:20000,step:100,fmt:(v)=>`${v}`,isFloat:false},
               {label:'Pacing Tolerance (ms)',key:'pacingToleranceMs',min:1,max:100,step:1,fmt:(v)=>`+/-${v}`,isFloat:false},
