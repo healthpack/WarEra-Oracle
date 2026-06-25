@@ -530,8 +530,8 @@ const detectShellCompanies = (allWorkers, settings, globalCache) => {
 const classifyWealth = (coinWealth, level, avg, settings) => {
   if (avg == null || avg <= 0 || coinWealth == null) return null;
   const ratio = coinWealth / avg;
-  const upperMult = effectiveWealthMultiplier(level, settings?.wealthAnomalyMultiplier ?? 1.5);
-  const lowerMult = settings?.wealthAnomalyLowerMultiplier ?? 0.5;
+  const upperMult = effectiveWealthMultiplier(level, settings?.wealthAnomalyMultiplier ?? 2);
+  const lowerMult = settings?.wealthAnomalyLowerMultiplier ?? 0.45;
   if (ratio > upperMult) return { anomalous: true, reason: `coin wealth ${coinWealth.toFixed(0)} is ${ratio.toFixed(1)}x the level ${level} median (${avg.toFixed(0)}).` };
   if (level >= 11 && ratio < lowerMult) return { anomalous: true, reason: `coin wealth ${coinWealth.toFixed(0)} is only ${ratio.toFixed(2)}x the level ${level} median (${avg.toFixed(0)}) — unusually low.` };
   return null;
@@ -558,7 +558,7 @@ const detectAgeDateAnomaly = (player, allWorkers, settings, globalCache, _addLog
   if (richWorkers.length >= 1) {
     suspicions.push({
       type: 'wealth_anomaly', severity: 'critical',
-      desc: `${richWorkers.length} account(s) show anomalous coin wealth for their level (outside ${settings?.wealthAnomalyLowerMultiplier ?? 0.5}x–${settings?.wealthAnomalyMultiplier ?? 1.5}x the level median). May indicate external funding or draining.`,
+      desc: `${richWorkers.length} account(s) show anomalous coin wealth for their level (outside ${settings?.wealthAnomalyLowerMultiplier ?? 0.45}x–${settings?.wealthAnomalyMultiplier ?? 2}x the level median). May indicate external funding or draining.`,
       workers: richWorkers, detectionWeight: richWorkers.length * 2
     });
   }
@@ -1612,8 +1612,8 @@ export function WarEraOracle() {
   const [settings, setSettings] = useState({
     suspiciousWageThreshold: 0.110,
     concurrencyLimit: 50,
-    wealthAnomalyMultiplier: 1.5,
-    wealthAnomalyLowerMultiplier: 0.5,
+    wealthAnomalyMultiplier: 2,
+    wealthAnomalyLowerMultiplier: 0.45,
     funnelMinCoins: 100,
     sniperThresholdMs: 1000,
     apmWindowMs: 500,
@@ -1668,6 +1668,8 @@ export function WarEraOracle() {
   const txHealthRef = useRef({ ok: 0, fail: 0, warned: false });
 
   const [listFilter, setListFilter] = useState('all');
+  const [listType, setListType] = useState('all');                 // filter by heuristic type
+  const [listSort, setListSort] = useState({ key: 'score', dir: 'desc' });
   const [activeSuspectId, setActiveSuspectId] = useState(null);
   const [configOpen, setConfigOpen] = useState(false);
   const [logExpanded, setLogExpanded] = useState(false);
@@ -2394,7 +2396,7 @@ export function WarEraOracle() {
         const _fw = extractCoinWealth(playerObj), _fl = extractUserLevel(playerObj) ?? playerObj.level;
         const _far = _fl != null ? getWealthAverageExtended(globalCacheRef.current, _fl) : null;
         const ratio = (_fw != null && _far && _far.avg > 0) ? _fw / _far.avg : null;
-        const lowWealth = ratio != null && ratio < (settings.wealthAnomalyLowerMultiplier ?? 0.5) && _fl >= 11;
+        const lowWealth = ratio != null && ratio < (settings.wealthAnomalyLowerMultiplier ?? 0.45) && _fl >= 11;
         let qDon = 0, qTip = 0; Object.values(outflowByRecipient).forEach(r => { if (!qualifies(r)) return; if (r.via === 'tip') qTip += r.coins; else qDon += r.coins; });
         const totalOut = qDon + qTip;
         if (lowWealth && totalOut >= (settings.funnelMinCoins ?? 100)) {
@@ -3083,8 +3085,27 @@ export function WarEraOracle() {
     if (result.suspicions.some((s) => HIGH_TYPES.has(s.type))) return 'high';
     return 'med';
   };
+  // Heuristic types present across all results — drives the type-filter dropdown.
+  const presentTypes = Array.from(new Set(allResults.flatMap(r => (r.suspicions || []).map(s => s.type)))).sort();
+  const humanizeType = (t) => String(t).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  // Sort accessors (wealth/level/age all derived from already-loaded player data; age comes
+  // straight off the account ObjectId — bigger seconds = newer account).
+  const scoreOf = (r) => r.adjustedDetections ?? r.detections ?? 0;
+  const wealthOf = (r) => extractCoinWealth(r.player) ?? -1;
+  const levelOf = (r) => extractUserLevel(r.player) ?? r.player.level ?? 0;
+  const ageSecOf = (r) => objIdSeconds(r.player.id) ?? 0;
+  const nameOf = (r) => String(r.player.name || '').toLowerCase();
+  const scoreCmp = (a, b) => { const ta = tierOrder[maxSevTierOf(a)], tb = tierOrder[maxSevTierOf(b)]; return ta !== tb ? ta - tb : scoreOf(b) - scoreOf(a); };
+  const baseCmp = ({
+    score: scoreCmp,
+    wealth: (a, b) => wealthOf(b) - wealthOf(a),
+    level: (a, b) => levelOf(b) - levelOf(a),
+    age: (a, b) => ageSecOf(b) - ageSecOf(a),
+    name: (a, b) => nameOf(a).localeCompare(nameOf(b)),
+  })[listSort.key] || scoreCmp;
   const filteredResults = allResults.filter(r => {
     if (listSearch && !String(r.player.name).toLowerCase().includes(listSearch.toLowerCase())) return false;
+    if (listType !== 'all' && !(r.suspicions || []).some(s => s.type === listType)) return false;
     if (listFilter !== 'all') {
       const tier = maxSevTierOf(r);
       if (listFilter === 'critical' && tier !== 'crit') return false;
@@ -3092,11 +3113,7 @@ export function WarEraOracle() {
       if (listFilter === 'medium' && tier !== 'med') return false;
     }
     return true;
-  }).sort((a, b) => {
-    const ta = tierOrder[maxSevTierOf(a)], tb = tierOrder[maxSevTierOf(b)];
-    if (ta !== tb) return ta - tb;
-    return (b.adjustedDetections ?? b.detections) - (a.adjustedDetections ?? a.detections);
-  });
+  }).sort((a, b) => (listSort.dir === 'asc' ? -1 : 1) * baseCmp(a, b));
   const caseGroups = {};
   filteredResults.forEach(r => { if (!caseGroups[r.country]) caseGroups[r.country] = []; caseGroups[r.country].push(r); });
 
@@ -3118,8 +3135,8 @@ export function WarEraOracle() {
   const totalFlags = Object.values(findings).flat().length;
   const activeRuleCount = [
     settings.suspiciousWageThreshold !== 0.110,
-    settings.wealthAnomalyMultiplier !== 1.5,
-    settings.wealthAnomalyLowerMultiplier !== 0.5,
+    settings.wealthAnomalyMultiplier !== 2,
+    settings.wealthAnomalyLowerMultiplier !== 0.45,
     settings.funnelMinCoins !== 100,
     settings.sniperThresholdMs !== 1000,
     settings.apmWindowMs !== 500,
@@ -3250,19 +3267,36 @@ export function WarEraOracle() {
           <div style={{padding:'12px 14px 8px',borderBottom:'1px solid #1f2b4e',flexShrink:0}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
               <span style={{fontSize:12,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase'}}>Case List</span>
-              <span style={{fontSize:10.5,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96'}}>{filteredResults.length} - by score</span>
+              <span style={{fontSize:10.5,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96'}}>{filteredResults.length}{filteredResults.length!==allResults.length?` / ${allResults.length}`:''} shown</span>
             </div>
             <div style={{display:'flex',alignItems:'center',gap:6,background:'#060a16',border:'1px solid #2e3f6a',borderRadius:6,padding:'5px 8px',marginBottom:8}}>
               <Search size={11} style={{color:'#5d6e96',flexShrink:0}}/>
               <input value={listSearch} onChange={e=>setListSearch(e.target.value)} placeholder="Filter suspects..." style={{background:'transparent',border:'none',outline:'none',color:'#eaf0ff',fontSize:12,flex:1,fontFamily:"IBM Plex Sans, system-ui, sans-serif"}}/>
             </div>
-            <div style={{display:'flex',gap:4}}>
+            <div style={{display:'flex',gap:4,marginBottom:8}}>
               {['all','critical','high','medium'].map(f=>(
                 <button key={f} onClick={()=>setListFilter(f)} style={{padding:'3px 8px',borderRadius:99,fontSize:10,fontWeight:600,cursor:'pointer',background:listFilter===f?'rgba(79,195,232,0.12)':'#121b35',border:`1px solid ${listFilter===f?'#2e3f6a':'#1f2b4e'}`,color:listFilter===f?'#4fc3e8':'#5d6e96'}}>
                   {f==='all'?'All':f.charAt(0).toUpperCase()+f.slice(1)}
                 </button>
               ))}
             </div>
+            {/* Sort + heuristic-type filter */}
+            {(() => {
+              const sel = {background:'#121b35',border:'1px solid #1f2b4e',color:'#9fb0d4',fontSize:10,fontWeight:600,borderRadius:6,padding:'3px 4px',cursor:'pointer',outline:'none',fontFamily:"IBM Plex Sans, system-ui, sans-serif"};
+              return (
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <span style={{fontSize:9.5,color:'#5d6e96',flexShrink:0}}>Sort</span>
+                  <select value={listSort.key} onChange={e=>setListSort(s=>({...s,key:e.target.value}))} style={sel} title="Sort by">
+                    {[['score','Score'],['wealth','Wealth'],['level','Level'],['age','Newest'],['name','Name']].map(([v,l])=><option key={v} value={v} style={{background:'#121b35'}}>{l}</option>)}
+                  </select>
+                  <button onClick={()=>setListSort(s=>({...s,dir:s.dir==='asc'?'desc':'asc'}))} title={listSort.dir==='asc'?'Ascending — click for descending':'Descending — click for ascending'} style={{...sel,padding:'3px 7px',color:'#4fc3e8'}}>{listSort.dir==='asc'?'▲':'▼'}</button>
+                  <select value={listType} onChange={e=>setListType(e.target.value)} style={{...sel,flex:1,minWidth:0}} title="Filter by heuristic">
+                    <option value="all" style={{background:'#121b35'}}>All types</option>
+                    {presentTypes.map(t=><option key={t} value={t} style={{background:'#121b35'}}>{humanizeType(t)}</option>)}
+                  </select>
+                </div>
+              );
+            })()}
           </div>
           {/* Suspect rows */}
           <div style={{flex:1,overflowY:'auto'}}>

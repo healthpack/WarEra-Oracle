@@ -71,6 +71,13 @@ why, centred on a relationship map.
   `{ userIds[], muIds[], countryIds[], ... }` (returns multiple — don't assume index 0).
 
 ## What was built this session (most recent first)
+- **Case-list filtering/sorting + wealth thresholds.** Wealth-anomaly bounds retuned to
+  **< 0.45× / > 2×** the level median (defaults `wealthAnomalyLowerMultiplier:0.45`,
+  `wealthAnomalyMultiplier:2`; upper still relaxed for sub-lvl-11 newbies via
+  `effectiveWealthMultiplier`). Case list gained a **Sort** dropdown (Score / Wealth /
+  Level / Newest / Name) with an asc/desc toggle, and a **heuristic-type filter** dropdown
+  (built from the types present in results) alongside the existing severity pills + search.
+  State: `listSort {key,dir}`, `listType`.
 - **`coordinated_creation` heuristic.** A MongoDB ObjectId embeds creation time in its
   first 4 bytes (unix seconds) — `objIdSeconds(id)` reads an account's signup time with no
   fetch (verified exact vs `createdAt`). `detectCoordinatedCreation` flags any account
