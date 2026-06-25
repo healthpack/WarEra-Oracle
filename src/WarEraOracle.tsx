@@ -857,12 +857,40 @@ class UnionFind {
 // ── Linked-Account Matrix (Concept G / Cobalt) ──────────────────────────────
 // One row per linked account; each detection becomes a column you read DOWN to
 // see the pattern. Derived entirely from the existing analyzePlayer suspicions.
-const MATRIX_LINK_LABEL = {
-  wage_uniformity: 'WAGE', low_wage: 'WAGE', fidelity_ring: 'FID',
-  naming_pattern: 'NAME', cloned_progression: 'CLONE', no_production_bonus: 'SHELL',
-  wealth_anomaly: 'WEALTH', money_laundering: 'LAUNDER', coordinated_donation: 'DONATE',
-  newborn_wealthy: 'WEALTH',
+// ── Heuristic registry — single source of truth per detection type ───────────
+// To add a heuristic: (1) write a detect* fn that pushes { type, severity, desc,
+// workers, detectionWeight } suspicions; (2) call it from analyzePhase1 /
+// analyzePlayer and concat its suspicions; (3) add one entry here. Everything
+// below (severity tier, matrix "Linked By" chip, "why this flagged" hover copy)
+// is derived from this object — no other map needs touching.
+//   tier       — score severity bucket ('crit' | 'high' | omit → 'med')
+//   matrixChip — short label in the Linked-Account Matrix "LINKED BY" column
+//   detail     — { observed, rule, note } hover copy; rule may be a fn(settings)
+const HEURISTICS = {
+  market_automation:    { tier:'crit', detail:{ observed:'Items purchased within milliseconds of listing', rule:(s)=>`Reaction < ${s.sniperThresholdMs}ms on 5+ occasions`, note:'Human reaction speed is ~200-400ms; sustained sub-threshold purchase rate is consistent with automated polling.' } },
+  superhuman_apm:       { tier:'crit', detail:{ observed:'Multiple market listings placed within a narrow window', rule:(s)=>`>=5 transactions within ${s.apmWindowMs}ms`, note:'Concurrent market actions are extremely difficult to achieve manually.' } },
+  script_pacing:        { tier:'crit', detail:{ observed:'Identical inter-action gaps across consecutive trades', rule:(s)=>`Gap variance <= ±${s.pacingToleranceMs}ms on ${s.pacingMinHits}+ consecutive pairs`, note:'Clock-perfect pacing is a strong indicator of timer-driven automation.' } },
+  money_laundering:     { tier:'crit', matrixChip:'LAUNDER', detail:{ observed:'Workers receiving unusually large coin donations', rule:()=>'Donation volume >= 30x expected wage in 30 days', note:'May be profit extraction from a controlled network; legitimate bonuses rarely reach this scale.' } },
+  coordinated_donation: { tier:'crit', matrixChip:'DONATE', detail:{ observed:'Multiple workers tipping within suspiciously close intervals', rule:()=>'>=3 donations within 60s', note:'Coordinated timing suggests an orchestrated network rather than independent actors.' } },
+  transaction_abuse:    { tier:'crit', detail:{ observed:'High-volume bilateral trading with the same counterparty', rule:()=>'>=5 trades; significantly imbalanced net profit', note:'Repeated round-trip trades between two accounts are a common wash-trading pattern.' } },
+  hermit_network:       { tier:'high', detail:{ observed:'Workers employed nowhere except this account', rule:()=>'All known employment is with this single employer', note:'Exclusive worker networks can indicate account manufacturing, though niche legitimate employers exist.' } },
+  mutual_hermit:        { tier:'high', detail:{ observed:'Mutual exclusive employment between boss and worker', rule:()=>'Boss is also exclusively employed by this account', note:'Reciprocal hermit relationships substantially increase the likelihood of coordination.' } },
+  wealth_anomaly:       { tier:'high', matrixChip:'WEALTH', detail:{ observed:'Account coin wealth far from level peers', rule:(s)=>`Coin wealth > ${s.wealthAnomalyMultiplier}x or < ${s.wealthAnomalyLowerMultiplier}x the level median (low bound applies at level 11+)`, note:'Wealth far above the level median may indicate external funding; far below may indicate a drained mule. Check account age and transaction history for context.' } },
+  fidelity_ring:        { tier:'high', matrixChip:'FID', detail:{ observed:'Workers holding maximum fidelity across the workforce', rule:()=>'Fidelity = 10/10 across workers', note:'Perfect fidelity cluster is unusual - may indicate artificially maintained relationships.' } },
+  cloned_progression:   { tier:'high', matrixChip:'CLONE', detail:{ observed:'Progression stats mirror another account', rule:()=>'Level/wealth within 2% of a known clone signature', note:'Near-identical progression curves can indicate copy-cat account farming.' } },
+  low_wage:             { matrixChip:'WAGE', detail:{ observed:'Workers paid below suspicious wage threshold', rule:(s)=>`Wage <= ${s.suspiciousWageThreshold.toFixed(3)}`, note:'Low wages alone are not conclusive; combine with other signals for stronger inference.' } },
+  naming_pattern:       { matrixChip:'NAME', detail:{ observed:'Workers share a name substring or systematic pattern', rule:()=>'>=3 workers share an overlapping name fragment', note:'Bot farms sometimes use systematic naming. May also be coincidence in small regions.' } },
+  temporal_clustering:  { detail:{ observed:'Activity concentrated in a narrow UTC window', rule:()=>'Majority of actions in <=3 contiguous hours', note:'Timezone-consistent clustering is expected - combined with other flags it may indicate automation.' } },
+  wage_uniformity:      { matrixChip:'WAGE', detail:{ observed:'All workers paid identical wages', rule:()=>'Wage variance across workforce is zero', note:'Uniform wages may suggest batch configuration rather than individual negotiation.' } },
+  no_production_bonus:  { matrixChip:'SHELL', detail:{ observed:'Companies issuing no production bonuses', rule:()=>'>=1 company with 0% bonus rate', note:'Bonus suppression can reduce worker incentive to audit their employment.' } },
+  tip_farming:          { detail:{ observed:'Heavy, concentrated tip traffic from a small set of accounts', rule:()=>'Single tipper accounts for >=50% of all received tips', note:'Tip farming networks route coins through repeated small donations to obscure origin.' } },
+  newborn_wealthy:      { matrixChip:'WEALTH' }, // legacy alias of wealth_anomaly (kept for old saved/imported findings)
 };
+const CRIT_TYPES = new Set(Object.keys(HEURISTICS).filter(t => HEURISTICS[t].tier === 'crit'));
+const HIGH_TYPES = new Set(Object.keys(HEURISTICS).filter(t => HEURISTICS[t].tier === 'high'));
+const MATRIX_LINK_LABEL = Object.fromEntries(Object.entries(HEURISTICS).filter(([, h]) => h.matrixChip).map(([t, h]) => [t, h.matrixChip]));
+// Hover copy, resolved against the live settings (rule strings are settings-aware).
+const findingDetailFor = (settings) => Object.fromEntries(Object.entries(HEURISTICS).filter(([, h]) => h.detail).map(([t, h]) => [t, { observed: h.detail.observed, rule: typeof h.detail.rule === 'function' ? h.detail.rule(settings) : h.detail.rule, note: h.detail.note }]));
 const CLONE_COLOR = ['#4fc3e8', '#c98bff', '#5aa0ff', '#3fd0a3'];
 
 const buildMatrixModel = (suspicions, globalCache) => {
@@ -2760,33 +2788,15 @@ export function WarEraOracle() {
   const gatewayNext=getNextRefill(gatewayTokens.current);
   const officialNext=getNextRefill(officialTokens.current);
 
-  const CRIT_TYPES = new Set(['market_automation','superhuman_apm','script_pacing','money_laundering','coordinated_donation','transaction_abuse']);
-  const HIGH_TYPES = new Set(['hermit_network','mutual_hermit','wealth_anomaly','fidelity_ring','cloned_progression']);
+  // CRIT_TYPES / HIGH_TYPES / FINDING_DETAIL are derived from the module-level
+  // HEURISTICS registry — the single place to declare a heuristic's tier + copy.
   const sevTierOf = (type) => CRIT_TYPES.has(type) ? 'crit' : HIGH_TYPES.has(type) ? 'high' : 'med';
   const scoreTierOf = (score) => score >= 10 ? 'crit' : score >= 5 ? 'high' : 'med';
   const T_COLOR = { crit:'#ff5d6c', high:'#ffab3d', med:'#ffd84d' };
   const T_BG    = { crit:'rgba(255,93,108,0.12)', high:'rgba(255,171,61,0.12)', med:'rgba(255,216,77,0.11)' };
   const T_LINE  = { crit:'rgba(255,93,108,0.42)', high:'rgba(255,171,61,0.40)', med:'rgba(255,216,77,0.36)' };
 
-  const FINDING_DETAIL = {
-    market_automation:    { observed:'Items purchased within milliseconds of listing', rule:`Reaction < ${settings.sniperThresholdMs}ms on 5+ occasions`, note:'Human reaction speed is ~200-400ms; sustained sub-threshold purchase rate is consistent with automated polling.' },
-    superhuman_apm:       { observed:'Multiple market listings placed within a narrow window', rule:`>=5 transactions within ${settings.apmWindowMs}ms`, note:'Concurrent market actions are extremely difficult to achieve manually.' },
-    script_pacing:        { observed:'Identical inter-action gaps across consecutive trades', rule:`Gap variance <= ±${settings.pacingToleranceMs}ms on ${settings.pacingMinHits}+ consecutive pairs`, note:'Clock-perfect pacing is a strong indicator of timer-driven automation.' },
-    money_laundering:     { observed:'Workers receiving unusually large coin donations', rule:'Donation volume >= 30x expected wage in 30 days', note:'May be profit extraction from a controlled network; legitimate bonuses rarely reach this scale.' },
-    coordinated_donation: { observed:'Multiple workers tipping within suspiciously close intervals', rule:'>=3 donations within 60s', note:'Coordinated timing suggests an orchestrated network rather than independent actors.' },
-    transaction_abuse:    { observed:'High-volume bilateral trading with the same counterparty', rule:'>=5 trades; significantly imbalanced net profit', note:'Repeated round-trip trades between two accounts are a common wash-trading pattern.' },
-    hermit_network:       { observed:'Workers employed nowhere except this account', rule:'All known employment is with this single employer', note:'Exclusive worker networks can indicate account manufacturing, though niche legitimate employers exist.' },
-    mutual_hermit:        { observed:'Mutual exclusive employment between boss and worker', rule:'Boss is also exclusively employed by this account', note:'Reciprocal hermit relationships substantially increase the likelihood of coordination.' },
-    wealth_anomaly:      { observed:'Account coin wealth far from level peers', rule:`Coin wealth > ${settings.wealthAnomalyMultiplier}x or < ${settings.wealthAnomalyLowerMultiplier}x the level median (low bound applies at level 11+)`, note:'Wealth far above the level median may indicate external funding; far below may indicate a drained mule. Check account age and transaction history for context.' },
-    fidelity_ring:        { observed:'Workers holding maximum fidelity across the workforce', rule:'Fidelity = 10/10 across workers', note:'Perfect fidelity cluster is unusual - may indicate artificially maintained relationships.' },
-    cloned_progression:   { observed:'Progression stats mirror another account', rule:'Level/wealth within 2% of a known clone signature', note:'Near-identical progression curves can indicate copy-cat account farming.' },
-    low_wage:             { observed:'Workers paid below suspicious wage threshold', rule:`Wage <= ${settings.suspiciousWageThreshold.toFixed(3)}`, note:'Low wages alone are not conclusive; combine with other signals for stronger inference.' },
-    naming_pattern:       { observed:'Workers share a name substring or systematic pattern', rule:'>=3 workers share an overlapping name fragment', note:'Bot farms sometimes use systematic naming. May also be coincidence in small regions.' },
-    temporal_clustering:  { observed:'Activity concentrated in a narrow UTC window', rule:'Majority of actions in <=3 contiguous hours', note:'Timezone-consistent clustering is expected - combined with other flags it may indicate automation.' },
-    wage_uniformity:      { observed:'All workers paid identical wages', rule:'Wage variance across workforce is zero', note:'Uniform wages may suggest batch configuration rather than individual negotiation.' },
-    no_production_bonus:  { observed:'Companies issuing no production bonuses', rule:'>=1 company with 0% bonus rate', note:'Bonus suppression can reduce worker incentive to audit their employment.' },
-    tip_farming:          { observed:'Heavy, concentrated tip traffic from a small set of accounts', rule:'Single tipper accounts for >=50% of all received tips', note:'Tip farming networks route coins through repeated small donations to obscure origin.' },
-  };
+  const FINDING_DETAIL = findingDetailFor(settings);
 
   const allResults = Object.entries(findings).flatMap(([country, results]) =>
     (results).map(r => ({ ...r, country }))
