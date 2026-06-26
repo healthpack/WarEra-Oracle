@@ -639,7 +639,21 @@ const COCREATE_WINDOW_S = 10;
 // flagged outflow account that has also gone quiet is worth surfacing — badged in the same
 // slots as a ban. Computed from the lite payload, so no extra fetch.
 const INACTIVE_DAYS = 5;
-const isInactiveUser = (u) => { const t = u?.dates?.lastConnectionAt; const ms = t ? Date.parse(t) : NaN; return Number.isFinite(ms) && (Date.now() - ms) > INACTIVE_DAYS * 86400000; };
+// "Last active" = the most recent of ALL the per-user activity timestamps WarEra exposes in
+// getUserLite.dates (login, work, daily-reward claim, message/event checks, hires, work-offer
+// applications, etc.) — any of these means the account was online doing something. Far more
+// reliable than a single lastConnectionAt, which can lag. Returns ms, or null if none.
+const lastActiveAtMs = (u) => {
+  const d = u?.dates; if (!d || typeof d !== 'object') return null;
+  let best = null;
+  const consider = (v) => { if (typeof v === 'string') { const ms = Date.parse(v); if (Number.isFinite(ms) && (best == null || ms > best)) best = ms; } };
+  for (const v of Object.values(d)) { if (Array.isArray(v)) v.forEach(consider); else consider(v); }
+  return best;
+};
+// Inactive = no activity within INACTIVE_DAYS as of the reference time. refAt is "now" for a
+// live scan, but the DB's own freshness when reading an old Local DB — so stale data isn't
+// judged against the present clock and mass-flagged.
+const isInactiveAsOf = (u, refAt) => { const la = lastActiveAtMs(u); return la != null && ((refAt || Date.now()) - la) > INACTIVE_DAYS * 86400000; };
 
 // Coordinated account creation — two accounts that are ALREADY linked to this one
 // (worker, wash partner, employer) AND were created within COCREATE_WINDOW_S of it.
@@ -1707,6 +1721,7 @@ export function WarEraOracle() {
   const [localDbMode, setLocalDbMode] = useState(false);   // read scans from the file only
   const localDbModeRef = useRef(false);
   const fullScanRef = useRef(false);                        // throttled all-regions crawl → DB
+  const inactiveRefAtRef = useRef(0);                       // "as of" time for inactivity checks
   const [dbOpen, setDbOpen] = useState(false);
   const [dbStats, setDbStats] = useState(null);
   useEffect(() => { localDbModeRef.current = localDbMode; }, [localDbMode]);
@@ -1869,7 +1884,7 @@ export function WarEraOracle() {
     throw new Error("Scan Aborted");
   };
 
-  const smartFetch = async (endpoint, payload, forceOfficial=false) => {
+  const smartFetch = async (endpoint, payload, forceOfficial=false, bypassLocal=false) => {
     // worker.* and transaction.* both authenticate fine with the user's API key on
     // either backend, so they use the normal gateway-first / official-fallback routing
     // — no special-casing. A gateway burst-401 just falls back to the official API.
@@ -1877,8 +1892,9 @@ export function WarEraOracle() {
 
     // Local DB mode — serve from the on-disk file only, never touch the network. A missing
     // key resolves to null (the scan proceeds with whatever's stored). Lightning fast, no
-    // API limits — but only as complete/fresh as the last time data was gathered.
-    if (localDbModeRef.current) {
+    // API limits — but only as complete/fresh as the last time data was gathered. bypassLocal
+    // lets specific lookups (e.g. username→ID resolution) still hit the live API in Local mode.
+    if (localDbModeRef.current && !bypassLocal) {
       const local = localStore.get(cacheKey);
       return local === undefined ? null : local;
     }
@@ -2130,14 +2146,14 @@ export function WarEraOracle() {
         // Ban status lives under infos.isBanned (and isActive:false). Mark it but keep
         // analysing — a flagged banned account should still surface, badged as BANNED.
         playerObj.isBanned = !!(uData.isBanned || uData.banned || uData.infos?.isBanned);
-        playerObj.inactive = isInactiveUser(uData);
+        playerObj.inactive = isInactiveAsOf(uData, inactiveRefAtRef.current);
         if (playerObj.inactive) {
           globalInactive.current[uId] = true;
-          // Diagnostic: print the actual last-login the app received, so a wrongly-flagged
-          // active account is obvious (recent date = bug; genuinely old date = correct).
-          const _lc = uData?.dates?.lastConnectionAt;
-          const _days = _lc ? ((Date.now() - Date.parse(_lc)) / 86400000).toFixed(1) : '?';
-          addLog(`[INACTIVE] ${foundName}: lastConnectionAt=${_lc || 'MISSING'} (${_days}d ago)`, 'info');
+          // Diagnostic: print the most-recent activity the app saw, so a wrongly-flagged
+          // active account is obvious (recent = bug; genuinely old = correct).
+          const _la = lastActiveAtMs(uData);
+          const _days = _la ? ((inactiveRefAtRef.current - _la) / 86400000).toFixed(1) : '?';
+          addLog(`[INACTIVE] ${foundName}: last active ${_days}d before data (${_la ? new Date(_la).toISOString().slice(0,10) : 'NO dates'})`, 'info');
         }
         bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
       }
@@ -2301,7 +2317,7 @@ export function WarEraOracle() {
           globalCacheRef.current.names[partnerId]=washPartners[partnerId].name;
           const isPBanned=!!(pData.isBanned||pData.banned||pData.infos?.isBanned);
           washPartners[partnerId].isBanned=isPBanned; globalBans.current[partnerId]=isPBanned;
-          const isPInactive=isInactiveUser(pData);
+          const isPInactive=isInactiveAsOf(pData, inactiveRefAtRef.current);
           washPartners[partnerId].inactive=isPInactive; if (isPInactive) globalInactive.current[partnerId]=true;
         }
       } catch(e) { washPartners[partnerId].name=partnerId; washPartners[partnerId].level='?'; }
@@ -2429,7 +2445,7 @@ export function WarEraOracle() {
               if (td) {
                 const tName = td.username || td.name || td.displayName || td.nickname || td.user?.username || td.profile?.username || null;
                 if (tName) globalCacheRef.current.names[tipperId] = tName;
-                tipperMeta[tipperId] = { level: td.leveling?.level ?? td.userLevel?.value ?? null, isBanned: !!(td.isBanned || td.banned || td.infos?.isBanned), inactive: isInactiveUser(td) };
+                tipperMeta[tipperId] = { level: td.leveling?.level ?? td.userLevel?.value ?? null, isBanned: !!(td.isBanned || td.banned || td.infos?.isBanned), inactive: isInactiveAsOf(td, inactiveRefAtRef.current) };
               }
             } catch { /* best-effort */ }
             try {
@@ -2483,6 +2499,11 @@ export function WarEraOracle() {
           } else if (r.kind === 'country' && !r.name) {
             if (ecache[r.id]) { r.name = ecache[r.id]; continue; }
             try { const c = await smartFetch('country.getCountryById', { countryId: r.id }); const n = c?.name || null; if (n) { r.name = n; ecache[r.id] = n; } } catch { /* best-effort */ }
+          } else if (r.kind === 'user' && !r.name) {
+            // Tip recipients are usually unscanned (esp. on a single-user scan), so resolve
+            // their username here instead of falling back to the user_xxxxxx placeholder.
+            if (globalCacheRef.current.names[r.id]) { r.name = globalCacheRef.current.names[r.id]; continue; }
+            try { const u = await smartFetch('user.getUserLite', { userId: r.id }); const n = u?.username || u?.name || null; if (n) { r.name = n; globalCacheRef.current.names[r.id] = n; } } catch { /* best-effort */ }
           }
         }
         playerObj.outflowRecipients = recipients;
@@ -2704,7 +2725,7 @@ export function WarEraOracle() {
                   const uData = w.resolvedUser?.username ? w.resolvedUser : await smartFetch('user.getUserLite', { userId });
                   if (uData) {
                     w.resolvedUser=uData; w.isBanned=!!(uData.isBanned||uData.banned||uData.infos?.isBanned);
-                    w.inactive=isInactiveUser(uData); if (w.inactive) globalInactive.current[userId]=true;
+                    w.inactive=isInactiveAsOf(uData, inactiveRefAtRef.current); if (w.inactive) globalInactive.current[userId]=true;
                     if (uData.rankings) { uData.userWealth = uData.userWealth || uData.rankings.userWealth; uData.userLevel = uData.userLevel || uData.rankings.userLevel; }
                     logUserWealth(uData.username||uData.name||userId, uData);
                     { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w, userId); }
@@ -2783,7 +2804,7 @@ export function WarEraOracle() {
             globalCacheRef.current.names[ownerId] = ownerName;
             const ownerBanned = !!(oData?.infos?.isBanned || oData?.isBanned || oData?.banned);
             if (ownerBanned) globalBans.current[ownerId] = true;
-            const ownerInactive = isInactiveUser(oData);
+            const ownerInactive = isInactiveAsOf(oData, inactiveRefAtRef.current);
             if (ownerInactive) globalInactive.current[ownerId] = true;
             livePlayer.employer = { id: ownerId, name: ownerName, level: oData?.leveling?.level ?? null, banned: ownerBanned, inactive: ownerInactive, companyName: co?.name || null };
             addLog(`[INFO] ${foundName} is employed by ${ownerName}.`, 'info');
@@ -2831,6 +2852,8 @@ export function WarEraOracle() {
     // A full-scan crawl runs deliberately throttled (low concurrency) to stay polite and
     // well under rate limits, since it walks every region; a normal scan uses the setting.
     effectiveConcurrencyRef.current = fullScanRef.current ? Math.min(8, settings.concurrencyLimit) : settings.concurrencyLimit; concurrencyLastReducedRef.current=0;
+    // Inactivity reference: now for a live scan; the DB's freshness when reading an old Local DB.
+    inactiveRefAtRef.current = (localDbModeRef.current ? (localStore.newestFetchedAt() || Date.now()) : Date.now());
     alwaysPhase2Ref.current=false;
     scanQueueRef.current=[];
     
@@ -2889,14 +2912,14 @@ export function WarEraOracle() {
       if (actualTargetId&&!/^[0-9a-fA-F]{24}$/.test(actualTargetId)) {
         addLog(`Resolving username "${actualTargetId}"...`, 'info');
         try {
-          const searchData=await smartFetch('search.searchAnything',{searchText:actualTargetId});
+          const searchData=await smartFetch('search.searchAnything',{searchText:actualTargetId},false,true);
           const targetLower=actualTargetId.toLowerCase();
           const extractIds=(obj)=>{ let ids=[]; if(Array.isArray(obj)){for(let item of obj){if(typeof item==='string'&&/^[0-9a-fA-F]{24}$/.test(item))ids.push(item);else if(typeof item==='object')ids.push(...extractIds(item));}}else if(typeof obj==='object'&&obj!==null){for(let key in obj){if(key==='userIds'&&Array.isArray(obj[key]))ids.push(...obj[key].filter(i=>/^[0-9a-fA-F]{24}$/.test(i)));else if(typeof obj[key]==='object')ids.push(...extractIds(obj[key]));}} return ids; };
           const possibleIds=extractIds(searchData);
           let foundExactId=null;
           if (possibleIds.length>0) {
             for (const id of possibleIds) {
-              try { const uProfile=await smartFetch('user.getUserLite',{userId:id}); if(uProfile&&(String(uProfile.username||'').toLowerCase()===targetLower||String(uProfile.name||'').toLowerCase()===targetLower)){foundExactId=id;break;} } catch(e){}
+              try { const uProfile=await smartFetch('user.getUserLite',{userId:id},false,true); if(uProfile&&(String(uProfile.username||'').toLowerCase()===targetLower||String(uProfile.name||'').toLowerCase()===targetLower)){foundExactId=id;break;} } catch(e){}
             }
           }
           if (foundExactId) { actualTargetId=foundExactId; addLog(`✅ Resolved to ID: ${actualTargetId}`, 'info'); }
@@ -3177,54 +3200,49 @@ export function WarEraOracle() {
 
   const FINDING_DETAIL = findingDetailFor(settings);
 
-  const allResults = Object.entries(findings).flatMap(([country, results]) =>
-    (results).map(r => ({ ...r, country }))
-  );
   const tierOrder = { crit: 0, high: 1, med: 2 };
   const maxSevTierOf = (result) => {
     if (result.suspicions.some((s) => CRIT_TYPES.has(s.type))) return 'crit';
     if (result.suspicions.some((s) => HIGH_TYPES.has(s.type))) return 'high';
     return 'med';
   };
-  // Heuristic types present across all results — drives the type-filter dropdown.
-  const presentTypes = Array.from(new Set(allResults.flatMap(r => (r.suspicions || []).map(s => s.type)))).sort();
   const humanizeType = (t) => String(t).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  // Sort accessors (wealth/level/age all derived from already-loaded player data; age comes
-  // straight off the account ObjectId — bigger seconds = newer account).
-  const scoreOf = (r) => r.adjustedDetections ?? r.detections ?? 0;
-  // Sort by the wealth ×median ratio (what the cards actually show), not raw coins — a
-  // 0.4× account must rank above a 0.2× one regardless of their absolute coin totals.
-  const wealthOf = (r) => {
-    const cw = extractCoinWealth(r.player);
-    if (cw == null) return -1;
-    const lv = extractUserLevel(r.player) ?? r.player.level;
-    const ar = lv != null ? getWealthAverageExtended(globalCacheRef.current, lv) : null;
-    return (ar && ar.avg > 0) ? cw / ar.avg : -1;
-  };
-  const levelOf = (r) => extractUserLevel(r.player) ?? r.player.level ?? 0;
-  const ageSecOf = (r) => objIdSeconds(r.player.id) ?? 0;
-  const nameOf = (r) => String(r.player.name || '').toLowerCase();
-  const scoreCmp = (a, b) => { const ta = tierOrder[maxSevTierOf(a)], tb = tierOrder[maxSevTierOf(b)]; return ta !== tb ? ta - tb : scoreOf(b) - scoreOf(a); };
-  const baseCmp = ({
-    score: scoreCmp,
-    wealth: (a, b) => wealthOf(b) - wealthOf(a),
-    level: (a, b) => levelOf(b) - levelOf(a),
-    age: (a, b) => ageSecOf(b) - ageSecOf(a),
-    name: (a, b) => nameOf(a).localeCompare(nameOf(b)),
-  })[listSort.key] || scoreCmp;
-  const filteredResults = allResults.filter(r => {
-    if (listSearch && !String(r.player.name).toLowerCase().includes(listSearch.toLowerCase())) return false;
-    if (listType !== 'all' && !(r.suspicions || []).some(s => s.type === listType)) return false;
-    if (listFilter !== 'all') {
-      const tier = maxSevTierOf(r);
-      if (listFilter === 'critical' && tier !== 'crit') return false;
-      if (listFilter === 'high' && tier !== 'high') return false;
-      if (listFilter === 'medium' && tier !== 'med') return false;
+  // Memoised so the 250ms status tick (and other unrelated re-renders) don't re-run the
+  // case-list sort. The wealth sort computes a level-baseline ratio per row, so re-sorting
+  // a ~280-row list every tick caused the lag; here each ratio is precomputed once and the
+  // whole list only recomputes when the data or a sort/filter control actually changes.
+  const { allResults, presentTypes, filteredResults, caseGroups } = React.useMemo(() => {
+    const allResults = Object.entries(findings).flatMap(([country, results]) => results.map(r => ({ ...r, country })));
+    const presentTypes = Array.from(new Set(allResults.flatMap(r => (r.suspicions || []).map(s => s.type)))).sort();
+    const wealthRatio = new Map();
+    for (const r of allResults) {
+      const cw = extractCoinWealth(r.player); let ratio = -1;
+      if (cw != null) { const lv = extractUserLevel(r.player) ?? r.player.level; const ar = lv != null ? getWealthAverageExtended(globalCacheRef.current, lv) : null; if (ar && ar.avg > 0) ratio = cw / ar.avg; }
+      wealthRatio.set(r.player.id, ratio);
     }
-    return true;
-  }).sort((a, b) => (listSort.dir === 'asc' ? -1 : 1) * baseCmp(a, b));
-  const caseGroups = {};
-  filteredResults.forEach(r => { if (!caseGroups[r.country]) caseGroups[r.country] = []; caseGroups[r.country].push(r); });
+    const scoreOf = (r) => r.adjustedDetections ?? r.detections ?? 0;
+    const levelOf = (r) => extractUserLevel(r.player) ?? r.player.level ?? 0;
+    const ageSecOf = (r) => objIdSeconds(r.player.id) ?? 0;
+    const nameOf = (r) => String(r.player.name || '').toLowerCase();
+    const scoreCmp = (a, b) => { const ta = tierOrder[maxSevTierOf(a)], tb = tierOrder[maxSevTierOf(b)]; return ta !== tb ? ta - tb : scoreOf(b) - scoreOf(a); };
+    const baseCmp = ({
+      score: scoreCmp,
+      wealth: (a, b) => wealthRatio.get(b.player.id) - wealthRatio.get(a.player.id),
+      level: (a, b) => levelOf(b) - levelOf(a),
+      age: (a, b) => ageSecOf(b) - ageSecOf(a),
+      name: (a, b) => nameOf(a).localeCompare(nameOf(b)),
+    })[listSort.key] || scoreCmp;
+    const filteredResults = allResults.filter(r => {
+      if (listSearch && !String(r.player.name).toLowerCase().includes(listSearch.toLowerCase())) return false;
+      if (listType !== 'all' && !(r.suspicions || []).some(s => s.type === listType)) return false;
+      if (listFilter !== 'all') { const tier = maxSevTierOf(r); if (listFilter === 'critical' && tier !== 'crit') return false; if (listFilter === 'high' && tier !== 'high') return false; if (listFilter === 'medium' && tier !== 'med') return false; }
+      return true;
+    }).sort((a, b) => (listSort.dir === 'asc' ? -1 : 1) * baseCmp(a, b));
+    const caseGroups = {};
+    filteredResults.forEach(r => { if (!caseGroups[r.country]) caseGroups[r.country] = []; caseGroups[r.country].push(r); });
+    return { allResults, presentTypes, filteredResults, caseGroups };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findings, listSearch, listType, listFilter, listSort.key, listSort.dir]);
 
   const activeResult = allResults.find(r => r.player.id === activeSuspectId) || null;
   const orderedSuspicions = activeResult

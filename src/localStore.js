@@ -39,6 +39,11 @@ let map = new Map();          // key -> { data, fetchedAt, endpoint }  (latest p
 let fileSize = 0;             // byte length on disk, for append seeking
 let buffer = [];              // pending NDJSON lines not yet flushed
 let flushTimer = null, flushing = false;
+let newestAt = 0;             // most recent fetchedAt in the store (data-freshness reference)
+
+// The freshest fetch time in the DB — used as the "as of" reference for staleness-sensitive
+// checks (e.g. inactivity) when reading an old DB, so 10-day-old data isn't judged against now.
+export function newestFetchedAt() { return newestAt || null; }
 
 export function isSupported() { return typeof window !== 'undefined' && 'showSaveFilePicker' in window; }
 export function isOpen() { return !!handle; }
@@ -47,11 +52,11 @@ async function loadFromHandle(h) {
   const file = await h.getFile();
   fileSize = file.size;
   const text = file.size ? await file.text() : '';
-  map = new Map();
+  map = new Map(); newestAt = 0;
   let lines = 0;
   for (const line of text.split('\n')) {
     if (!line) continue;
-    try { const r = JSON.parse(line); if (r && r.k) { map.set(r.k, { data: r.d, fetchedAt: r.t, endpoint: r.e }); lines++; } } catch { /* skip bad line */ }
+    try { const r = JSON.parse(line); if (r && r.k) { map.set(r.k, { data: r.d, fetchedAt: r.t, endpoint: r.e }); if (r.t > newestAt) newestAt = r.t; lines++; } } catch { /* skip bad line */ }
   }
   handle = h; buffer = [];
   return { records: map.size, lines };
@@ -61,7 +66,7 @@ async function loadFromHandle(h) {
 export async function createNew() {
   const h = await window.showSaveFilePicker({ suggestedName: 'palantirish.ndjson', types: [{ description: 'Palantirish DB', accept: { 'application/x-ndjson': ['.ndjson'] } }] });
   const w = await h.createWritable(); await w.close();   // truncate to empty
-  await saveHandle(h); handle = h; map = new Map(); fileSize = 0; buffer = [];
+  await saveHandle(h); handle = h; map = new Map(); fileSize = 0; buffer = []; newestAt = 0;
   return { records: 0, lines: 0 };
 }
 
@@ -86,7 +91,7 @@ export async function reconnect() {
 // True if a previous file handle is remembered (so the UI can offer "Reconnect").
 export async function hasRemembered() { return !!(await loadHandle()); }
 
-export function close() { handle = null; map = new Map(); fileSize = 0; buffer = []; }
+export function close() { handle = null; map = new Map(); fileSize = 0; buffer = []; newestAt = 0; }
 
 export function get(key) { const r = map.get(key); return r ? r.data : undefined; }
 
@@ -95,7 +100,7 @@ export function get(key) { const r = map.get(key); return r ? r.data : undefined
 export function put(key, endpoint, data, payload) {
   if (!handle) return;
   const t = Date.now();
-  map.set(key, { data, fetchedAt: t, endpoint });
+  map.set(key, { data, fetchedAt: t, endpoint }); newestAt = t;
   buffer.push(JSON.stringify({ k: key, e: endpoint, d: data, t }) + '\n');
   scheduleFlush();
 }
