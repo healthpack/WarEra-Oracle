@@ -4,8 +4,9 @@ import {
   ChevronDown, AlertTriangle, Users, Database, UserX, 
   ExternalLink, Settings, Search, Star, Trash2, Coins,
   Target, Zap, Network, Clock, Download, Filter,
-  RefreshCw, Info, Baby, Moon, Heart, Timer, CheckSquare, Bookmark
+  RefreshCw, Info, Baby, Moon, Heart, Timer, CheckSquare, Bookmark, HardDrive
 } from 'lucide-react';
+import * as localStore from './localStore';
 
 // ─────────────────────────────────────────────
 //  API LAYER
@@ -1100,6 +1101,10 @@ const PL_SEV = {
 const plScoreTier = (s) => s >= 10 ? 'crit' : s >= 5 ? 'high' : 'med';
 const plSevTier = (sev) => sev === 'critical' ? 'crit' : sev === 'high' ? 'high' : 'med';
 const PL_REL = { name: '#5aa0ff', clone: '#c98bff', wash: '#ff5d6c', donation: '#3fd0a3', funnel: '#e6c34a', role: '#7c5cff', employer: '#2dd4bf', tip: '#3fd0a3' };
+// Local DB readouts
+const fmtBytes = (n) => n == null ? '—' : n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : n < 1073741824 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1073741824).toFixed(2) + ' GB';
+const fmtAge = (ms) => { if (!ms) return 'empty'; const s = Math.max(0, (Date.now() - ms) / 1000); if (s < 60) return 'just now'; if (s < 3600) return Math.floor(s / 60) + 'm ago'; if (s < 86400) return Math.floor(s / 3600) + 'h ago'; return Math.floor(s / 86400) + 'd ago'; };
+const DB_BTN = { fontSize: 10, fontWeight: 600, cursor: 'pointer', background: '#1b2748', border: '1px solid #2e3f6a', borderRadius: 5, color: '#9fb0d4', padding: '2px 7px', whiteSpace: 'nowrap' };
 const wealthColor = (x) => x == null ? '#9fb0d4' : (x < 0.5 ? '#4fc3e8' : x > 2 ? '#ff5d6c' : '#ffab3d');
 
 // Cluster-shape glyph for the case list — Workforce (employees) / Ring / Solo.
@@ -1698,6 +1703,15 @@ export function WarEraOracle() {
   const globalWashPartners = useRef({});
   const globalBans = useRef({});
   const globalInactive = useRef({});
+  // Local DB (Option A — a file the user picks on disk; see localStore.js)
+  const [localDbMode, setLocalDbMode] = useState(false);   // read scans from the file only
+  const localDbModeRef = useRef(false);
+  const [dbOpen, setDbOpen] = useState(false);
+  const [dbStats, setDbStats] = useState(null);
+  useEffect(() => { localDbModeRef.current = localDbMode; }, [localDbMode]);
+  // Flush any buffered writes to the DB file whenever a scan stops, and on tab close.
+  useEffect(() => { if (!isScanning && localStore.isOpen()) localStore.flushNow(); }, [isScanning]);
+  useEffect(() => { const h = () => { if (localStore.isOpen()) localStore.flushNow(); }; window.addEventListener('beforeunload', h); return () => window.removeEventListener('beforeunload', h); }, []);
   const globalHermitPrimaries = useRef({});
   const phase2DataRef = useRef({});
   const didLogTipPayloadRef = useRef(false);
@@ -1859,7 +1873,15 @@ export function WarEraOracle() {
     // either backend, so they use the normal gateway-first / official-fallback routing
     // — no special-casing. A gateway burst-401 just falls back to the official API.
     const cacheKey = endpoint + JSON.stringify(payload);
-    
+
+    // Local DB mode — serve from the on-disk file only, never touch the network. A missing
+    // key resolves to null (the scan proceeds with whatever's stored). Lightning fast, no
+    // API limits — but only as complete/fresh as the last time data was gathered.
+    if (localDbModeRef.current) {
+      const local = localStore.get(cacheKey);
+      return local === undefined ? null : local;
+    }
+
     if (globalCacheRef.current.requestDeduper.has(cacheKey)) {
         return await globalCacheRef.current.requestDeduper.get(cacheKey);
     }
@@ -1971,6 +1993,9 @@ export function WarEraOracle() {
     
     try {
       const result = await fetchPromise;
+      // Mirror every successful live response into the on-disk Local DB (append-only,
+      // never pruned), so it can be replayed offline later. Best-effort; no-op if no file.
+      if (result != null && localStore.isOpen()) localStore.put(cacheKey, endpoint, result, payload);
       setTimeout(() => { if (globalCacheRef.current.requestDeduper) globalCacheRef.current.requestDeduper.delete(cacheKey); }, 60000);
       return result;
     } catch (err) {
@@ -1978,6 +2003,17 @@ export function WarEraOracle() {
       throw err;
     }
   };
+
+  // ── Local DB (Option A) handlers ──────────────────────────────────────────────
+  const [dbSupported] = useState(() => localStore.isSupported());
+  const [dbRemembered, setDbRemembered] = useState(false);
+  const refreshDbStats = useCallback(async () => { try { setDbStats(await localStore.stats()); } catch { /* ignore */ } }, []);
+  useEffect(() => { if (dbSupported) localStore.hasRemembered().then(setDbRemembered); }, [dbSupported]);
+  useEffect(() => { if (!dbOpen) return; const id = setInterval(refreshDbStats, 3000); return () => clearInterval(id); }, [dbOpen, refreshDbStats]);
+  const handleDbNew = async () => { try { await localStore.createNew(); setDbOpen(true); setDbRemembered(true); refreshDbStats(); addLog('[DB] New local database file created — live scans will now also write to it.', 'info'); } catch (e) { if (e.name !== 'AbortError') addLog('[DB] ' + e.message, 'warning'); } };
+  const handleDbOpen = async () => { try { const r = await localStore.openExisting(); setDbOpen(true); setDbRemembered(true); refreshDbStats(); addLog(`[DB] Opened local database — ${r.records} records loaded.`, 'info'); } catch (e) { if (e.name !== 'AbortError') addLog('[DB] ' + e.message, 'warning'); } };
+  const handleDbReconnect = async () => { try { const r = await localStore.reconnect(); if (r) { setDbOpen(true); refreshDbStats(); addLog(`[DB] Reconnected to local database — ${r.records} records.`, 'info'); } else addLog('[DB] Could not reconnect (permission denied or file moved).', 'warning'); } catch (e) { addLog('[DB] ' + e.message, 'warning'); } };
+  const handleDbClose = () => { localStore.flushNow(); localStore.close(); setDbOpen(false); setLocalDbMode(false); setDbStats(null); addLog('[DB] Local database closed (file kept on disk).', 'info'); };
 
   const fetchRegions = async () => {
     addLog('Pinging WarEra API for regions...', 'info');
@@ -3302,6 +3338,29 @@ export function WarEraOracle() {
         <button onClick={()=>setConfigOpen(o=>!o)} style={{display:'flex',alignItems:'center',gap:5,padding:'5px 10px',background:configOpen?'#1b2748':'#121b35',border:`1px solid ${configOpen?'#4fc3e8':'#2e3f6a'}`,borderRadius:6,color:configOpen?'#4fc3e8':'#9fb0d4',fontSize:11.5,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}}>
           <Settings size={12}/> Thresholds{activeRuleCount>0&&<span style={{background:'rgba(79,195,232,0.20)',color:'#4fc3e8',borderRadius:99,padding:'1px 6px',fontSize:9,fontWeight:700}}>{activeRuleCount}</span>}
         </button>
+        {/* Local DB (Option A — a file on disk; Chrome only) */}
+        {dbSupported && (
+          <div style={{display:'flex',alignItems:'center',gap:6,padding:'4px 8px',background:'#121b35',border:`1px solid ${localDbMode?'#3fd0a3':dbOpen?'#2e3f6a':'#1f2b4e'}`,borderRadius:6,flexShrink:0}} title={dbOpen?undefined:'Persist scans to a file on your disk for instant offline re-scans.'}>
+            <HardDrive size={13} style={{color:dbOpen?(localDbMode?'#3fd0a3':'#9fb0d4'):'#5d6e96',flexShrink:0}}/>
+            {!dbOpen ? (
+              <>
+                <span style={{fontSize:10,color:'#5d6e96',whiteSpace:'nowrap'}}>Local DB</span>
+                <button onClick={handleDbNew} style={DB_BTN}>New</button>
+                <button onClick={handleDbOpen} style={DB_BTN}>Open</button>
+                {dbRemembered && <button onClick={handleDbReconnect} style={{...DB_BTN,color:'#4fc3e8'}}>Reconnect</button>}
+              </>
+            ) : (
+              <>
+                <div style={{display:'flex',flexDirection:'column',lineHeight:1.15}}>
+                  <span style={{fontSize:9.5,color:'#9fb0d4',fontFamily:"IBM Plex Mono, monospace",whiteSpace:'nowrap',maxWidth:130,overflow:'hidden',textOverflow:'ellipsis'}}>{dbStats?.name||'database'}</span>
+                  <span style={{fontSize:8.5,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace",whiteSpace:'nowrap'}}>{(dbStats?.records??0).toLocaleString()} recs · {fmtBytes(dbStats?.size)} · {fmtAge(dbStats?.newest)}{dbStats?.pending?' · saving…':''}</span>
+                </div>
+                <button onClick={()=>setLocalDbMode(m=>!m)} title="Local DB mode: scans read ONLY from the file (instant, no API limits) instead of the live API." style={{...DB_BTN,background:localDbMode?'rgba(63,208,163,0.18)':'#1b2748',color:localDbMode?'#3fd0a3':'#9fb0d4',border:`1px solid ${localDbMode?'#3fd0a3':'#2e3f6a'}`}}>{localDbMode?'◉ Local':'○ Live'}</button>
+                <button onClick={handleDbClose} title="Close database (file stays on disk)" style={{...DB_BTN,color:'#5d6e96',padding:'2px 6px'}}>✕</button>
+              </>
+            )}
+          </div>
+        )}
         {/* Import */}
         <button onClick={()=>fileInputRef.current?.click()} style={{display:'flex',alignItems:'center',gap:5,padding:'5px 10px',background:'#121b35',border:'1px solid #2e3f6a',borderRadius:6,color:'#9fb0d4',fontSize:11.5,fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>
           <Download size={11} style={{transform:'rotate(180deg)'}}/> Import
