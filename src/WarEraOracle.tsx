@@ -1118,7 +1118,7 @@ const clusterKindOf = (r, globalCache) => {
 
 // Builds the relationship graph for the map from ALL relevant suspicions:
 // worker nodes (employed alts) + wash-trade partners, with name / clone / wash edges.
-const buildClusterGraph = (activeResult, globalCache) => {
+const buildClusterGraph = (activeResult, globalCache, showOutflow = false) => {
   const bossId = activeResult.player.id;
   const { rows } = buildMatrixModel(activeResult.suspicions, globalCache);
   const nodes = new Map();
@@ -1161,12 +1161,17 @@ const buildClusterGraph = (activeResult, globalCache) => {
     }
     edges.push({ a: emp.id, b: bossId, type: 'employer', companyName: emp.companyName });
   }
-  // Outflow sinks — each donation/tip recipient (MU / country / user) as a sink node
-  // with an outbound edge labelled by the coins drained. Drawn for coin_funnel AND
-  // money_laundering (large outbound donations), so "where it went" is always visible.
+  // Outflow sinks — each donation/tip recipient (MU / country / user) as a sink node with
+  // an outbound edge labelled by the coins drained. This is an OPT-IN investigation layer
+  // (the "Coins out" toggle, off by default) so the map stays uncluttered; the coin_funnel
+  // and money_laundering FLAGS still surface in the ledger/deep-dive regardless. Source is
+  // the per-account outflowRecipients (computed for everyone, any wealth), falling back to
+  // the flag-specific recipient lists.
   const funnel = (activeResult.suspicions || []).find(s => s.type === 'coin_funnel');
   const launder = (activeResult.suspicions || []).find(s => s.type === 'money_laundering');
-  const sinkRecips = funnel?.funnelData?.recipients?.length ? funnel.funnelData.recipients : (launder?.funnelRecipients || []);
+  const sinkRecips = !showOutflow ? []
+    : (activeResult.player?.outflowRecipients?.length ? activeResult.player.outflowRecipients
+       : (funnel?.funnelData?.recipients?.length ? funnel.funnelData.recipients : (launder?.funnelRecipients || [])));
   sinkRecips.forEach(r => {
     if (!r.id || r.id === bossId) return;
     if (!nodes.has(r.id)) {
@@ -1398,13 +1403,21 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
 
 // Builds the cluster map (or a placeholder) from a suspect's analysis result.
 const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX, bossWealth }) => {
-  const { nodes, edges } = buildClusterGraph(activeResult, globalCache);
+  const [showOutflow, setShowOutflow] = React.useState(false);
+  const { nodes, edges } = buildClusterGraph(activeResult, globalCache, showOutflow);
   const boss = { name: String(activeResult.player.name), id: activeResult.player.id, level: activeResult.player.level, score: activeResult.adjustedDetections ?? activeResult.detections, region: activeResult.country, wealthX: bossWealthX, wealth: bossWealth };
+  const outflowCount = activeResult.player?.outflowRecipients?.length || 0;
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 7 }}>
         <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', color: '#9fb0d4', textTransform: 'uppercase' }}>Relationship Map</span>
         <span style={{ fontSize: 11, color: '#5d6e96' }}>— the boss at the hub; edges show how the alts are linked</span>
+        {outflowCount > 0 && (
+          <button onClick={() => setShowOutflow(v => !v)} title="Trace where this account's coins went (donations to MUs/countries + tips). Off by default to keep the map clean."
+            style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 600, cursor: 'pointer', borderRadius: 99, padding: '3px 10px', whiteSpace: 'nowrap', background: showOutflow ? 'rgba(230,195,74,0.14)' : '#121b35', border: `1px solid ${showOutflow ? '#e6c34a' : '#2e3f6a'}`, color: showOutflow ? '#e6c34a' : '#9fb0d4' }}>
+            {showOutflow ? '◉' : '○'} Coins out ({outflowCount})
+          </button>
+        )}
       </div>
       <div style={{ flex: 1, minHeight: 384, border: '1px solid #1f2b4e', borderRadius: 10, background: '#0c1226', overflow: 'hidden' }}>
         {nodes.length >= 1

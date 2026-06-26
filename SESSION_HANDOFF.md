@@ -71,6 +71,15 @@ why, centred on a relationship map.
   `{ userIds[], muIds[], countryIds[], ... }` (returns multiple — don't assume index 0).
 
 ## What was built this session (most recent first)
+- **Outflow is now an opt-in map layer ("Coins out" toggle, off by default).** Coin-sink
+  nodes (donations to MUs/countries + tips) used to auto-draw for coin_funnel/money_laundering
+  accounts; now they only draw when the user flips the **Coins out** toggle on the map header
+  (`ClusterMapPanel` local `showOutflow` state → `buildClusterGraph(...,showOutflow)`). The
+  coin_funnel/money_laundering FLAGS are unchanged (still in ledger + deep-dive). Source is
+  `player.outflowRecipients` (computed for EVERY account at any wealth, above floors tips≥25 /
+  MU·country≥200), so you can trace where ANY account's coins went, not just low-wealth ones.
+  The 0.45× gate stays ONLY on the *scored* `wealth_anomaly` + `coin_funnel` flags;
+  `transaction_abuse` (ring trading) has no wealth/level gate (fires at any level/wealth).
 - **Inactive-badge fix + tippers on the map.** The `isActive===false` clause was removed
   from the worker INACTIVE badge — WarEra's `isActive` is `false` for many *active* players
   (e.g. Alexo, logged in 4 days ago, has `isActive:false`), so it false-fired everywhere;
