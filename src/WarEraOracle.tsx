@@ -1422,7 +1422,7 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
 
 // Builds the cluster map (or a placeholder) from a suspect's analysis result.
 const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX, bossWealth }) => {
-  const [showOutflow, setShowOutflow] = React.useState(false);
+  const [showOutflow, setShowOutflow] = React.useState(true);
   const { nodes, edges } = buildClusterGraph(activeResult, globalCache, showOutflow);
   const boss = { name: String(activeResult.player.name), id: activeResult.player.id, level: activeResult.player.level, score: activeResult.adjustedDetections ?? activeResult.detections, region: activeResult.country, wealthX: bossWealthX, wealth: bossWealth };
   const outflowCount = activeResult.player?.outflowRecipients?.length || 0;
@@ -1721,7 +1721,6 @@ export function WarEraOracle() {
   const [localDbMode, setLocalDbMode] = useState(false);   // read scans from the file only
   const localDbModeRef = useRef(false);
   const fullScanRef = useRef(false);                        // throttled all-regions crawl → DB
-  const inactiveRefAtRef = useRef(0);                       // "as of" time for inactivity checks
   const [dbOpen, setDbOpen] = useState(false);
   const [dbStats, setDbStats] = useState(null);
   useEffect(() => { localDbModeRef.current = localDbMode; }, [localDbMode]);
@@ -2025,6 +2024,13 @@ export function WarEraOracle() {
   const [dbSupported] = useState(() => localStore.isSupported());
   const [dbRemembered, setDbRemembered] = useState(false);
   const refreshDbStats = useCallback(async () => { try { setDbStats(await localStore.stats()); } catch { /* ignore */ } }, []);
+  // Inactivity reference time for a given account: "now" for a live scan (fresh data), but
+  // that user's OWN stored fetch time when reading the Local DB — so an old record isn't
+  // judged against newer ones in the same DB (which falsely flagged active players).
+  const inactiveRefFor = (userId) => {
+    if (!localDbModeRef.current) return Date.now();
+    return localStore.fetchedAtFor('user.getUserLite' + JSON.stringify({ userId })) || localStore.newestFetchedAt() || Date.now();
+  };
   useEffect(() => { if (dbSupported) localStore.hasRemembered().then(setDbRemembered); }, [dbSupported]);
   useEffect(() => { if (!dbOpen) return; const id = setInterval(refreshDbStats, 3000); return () => clearInterval(id); }, [dbOpen, refreshDbStats]);
   const handleDbNew = async () => { try { await localStore.createNew(); setDbOpen(true); setDbRemembered(true); refreshDbStats(); addLog('[DB] New local database file created — live scans will now also write to it.', 'info'); } catch (e) { if (e.name !== 'AbortError') addLog('[DB] ' + e.message, 'warning'); } };
@@ -2146,13 +2152,14 @@ export function WarEraOracle() {
         // Ban status lives under infos.isBanned (and isActive:false). Mark it but keep
         // analysing — a flagged banned account should still surface, badged as BANNED.
         playerObj.isBanned = !!(uData.isBanned || uData.banned || uData.infos?.isBanned);
-        playerObj.inactive = isInactiveAsOf(uData, inactiveRefAtRef.current);
+        const _bossRef = inactiveRefFor(uId);
+        playerObj.inactive = isInactiveAsOf(uData, _bossRef);
         if (playerObj.inactive) {
           globalInactive.current[uId] = true;
           // Diagnostic: print the most-recent activity the app saw, so a wrongly-flagged
           // active account is obvious (recent = bug; genuinely old = correct).
           const _la = lastActiveAtMs(uData);
-          const _days = _la ? ((inactiveRefAtRef.current - _la) / 86400000).toFixed(1) : '?';
+          const _days = _la ? ((_bossRef - _la) / 86400000).toFixed(1) : '?';
           addLog(`[INACTIVE] ${foundName}: last active ${_days}d before data (${_la ? new Date(_la).toISOString().slice(0,10) : 'NO dates'})`, 'info');
         }
         bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
@@ -2317,7 +2324,7 @@ export function WarEraOracle() {
           globalCacheRef.current.names[partnerId]=washPartners[partnerId].name;
           const isPBanned=!!(pData.isBanned||pData.banned||pData.infos?.isBanned);
           washPartners[partnerId].isBanned=isPBanned; globalBans.current[partnerId]=isPBanned;
-          const isPInactive=isInactiveAsOf(pData, inactiveRefAtRef.current);
+          const isPInactive=isInactiveAsOf(pData, inactiveRefFor(partnerId));
           washPartners[partnerId].inactive=isPInactive; if (isPInactive) globalInactive.current[partnerId]=true;
         }
       } catch(e) { washPartners[partnerId].name=partnerId; washPartners[partnerId].level='?'; }
@@ -2445,7 +2452,7 @@ export function WarEraOracle() {
               if (td) {
                 const tName = td.username || td.name || td.displayName || td.nickname || td.user?.username || td.profile?.username || null;
                 if (tName) globalCacheRef.current.names[tipperId] = tName;
-                tipperMeta[tipperId] = { level: td.leveling?.level ?? td.userLevel?.value ?? null, isBanned: !!(td.isBanned || td.banned || td.infos?.isBanned), inactive: isInactiveAsOf(td, inactiveRefAtRef.current) };
+                tipperMeta[tipperId] = { level: td.leveling?.level ?? td.userLevel?.value ?? null, isBanned: !!(td.isBanned || td.banned || td.infos?.isBanned), inactive: isInactiveAsOf(td, inactiveRefFor(tipperId)) };
               }
             } catch { /* best-effort */ }
             try {
@@ -2725,7 +2732,7 @@ export function WarEraOracle() {
                   const uData = w.resolvedUser?.username ? w.resolvedUser : await smartFetch('user.getUserLite', { userId });
                   if (uData) {
                     w.resolvedUser=uData; w.isBanned=!!(uData.isBanned||uData.banned||uData.infos?.isBanned);
-                    w.inactive=isInactiveAsOf(uData, inactiveRefAtRef.current); if (w.inactive) globalInactive.current[userId]=true;
+                    w.inactive=isInactiveAsOf(uData, inactiveRefFor(userId)); if (w.inactive) globalInactive.current[userId]=true;
                     if (uData.rankings) { uData.userWealth = uData.userWealth || uData.rankings.userWealth; uData.userLevel = uData.userLevel || uData.rankings.userLevel; }
                     logUserWealth(uData.username||uData.name||userId, uData);
                     { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w, userId); }
@@ -2804,7 +2811,7 @@ export function WarEraOracle() {
             globalCacheRef.current.names[ownerId] = ownerName;
             const ownerBanned = !!(oData?.infos?.isBanned || oData?.isBanned || oData?.banned);
             if (ownerBanned) globalBans.current[ownerId] = true;
-            const ownerInactive = isInactiveAsOf(oData, inactiveRefAtRef.current);
+            const ownerInactive = isInactiveAsOf(oData, inactiveRefFor(ownerId));
             if (ownerInactive) globalInactive.current[ownerId] = true;
             livePlayer.employer = { id: ownerId, name: ownerName, level: oData?.leveling?.level ?? null, banned: ownerBanned, inactive: ownerInactive, companyName: co?.name || null };
             addLog(`[INFO] ${foundName} is employed by ${ownerName}.`, 'info');
@@ -2852,8 +2859,6 @@ export function WarEraOracle() {
     // A full-scan crawl runs deliberately throttled (low concurrency) to stay polite and
     // well under rate limits, since it walks every region; a normal scan uses the setting.
     effectiveConcurrencyRef.current = fullScanRef.current ? Math.min(8, settings.concurrencyLimit) : settings.concurrencyLimit; concurrencyLastReducedRef.current=0;
-    // Inactivity reference: now for a live scan; the DB's freshness when reading an old Local DB.
-    inactiveRefAtRef.current = (localDbModeRef.current ? (localStore.newestFetchedAt() || Date.now()) : Date.now());
     alwaysPhase2Ref.current=false;
     scanQueueRef.current=[];
     

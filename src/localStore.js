@@ -45,6 +45,10 @@ let newestAt = 0;             // most recent fetchedAt in the store (data-freshn
 // checks (e.g. inactivity) when reading an old DB, so 10-day-old data isn't judged against now.
 export function newestFetchedAt() { return newestAt || null; }
 
+// When a specific stored record was fetched — used as the per-user "as of" reference for
+// staleness-sensitive checks (inactivity), so an old record isn't judged against fresher ones.
+export function fetchedAtFor(key) { const r = map.get(key); return r ? r.fetchedAt : null; }
+
 export function isSupported() { return typeof window !== 'undefined' && 'showSaveFilePicker' in window; }
 export function isOpen() { return !!handle; }
 
