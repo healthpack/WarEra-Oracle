@@ -37,14 +37,18 @@ const redisGet = async (key) => {
 };
 
 const redisSet = async (key, value, ttl) => {
-  const url = `${process.env.UPSTASH_REDIS_REST_URL}/set/${encodeURIComponent(key)}`;
+  // Upstash REST: value goes in the BODY, expiry as the ?EX= query param. The old form put
+  // ["value","EX",ttl] in the body, which Upstash stored as the literal value with NO expiry
+  // — so every cache entry lived forever and served stale data (e.g. a user's dates/wealth
+  // frozen at first scan). The value is already a JSON string; store it directly.
+  const url = `${process.env.UPSTASH_REDIS_REST_URL}/set/${encodeURIComponent(key)}?EX=${ttl}`;
   await fetch(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify([value, 'EX', ttl]),
+    body: value,
   });
 };
 
@@ -55,7 +59,9 @@ async function cacheKey(endpoint, payload) {
   const hex = Array.from(new Uint8Array(buf))
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');
-  return `palantirish:v1:${endpoint}:${hex.slice(0, 24)}`;
+  // v2: abandons the v1 keys that were written with no expiry (stale forever) — they're
+  // orphaned and never read again; v2 keys are written with a real TTL.
+  return `palantirish:v2:${endpoint}:${hex.slice(0, 24)}`;
 }
 
 // ── WarEra fetch (gateway first, official fallback) ───────────────
