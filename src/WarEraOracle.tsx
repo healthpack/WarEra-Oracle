@@ -2130,7 +2130,14 @@ export function WarEraOracle() {
         // analysing — a flagged banned account should still surface, badged as BANNED.
         playerObj.isBanned = !!(uData.isBanned || uData.banned || uData.infos?.isBanned);
         playerObj.inactive = isInactiveUser(uData);
-        if (playerObj.inactive) globalInactive.current[uId] = true;
+        if (playerObj.inactive) {
+          globalInactive.current[uId] = true;
+          // Diagnostic: print the actual last-login the app received, so a wrongly-flagged
+          // active account is obvious (recent date = bug; genuinely old date = correct).
+          const _lc = uData?.dates?.lastConnectionAt;
+          const _days = _lc ? ((Date.now() - Date.parse(_lc)) / 86400000).toFixed(1) : '?';
+          addLog(`[INACTIVE] ${foundName}: lastConnectionAt=${_lc || 'MISSING'} (${_days}d ago)`, 'info');
+        }
         bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
       }
     } catch(e) { addLog(`[DEBUG] getUserLite failed for ${uId}: ${e.message}`, 'debug'); }
