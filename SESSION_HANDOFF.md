@@ -130,8 +130,15 @@ why, centred on a relationship map.
   (map + matrix + sidebar + engagement, replacing the old tree/right-rail).
 
 ## Open threads / next steps
-1. **Eutectic direct edges — DONE / partially N/A.** Employer edge built (above).
-   Referrer is **not exposed by the API** so it can't be drawn — don't re-probe.
+1. **Referrer/referral graph — SHELVED (auth), do not re-probe.** The data DOES exist:
+   `referral.getUserReferrals(userId)` (official API) returns a user's referral list and
+   backs the public `/user/<id>/referrals` page. But it is **JWT-session-only** — API token
+   → `403 "API tokens cannot access this endpoint"`, no-auth → `401`, gateway doesn't proxy
+   it. `referrerId`/`referrerUser` are NOT on getUserById/getUserLite. Building the referral
+   graph would require the user's WarEra **session JWT** (full-account, expiring); user chose
+   2026-06-26 not to, so it's parked. Revisit only if they opt to supply a session token.
+   [[warera-api-auth]]
+2. **Eutectic direct edges — DONE / partially N/A.** Employer edge built (above).
    Note the employer is only the account's *current* company owner; past bosses (the
    stale Eutectic→Alexo link) won't appear. The `same_mint` (account+company) idea was
    tried and **rejected as universal** (starter companies); the useful version —
