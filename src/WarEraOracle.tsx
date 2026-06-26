@@ -1706,6 +1706,7 @@ export function WarEraOracle() {
   // Local DB (Option A — a file the user picks on disk; see localStore.js)
   const [localDbMode, setLocalDbMode] = useState(false);   // read scans from the file only
   const localDbModeRef = useRef(false);
+  const fullScanRef = useRef(false);                        // throttled all-regions crawl → DB
   const [dbOpen, setDbOpen] = useState(false);
   const [dbStats, setDbStats] = useState(null);
   useEffect(() => { localDbModeRef.current = localDbMode; }, [localDbMode]);
@@ -2827,7 +2828,9 @@ export function WarEraOracle() {
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
     globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={};
     phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false; didLogDonationShapeRef.current=false;
-    effectiveConcurrencyRef.current=settings.concurrencyLimit; concurrencyLastReducedRef.current=0;
+    // A full-scan crawl runs deliberately throttled (low concurrency) to stay polite and
+    // well under rate limits, since it walks every region; a normal scan uses the setting.
+    effectiveConcurrencyRef.current = fullScanRef.current ? Math.min(8, settings.concurrencyLimit) : settings.concurrencyLimit; concurrencyLastReducedRef.current=0;
     alwaysPhase2Ref.current=false;
     scanQueueRef.current=[];
     
@@ -2908,8 +2911,8 @@ export function WarEraOracle() {
       alwaysPhase2Ref.current = true;
       watchlistScanRef.current = false;
       addLog(`Scanning ${wlEntries.length} watchlisted suspect(s)...`, 'info');
-    } else if (targetRegionId) {
-      let targetRegions = targetRegionId==='ALL' ? availableRegions.map(r=>r._id||r.id) : [targetRegionId];
+    } else if (fullScanRef.current || targetRegionId) {
+      let targetRegions = (fullScanRef.current || targetRegionId==='ALL') ? availableRegions.map(r=>r._id||r.id) : [targetRegionId];
       let allCitizens=[];
       for (const regionId of targetRegions) {
         if (!isScanningRef.current) break;
@@ -2998,7 +3001,8 @@ export function WarEraOracle() {
             const curR = effectiveConcurrencyRef.current;
             const maxR = settings.concurrencyLimit;
             if (curR < maxR) {
-              const nextR = curR >= 25 ? Math.min(curR + 10, maxR) : curR >= 12 ? 25 : curR >= 6 ? 12 : curR;
+              const cap = fullScanRef.current ? Math.min(8, maxR) : maxR;
+            const nextR = curR >= 25 ? Math.min(curR + 10, cap) : curR >= 12 ? Math.min(25, cap) : curR >= 6 ? Math.min(12, cap) : curR;
               effectiveConcurrencyRef.current = nextR;
               concurrencyLastReducedRef.current = nowR;
               addLog(`[GATEWAY] Concurrency recovering: ${curR} -> ${nextR}`, 'info');
@@ -3013,7 +3017,8 @@ export function WarEraOracle() {
       if (txH.ok > 0) addLog(`[INFO] Transaction endpoint healthy (${txH.ok} ok / ${txH.fail} failed). Transaction heuristics ran with live data.`, 'info');
       else if (txH.fail > 0) addLog(`[CRITICAL] Transaction endpoint failed on all ${txH.fail} attempt(s) — transaction-based heuristics had no data this scan.`, 'warning');
       if (isScanningRef.current) { setCurrentTask('Scan Complete'); setProgress(100); addLog('Scan sequence terminated.', 'info'); }
-      setIsScanning(false); isScanningRef.current=false;
+      setIsScanning(false); isScanningRef.current=false; fullScanRef.current=false;
+      if (localStore.isOpen()) localStore.flushNow().then(refreshDbStats);
       if (globalCacheRef.current.wealthByLevel && Object.keys(globalCacheRef.current.wealthByLevel).length > 0) {
         localStorage.setItem('wera_wealth_baseline', JSON.stringify(globalCacheRef.current.wealthByLevel));
         fetch('/api/cache', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'set_wealth_baseline', data:globalCacheRef.current.wealthByLevel }) }).catch(()=>{});
@@ -3021,7 +3026,7 @@ export function WarEraOracle() {
     }
   };
 
-  const abortScan = () => { setIsScanning(false); isScanningRef.current=false; setIsRateLimited(false); setCurrentTask('Scan Aborted'); addLog('Scan manually aborted.', 'warning'); };
+  const abortScan = () => { setIsScanning(false); isScanningRef.current=false; fullScanRef.current=false; setIsRateLimited(false); setCurrentTask('Scan Aborted'); addLog('Scan manually aborted.', 'warning'); if (localStore.isOpen()) localStore.flushNow().then(refreshDbStats); };
 
   const exportFindings = () => {
     const data = { _oracleExport: true, exportedAt: new Date().toISOString(), totalFlags: Object.values(findings).flat().length, findings };
@@ -3363,6 +3368,7 @@ export function WarEraOracle() {
                   <span style={{fontSize:8.5,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace",whiteSpace:'nowrap'}}>{(dbStats?.records??0).toLocaleString()} recs · {fmtBytes(dbStats?.size)} · {fmtAge(dbStats?.newest)}{dbStats?.pending?' · saving…':''}</span>
                 </div>
                 <button onClick={()=>setLocalDbMode(m=>!m)} title="Local DB mode: scans read ONLY from the file (instant, no API limits) instead of the live API." style={{...DB_BTN,background:localDbMode?'rgba(63,208,163,0.18)':'#1b2748',color:localDbMode?'#3fd0a3':'#9fb0d4',border:`1px solid ${localDbMode?'#3fd0a3':'#2e3f6a'}`}}>{localDbMode?'◉ Local':'○ Live'}</button>
+                {!isScanning && !localDbMode && availableRegions.length>0 && <button onClick={()=>{fullScanRef.current=true;startScan(null);}} title="Full scan: crawl ALL regions slowly (throttled, ~8 concurrent) and store everything into this DB. Abort anytime — gathered data is kept." style={{...DB_BTN,background:'rgba(79,195,232,0.12)',color:'#4fc3e8',border:'1px solid rgba(79,195,232,0.3)'}}>⤓ Full scan</button>}
                 <button onClick={handleDbClose} title="Close database (file stays on disk)" style={{...DB_BTN,color:'#5d6e96',padding:'2px 6px'}}>✕</button>
               </>
             )}
