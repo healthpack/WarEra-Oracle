@@ -1722,6 +1722,7 @@ export function WarEraOracle() {
   const localDbModeRef = useRef(false);
   const fullScanRef = useRef(false);                        // throttled all-regions crawl → DB
   const crawlSkippedRef = useRef(0);                         // users skipped on full-scan resume
+  const crawlFlaggedRef = useRef(0);                         // would-be flags seen during a gather crawl
   const [dbOpen, setDbOpen] = useState(false);
   const [dbStats, setDbStats] = useState(null);
   useEffect(() => { localDbModeRef.current = localDbMode; }, [localDbMode]);
@@ -2619,6 +2620,15 @@ export function WarEraOracle() {
     phase2DataRef.current[uId] = { livePlayer, actionTimes, hasMuLeadership, bossMuId, foundName, country: livePlayer.country };
 
     const phase1Result = analyzePhase1(livePlayer, settings, globalCacheRef.current, addLog);
+    // Gather-only crawl (Full scan): the goal is to FILL the Local DB, not to present
+    // findings. Run phase 1 just to decide whether to also fetch phase-2 data (companies/
+    // workers/profiles) so the DB has everything a future Local DB scan would need — but
+    // don't push to findings or render anything. (Surface flags later via Local DB mode.)
+    if (fullScanRef.current) {
+      if (phase1Result) crawlFlaggedRef.current = (crawlFlaggedRef.current || 0) + 1;
+      if (phase1Result?.detections >= 1) await processPlayerPhase2(uId, livePlayer.country, true);
+      return;
+    }
     if (phase1Result) {
       phase1Result.phase2Status = 'pending';
       addLog(`[WARNING] Phase 1 flags: ${foundName} (score ${phase1Result.detections})`, 'warning');
@@ -2652,7 +2662,7 @@ export function WarEraOracle() {
 
     const { livePlayer, actionTimes, hasMuLeadership, bossMuId, foundName } = phase2Data;
 
-    setFindings(prev => {
+    if (!fullScanRef.current) setFindings(prev => {
       const newState = { ...prev };
       if (newState[country]) {
         const idx = newState[country].findIndex(r => r.player.id === playerId);
@@ -2830,6 +2840,10 @@ export function WarEraOracle() {
         }
       } catch(e) { addLog(`[DEBUG] Employer resolve failed for ${foundName}: ${e.message}`, 'debug'); }
 
+      // Gather-only crawl: all the phase-2 data is now fetched and mirrored into the Local
+      // DB, which is the whole point — skip the analysis + findings presentation.
+      if (fullScanRef.current) return;
+
       const fullPlayer = { ...livePlayer, companies: parsedCompanies };
       const result = analyzePlayer(fullPlayer, settings, globalCacheRef.current, actionTimes, true, addLog);
 
@@ -2865,7 +2879,7 @@ export function WarEraOracle() {
   const startScan = async (overrideUserId = null) => {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
-    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={}; crawlSkippedRef.current=0;
+    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={}; crawlSkippedRef.current=0; crawlFlaggedRef.current=0;
     phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false; didLogDonationShapeRef.current=false;
     // A full-scan crawl runs deliberately throttled (low concurrency) to stay polite and
     // well under rate limits, since it walks every region; a normal scan uses the setting.
@@ -3057,6 +3071,7 @@ export function WarEraOracle() {
       else if (txH.fail > 0) addLog(`[CRITICAL] Transaction endpoint failed on all ${txH.fail} attempt(s) — transaction-based heuristics had no data this scan.`, 'warning');
       if (isScanningRef.current) { setCurrentTask('Scan Complete'); setProgress(100); addLog('Scan sequence terminated.', 'info'); }
       if (crawlSkippedRef.current > 0) addLog(`[FULL SCAN] Resumed — skipped ${crawlSkippedRef.current} account(s) already in the Local DB.`, 'info');
+      if (crawlFlaggedRef.current > 0) addLog(`[FULL SCAN] Gathered data only (no findings shown); ${crawlFlaggedRef.current} account(s) would flag — run a Local DB scan to see them.`, 'info');
       setIsScanning(false); isScanningRef.current=false; fullScanRef.current=false;
       if (localStore.isOpen()) localStore.flushNow().then(refreshDbStats);
       if (globalCacheRef.current.wealthByLevel && Object.keys(globalCacheRef.current.wealthByLevel).length > 0) {
@@ -3408,7 +3423,7 @@ export function WarEraOracle() {
                   <span style={{fontSize:8.5,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace",whiteSpace:'nowrap'}}>{(dbStats?.records??0).toLocaleString()} recs · {fmtBytes(dbStats?.size)} · {fmtAge(dbStats?.newest)}{dbStats?.pending?' · saving…':''}</span>
                 </div>
                 <button onClick={()=>setLocalDbMode(m=>!m)} title="Local DB mode: scans read ONLY from the file (instant, no API limits) instead of the live API." style={{...DB_BTN,background:localDbMode?'rgba(63,208,163,0.18)':'#1b2748',color:localDbMode?'#3fd0a3':'#9fb0d4',border:`1px solid ${localDbMode?'#3fd0a3':'#2e3f6a'}`}}>{localDbMode?'◉ Local':'○ Live'}</button>
-                {!isScanning && !localDbMode && availableRegions.length>0 && <button onClick={()=>{fullScanRef.current=true;startScan(null);}} title="Full scan: crawl ALL regions slowly (throttled, ~8 concurrent) and store everything into this DB. Abort anytime — gathered data is kept." style={{...DB_BTN,background:'rgba(79,195,232,0.12)',color:'#4fc3e8',border:'1px solid rgba(79,195,232,0.3)'}}>⤓ Full scan</button>}
+                {!isScanning && !localDbMode && availableRegions.length>0 && <button onClick={()=>{fullScanRef.current=true;startScan(null);}} title="Full scan: crawl ALL regions slowly (throttled, ~8 concurrent) and gather every account's data into this DB — no findings are shown (it's pure data-gathering). Resumable (skips already-stored accounts); abort anytime. Afterwards, switch to Local DB mode and scan to surface flags instantly." style={{...DB_BTN,background:'rgba(79,195,232,0.12)',color:'#4fc3e8',border:'1px solid rgba(79,195,232,0.3)'}}>⤓ Full scan</button>}
                 <button onClick={handleDbClose} title="Close database (file stays on disk)" style={{...DB_BTN,color:'#5d6e96',padding:'2px 6px'}}>✕</button>
               </>
             )}
