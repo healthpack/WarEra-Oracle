@@ -1721,6 +1721,7 @@ export function WarEraOracle() {
   const [localDbMode, setLocalDbMode] = useState(false);   // read scans from the file only
   const localDbModeRef = useRef(false);
   const fullScanRef = useRef(false);                        // throttled all-regions crawl → DB
+  const crawlSkippedRef = useRef(0);                         // users skipped on full-scan resume
   const [dbOpen, setDbOpen] = useState(false);
   const [dbStats, setDbStats] = useState(null);
   useEffect(() => { localDbModeRef.current = localDbMode; }, [localDbMode]);
@@ -1831,12 +1832,15 @@ export function WarEraOracle() {
   }, []);
 
   useEffect(() => {
-    if (Object.keys(findings).length > 0) {
-      try {
-        sessionStorage.setItem('warera_oracle_session', JSON.stringify({ findings, savedAt: Date.now() }));
-      } catch(e) {}
-    }
-  }, [findings]);
+    // Crash-recovery snapshot. Skip DURING a scan — serializing a growing findings object on
+    // every update is O(n²) and was the long-crawl slowdown — and skip large result sets that
+    // can't fit in sessionStorage anyway (the Local DB persists those). Saves once when a scan
+    // stops, only if small enough to be worth restoring.
+    if (isScanning) return;
+    const n = Object.values(findings).reduce((a, arr) => a + (arr?.length || 0), 0);
+    if (n === 0 || n > 400) return;
+    try { sessionStorage.setItem('warera_oracle_session', JSON.stringify({ findings, savedAt: Date.now() })); } catch(e) {}
+  }, [findings, isScanning]);
 
   const getToken = async (forceOfficial=false) => {
     const startWait = Date.now();
@@ -2124,6 +2128,13 @@ export function WarEraOracle() {
 
   const processPlayerPhase1 = async (playerObj) => {
     const uId = playerObj._id || playerObj.id;
+    // Full-scan resume: if this account is already in the Local DB (crawled in an earlier
+    // pass), skip it — so an interrupted "Full scan" continues where it left off instead of
+    // re-walking everything. (Use the DB's data later via Local DB mode to surface flags.)
+    if (fullScanRef.current && localStore.isOpen() && localStore.get('user.getUserLite' + JSON.stringify({ userId: uId })) !== undefined) {
+      crawlSkippedRef.current = (crawlSkippedRef.current || 0) + 1;
+      return;
+    }
     let foundName = playerObj.username || playerObj.name || playerObj.displayName || playerObj.nickname || playerObj.profile?.username || playerObj.profile?.name || 'Unknown';
     let bossMuId = null, hasMuLeadership = false;
 
@@ -2854,7 +2865,7 @@ export function WarEraOracle() {
   const startScan = async (overrideUserId = null) => {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
-    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={};
+    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={}; crawlSkippedRef.current=0;
     phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false; didLogDonationShapeRef.current=false;
     // A full-scan crawl runs deliberately throttled (low concurrency) to stay polite and
     // well under rate limits, since it walks every region; a normal scan uses the setting.
@@ -3045,6 +3056,7 @@ export function WarEraOracle() {
       if (txH.ok > 0) addLog(`[INFO] Transaction endpoint healthy (${txH.ok} ok / ${txH.fail} failed). Transaction heuristics ran with live data.`, 'info');
       else if (txH.fail > 0) addLog(`[CRITICAL] Transaction endpoint failed on all ${txH.fail} attempt(s) — transaction-based heuristics had no data this scan.`, 'warning');
       if (isScanningRef.current) { setCurrentTask('Scan Complete'); setProgress(100); addLog('Scan sequence terminated.', 'info'); }
+      if (crawlSkippedRef.current > 0) addLog(`[FULL SCAN] Resumed — skipped ${crawlSkippedRef.current} account(s) already in the Local DB.`, 'info');
       setIsScanning(false); isScanningRef.current=false; fullScanRef.current=false;
       if (localStore.isOpen()) localStore.flushNow().then(refreshDbStats);
       if (globalCacheRef.current.wealthByLevel && Object.keys(globalCacheRef.current.wealthByLevel).length > 0) {
@@ -3216,7 +3228,7 @@ export function WarEraOracle() {
   // case-list sort. The wealth sort computes a level-baseline ratio per row, so re-sorting
   // a ~280-row list every tick caused the lag; here each ratio is precomputed once and the
   // whole list only recomputes when the data or a sort/filter control actually changes.
-  const { allResults, presentTypes, filteredResults, caseGroups } = React.useMemo(() => {
+  const { allResults, presentTypes, filteredResults, caseGroups, capped, renderCap } = React.useMemo(() => {
     const allResults = Object.entries(findings).flatMap(([country, results]) => results.map(r => ({ ...r, country })));
     const presentTypes = Array.from(new Set(allResults.flatMap(r => (r.suspicions || []).map(s => s.type)))).sort();
     const wealthRatio = new Map();
@@ -3243,9 +3255,14 @@ export function WarEraOracle() {
       if (listFilter !== 'all') { const tier = maxSevTierOf(r); if (listFilter === 'critical' && tier !== 'crit') return false; if (listFilter === 'high' && tier !== 'high') return false; if (listFilter === 'medium' && tier !== 'med') return false; }
       return true;
     }).sort((a, b) => (listSort.dir === 'asc' ? -1 : 1) * baseCmp(a, b));
+    // Only render the top N rows — a full crawl can produce thousands of flags, and
+    // reconciling that many DOM rows on every re-render is slow. The sort puts the most
+    // relevant first; use search/filters to reach the rest.
+    const RENDER_CAP = 300;
+    const capped = filteredResults.length > RENDER_CAP;
     const caseGroups = {};
-    filteredResults.forEach(r => { if (!caseGroups[r.country]) caseGroups[r.country] = []; caseGroups[r.country].push(r); });
-    return { allResults, presentTypes, filteredResults, caseGroups };
+    filteredResults.slice(0, RENDER_CAP).forEach(r => { if (!caseGroups[r.country]) caseGroups[r.country] = []; caseGroups[r.country].push(r); });
+    return { allResults, presentTypes, filteredResults, caseGroups, capped, renderCap: RENDER_CAP };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findings, listSearch, listType, listFilter, listSort.key, listSort.dir]);
 
@@ -3423,7 +3440,7 @@ export function WarEraOracle() {
           <div style={{padding:'12px 14px 8px',borderBottom:'1px solid #1f2b4e',flexShrink:0}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
               <span style={{fontSize:12,fontWeight:700,letterSpacing:'0.08em',color:'#9fb0d4',textTransform:'uppercase'}}>Case List</span>
-              <span style={{fontSize:10.5,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96'}}>{filteredResults.length}{filteredResults.length!==allResults.length?` / ${allResults.length}`:''} shown</span>
+              <span style={{fontSize:10.5,fontFamily:"IBM Plex Mono, monospace",color:'#5d6e96'}} title={capped?`Rendering the top ${renderCap} for speed — search or filter to reach the rest`:undefined}>{capped?`top ${renderCap} of ${filteredResults.length}`:`${filteredResults.length}${filteredResults.length!==allResults.length?` / ${allResults.length}`:''} shown`}</span>
             </div>
             <div style={{display:'flex',alignItems:'center',gap:6,background:'#060a16',border:'1px solid #2e3f6a',borderRadius:6,padding:'5px 8px',marginBottom:8}}>
               <Search size={11} style={{color:'#5d6e96',flexShrink:0}}/>
