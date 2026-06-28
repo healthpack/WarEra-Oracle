@@ -71,6 +71,22 @@ why, centred on a relationship map.
   `{ userIds[], muIds[], countryIds[], ... }` (returns multiple — don't assume index 0).
 
 ## What was built this session (most recent first)
+- **Local DB feature (merged to main + LIVE).** Opt-in persistent on-disk cache via the
+  Chrome File System Access API — a user-picked append-only `.ndjson` file (`src/localStore.js`).
+  Top-bar "Local DB" chip: New / Open / Reconnect, a Live↔Local mode toggle, record/size/
+  staleness readout. `smartFetch` mirrors every live response into it and, in Local mode,
+  serves from it only (instant, no API; username→ID resolution still bypasses to live so
+  search works). **Full scan** = throttled (~8 concurrent) all-regions crawl that is now
+  **pure data-gathering** (runs phase 1 only to decide phase-2 fetching, stores everything,
+  shows NO findings) and **resumable** (skips accounts already in the DB). Surface flags
+  afterward via Local DB mode. Inactivity uses per-record fetch time so old DB data isn't
+  mass-flagged. Perf: case list memoised + capped to top 300; the sessionStorage crash-
+  snapshot is skipped during scans (was an O(n²) crawl-killer).
+- **CRITICAL cache-TTL fix (`eba17a1`).** `api/cache.js` `redisSet` was putting
+  `[value,'EX',ttl]` in the Upstash request BODY, so entries were stored with NO expiry and
+  lived forever — every "live" scan returned the snapshot from the FIRST time a user was
+  scanned (stale dates → false INACTIVE, stale wealth). Fixed: value in body, `?EX=` query
+  param; cache key bumped **v1→v2** to abandon the orphaned never-expiring entries.
 - **Outflow is now an opt-in map layer ("Coins out" toggle, off by default).** Coin-sink
   nodes (donations to MUs/countries + tips) used to auto-draw for coin_funnel/money_laundering
   accounts; now they only draw when the user flips the **Coins out** toggle on the map header
