@@ -285,6 +285,26 @@ const detectWorkerPatterns = (allWorkers, settings, globalCache) => {
     lowWageWorkers.forEach(w => suspiciousWorkers.add(w));
   }
 
+  // Wage slaves — accounts skilled PURELY for production (energy + production invested) with
+  // zero investment in owning/managing companies, paid below the wage threshold. That build
+  // has no purpose for an independent player; it's the profile of an account run solely to
+  // produce for a controller. (Skill levels = points invested, from getUserLite.skills.)
+  const skLvl = (w, key) => w.resolvedUser?.skills?.[key]?.level ?? 0;
+  const wageSlaves = allWorkers.filter(w =>
+    w.isActive !== false
+    && w.normalizedWage <= settings.suspiciousWageThreshold
+    && skLvl(w, 'production') >= 3 && skLvl(w, 'energy') >= 3
+    && (skLvl(w, 'companies') + skLvl(w, 'management')) === 0
+  );
+  if (wageSlaves.length >= 1) {
+    suspicions.push({
+      type: 'wage_slave', severity: wageSlaves.length >= 3 ? 'high' : 'medium',
+      desc: `${wageSlaves.length} worker(s) built purely for production (energy + production invested, zero company-ownership skill) and paid <= ${settings.suspiciousWageThreshold} — the profile of a controlled wage-slave account.`,
+      workers: wageSlaves
+    });
+    wageSlaves.forEach(w => suspiciousWorkers.add(w));
+  }
+
   const overlappingGroups = {};
   allWorkers.forEach(w1 => {
     allWorkers.forEach(w2 => {
@@ -805,6 +825,8 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   if (player.isMutualHermit) summaryParts.push(`Mutual hermit pair detected.`);
   const wageSus = allSuspicions.find(s => s.type === 'low_wage');
   if (wageSus) summaryParts.push(`${wageSus.workers.length} workers paid very low wages.`);
+  const slaveSus = allSuspicions.find(s => s.type === 'wage_slave');
+  if (slaveSus) summaryParts.push(`${slaveSus.workers.length} production-only low-wage worker(s) (wage-slave profile).`);
   const wageUnif = allSuspicions.find(s => s.type === 'wage_uniformity');
   if (wageUnif) summaryParts.push(`Suspiciously uniform wages across workforce.`);
   const fidelSus = allSuspicions.find(s => s.type === 'fidelity_ring');
@@ -971,6 +993,7 @@ const HEURISTICS = {
   wealth_anomaly:       { tier:'high', matrixChip:'WEALTH', detail:{ observed:'Account coin wealth far from level peers', rule:(s)=>`Coin wealth > ${s.wealthAnomalyMultiplier}x or < ${s.wealthAnomalyLowerMultiplier}x the level median (low bound applies at level 11+)`, note:'Wealth far above the level median may indicate external funding; far below may indicate a drained mule. Check account age and transaction history for context.' } },
   coin_funnel:          { tier:'high', matrixChip:'FUNNEL', detail:{ observed:'Low-wealth account that pushed a large amount of coins out', rule:(s)=>`Wealth < ${s.wealthAnomalyLowerMultiplier}x the level median AND >= ${s.funnelMinCoins ?? 100} coins donated/tipped out`, note:'Explains low wealth by tracing where the coins went (donations to MUs/countries, tips to authors) — the destinations need not be the employer. A genuinely poor/slow player shows little outflow. Cannot see every sink (equipment, consumables, training), so treat as a lead.' } },
   fidelity_ring:        { tier:'high', matrixChip:'FID', detail:{ observed:'Workers holding maximum fidelity across the workforce', rule:()=>'Fidelity = 10/10 across workers', note:'Perfect fidelity cluster is unusual - may indicate artificially maintained relationships.' } },
+  wage_slave:           { tier:'high', matrixChip:'SLAVE', detail:{ observed:'Worker skilled only for production, never for owning companies, on a low wage', rule:(s)=>`energy & production invested, companies + management skills = 0, wage <= ${s.suspiciousWageThreshold.toFixed(3)}`, note:'A pure-production skill build with zero company-ownership investment, on a sub-threshold wage, has no purpose for an independent player — it is the profile of an account run solely to produce for a controller (wage slavery).' } },
   cloned_progression:   { tier:'high', matrixChip:'CLONE', detail:{ observed:'Progression stats mirror another account', rule:()=>'Level/wealth within 2% of a known clone signature', note:'Near-identical progression curves can indicate copy-cat account farming.' } },
   low_wage:             { matrixChip:'WAGE', detail:{ observed:'Workers paid below suspicious wage threshold', rule:(s)=>`Wage <= ${s.suspiciousWageThreshold.toFixed(3)}`, note:'Low wages alone are not conclusive; combine with other signals for stronger inference.' } },
   naming_pattern:       { matrixChip:'NAME', detail:{ observed:'Workers share a name substring or systematic pattern', rule:()=>'>=3 workers share an overlapping name fragment', note:'Bot farms sometimes use systematic naming. May also be coincidence in small regions.' } },
@@ -3139,6 +3162,8 @@ export function WarEraOracle() {
     }
     const wageSus = result.suspicions.find(s => s.type === 'low_wage');
     if (wageSus) parts.push(`${wageSus.workers.length} workers paid minimum wage.`);
+    const slaveSus = result.suspicions.find(s => s.type === 'wage_slave');
+    if (slaveSus) parts.push(`${slaveSus.workers.length} production-only low-wage worker(s) (wage-slave profile).`);
     const cloneSus = result.suspicions.filter(s => s.type === 'cloned_progression');
     if (cloneSus.length > 0) parts.push(`${cloneSus.reduce((s,c) => s + c.workers.length, 0)} workers have cloned skills.`);
     const shellSus = result.suspicions.find(s => s.type === 'no_production_bonus');
