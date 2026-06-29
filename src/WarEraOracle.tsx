@@ -1718,14 +1718,14 @@ export function WarEraOracle() {
   const globalBans = useRef({});
   const globalInactive = useRef({});
   // Local DB (Option A — a file the user picks on disk; see localStore.js)
-  const [localDbMode, setLocalDbMode] = useState(false);   // read scans from the file only
-  const localDbModeRef = useRef(false);
+  const [dbMode, setDbMode] = useState('live');            // 'live' | 'hybrid' | 'local'
+  const dbModeRef = useRef('live');
   const fullScanRef = useRef(false);                        // throttled all-regions crawl → DB
   const crawlSkippedRef = useRef(0);                         // users skipped on full-scan resume
   const crawlFlaggedRef = useRef(0);                         // would-be flags seen during a gather crawl
   const [dbOpen, setDbOpen] = useState(false);
   const [dbStats, setDbStats] = useState(null);
-  useEffect(() => { localDbModeRef.current = localDbMode; }, [localDbMode]);
+  useEffect(() => { dbModeRef.current = dbMode; }, [dbMode]);
   // Flush any buffered writes to the DB file whenever a scan stops, and on tab close.
   useEffect(() => { if (!isScanning && localStore.isOpen()) localStore.flushNow(); }, [isScanning]);
   useEffect(() => { const h = () => { if (localStore.isOpen()) localStore.flushNow(); }; window.addEventListener('beforeunload', h); return () => window.removeEventListener('beforeunload', h); }, []);
@@ -1894,13 +1894,16 @@ export function WarEraOracle() {
     // — no special-casing. A gateway burst-401 just falls back to the official API.
     const cacheKey = endpoint + JSON.stringify(payload);
 
-    // Local DB mode — serve from the on-disk file only, never touch the network. A missing
-    // key resolves to null (the scan proceeds with whatever's stored). Lightning fast, no
-    // API limits — but only as complete/fresh as the last time data was gathered. bypassLocal
-    // lets specific lookups (e.g. username→ID resolution) still hit the live API in Local mode.
-    if (localDbModeRef.current && !bypassLocal) {
+    // Local DB read paths (bypassLocal forces live — used for username→ID resolution):
+    //   'local'  — serve from the file ONLY; a miss resolves to null (no network).
+    //   'hybrid' — serve from the file if present, otherwise fall through to a live fetch and
+    //              mirror it in (so re-scans reuse stored data and only fetch the gaps).
+    //   'live'   — ignore the file; always fetch live (still mirrored in below).
+    if (!bypassLocal && (dbModeRef.current === 'local' || dbModeRef.current === 'hybrid')) {
       const local = localStore.get(cacheKey);
-      return local === undefined ? null : local;
+      if (local !== undefined) return local;
+      if (dbModeRef.current === 'local') return null;
+      // hybrid + miss → continue to the live fetch below.
     }
 
     if (globalCacheRef.current.requestDeduper.has(cacheKey)) {
@@ -2033,15 +2036,17 @@ export function WarEraOracle() {
   // that user's OWN stored fetch time when reading the Local DB — so an old record isn't
   // judged against newer ones in the same DB (which falsely flagged active players).
   const inactiveRefFor = (userId) => {
-    if (!localDbModeRef.current) return Date.now();
-    return localStore.fetchedAtFor('user.getUserLite' + JSON.stringify({ userId })) || localStore.newestFetchedAt() || Date.now();
+    if (dbModeRef.current === 'live') return Date.now();
+    // local/hybrid: if this user's record came from the file, judge it against ITS fetch
+    // time; if it was a live-fetched gap (hybrid), it isn't stored yet → "now".
+    return localStore.fetchedAtFor('user.getUserLite' + JSON.stringify({ userId })) || Date.now();
   };
   useEffect(() => { if (dbSupported) localStore.hasRemembered().then(setDbRemembered); }, [dbSupported]);
   useEffect(() => { if (!dbOpen) return; const id = setInterval(refreshDbStats, 3000); return () => clearInterval(id); }, [dbOpen, refreshDbStats]);
   const handleDbNew = async () => { try { await localStore.createNew(); setDbOpen(true); setDbRemembered(true); refreshDbStats(); addLog('[DB] New local database file created — live scans will now also write to it.', 'info'); } catch (e) { if (e.name !== 'AbortError') addLog('[DB] ' + e.message, 'warning'); } };
   const handleDbOpen = async () => { try { const r = await localStore.openExisting(); setDbOpen(true); setDbRemembered(true); refreshDbStats(); addLog(`[DB] Opened local database — ${r.records} records loaded.`, 'info'); } catch (e) { if (e.name !== 'AbortError') addLog('[DB] ' + e.message, 'warning'); } };
   const handleDbReconnect = async () => { try { const r = await localStore.reconnect(); if (r) { setDbOpen(true); refreshDbStats(); addLog(`[DB] Reconnected to local database — ${r.records} records.`, 'info'); } else addLog('[DB] Could not reconnect (permission denied or file moved).', 'warning'); } catch (e) { addLog('[DB] ' + e.message, 'warning'); } };
-  const handleDbClose = () => { localStore.flushNow(); localStore.close(); setDbOpen(false); setLocalDbMode(false); setDbStats(null); addLog('[DB] Local database closed (file kept on disk).', 'info'); };
+  const handleDbClose = () => { localStore.flushNow(); localStore.close(); setDbOpen(false); setDbMode('live'); setDbStats(null); addLog('[DB] Local database closed (file kept on disk).', 'info'); };
 
   const fetchRegions = async () => {
     addLog('Pinging WarEra API for regions...', 'info');
@@ -3407,8 +3412,8 @@ export function WarEraOracle() {
         </button>
         {/* Local DB (Option A — a file on disk; Chrome only) */}
         {dbSupported && (
-          <div style={{display:'flex',alignItems:'center',gap:6,padding:'4px 8px',background:'#121b35',border:`1px solid ${localDbMode?'#3fd0a3':dbOpen?'#2e3f6a':'#1f2b4e'}`,borderRadius:6,flexShrink:0}} title={dbOpen?undefined:'Persist scans to a file on your disk for instant offline re-scans.'}>
-            <HardDrive size={13} style={{color:dbOpen?(localDbMode?'#3fd0a3':'#9fb0d4'):'#5d6e96',flexShrink:0}}/>
+          <div style={{display:'flex',alignItems:'center',gap:6,padding:'4px 8px',background:'#121b35',border:`1px solid ${dbMode==='local'?'#3fd0a3':dbMode==='hybrid'?'#4fc3e8':dbOpen?'#2e3f6a':'#1f2b4e'}`,borderRadius:6,flexShrink:0}} title={dbOpen?undefined:'Persist scans to a file on your disk for instant offline re-scans.'}>
+            <HardDrive size={13} style={{color:dbOpen?(dbMode==='local'?'#3fd0a3':dbMode==='hybrid'?'#4fc3e8':'#9fb0d4'):'#5d6e96',flexShrink:0}}/>
             {!dbOpen ? (
               <>
                 <span style={{fontSize:10,color:'#5d6e96',whiteSpace:'nowrap'}}>Local DB</span>
@@ -3422,8 +3427,14 @@ export function WarEraOracle() {
                   <span style={{fontSize:9.5,color:'#9fb0d4',fontFamily:"IBM Plex Mono, monospace",whiteSpace:'nowrap',maxWidth:130,overflow:'hidden',textOverflow:'ellipsis'}}>{dbStats?.name||'database'}</span>
                   <span style={{fontSize:8.5,color:'#5d6e96',fontFamily:"IBM Plex Mono, monospace",whiteSpace:'nowrap'}}>{(dbStats?.records??0).toLocaleString()} recs · {fmtBytes(dbStats?.size)} · {fmtAge(dbStats?.newest)}{dbStats?.pending?' · saving…':''}</span>
                 </div>
-                <button onClick={()=>setLocalDbMode(m=>!m)} title="Local DB mode: scans read ONLY from the file (instant, no API limits) instead of the live API." style={{...DB_BTN,background:localDbMode?'rgba(63,208,163,0.18)':'#1b2748',color:localDbMode?'#3fd0a3':'#9fb0d4',border:`1px solid ${localDbMode?'#3fd0a3':'#2e3f6a'}`}}>{localDbMode?'◉ Local':'○ Live'}</button>
-                {!isScanning && !localDbMode && availableRegions.length>0 && <button onClick={()=>{fullScanRef.current=true;startScan(null);}} title="Full scan: crawl ALL regions slowly (throttled, ~8 concurrent) and gather every account's data into this DB — no findings are shown (it's pure data-gathering). Resumable (skips already-stored accounts); abort anytime. Afterwards, switch to Local DB mode and scan to surface flags instantly." style={{...DB_BTN,background:'rgba(79,195,232,0.12)',color:'#4fc3e8',border:'1px solid rgba(79,195,232,0.3)'}}>⤓ Full scan</button>}
+                {(()=>{
+                  const nextMode = dbMode==='live'?'hybrid':dbMode==='hybrid'?'local':'live';
+                  const lbl = dbMode==='live'?'○ Live':dbMode==='hybrid'?'◐ Hybrid':'◉ Local';
+                  const c = dbMode==='live'?'#9fb0d4':dbMode==='hybrid'?'#4fc3e8':'#3fd0a3';
+                  const bg = dbMode==='live'?'#1b2748':dbMode==='hybrid'?'rgba(79,195,232,0.16)':'rgba(63,208,163,0.18)';
+                  return <button onClick={()=>setDbMode(nextMode)} title="Scan data source (click to cycle) — Live: API only (always fresh). Hybrid: use stored data, fetch only the gaps (fast re-scans). Local: file only, no API." style={{...DB_BTN,background:bg,color:c,border:`1px solid ${dbMode==='live'?'#2e3f6a':c}`}}>{lbl}</button>;
+                })()}
+                {!isScanning && dbMode!=='local' && availableRegions.length>0 && <button onClick={()=>{fullScanRef.current=true;startScan(null);}} title="Full scan: crawl ALL regions slowly (throttled, ~8 concurrent) and gather every account's data into this DB — no findings are shown (it's pure data-gathering). Resumable (skips already-stored accounts); abort anytime. Afterwards, switch to Local DB mode and scan to surface flags instantly." style={{...DB_BTN,background:'rgba(79,195,232,0.12)',color:'#4fc3e8',border:'1px solid rgba(79,195,232,0.3)'}}>⤓ Full scan</button>}
                 <button onClick={handleDbClose} title="Close database (file stays on disk)" style={{...DB_BTN,color:'#5d6e96',padding:'2px 6px'}}>✕</button>
               </>
             )}
