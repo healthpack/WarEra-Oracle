@@ -663,6 +663,24 @@ const detectTemporalClustering = (player, actionTimes) => {
   return suspicions;
 };
 
+// Work consistency from an account's wage transactions: distinct calendar work-days vs the
+// span they cover (+ total earned and the most-frequent employer). Used for the slow-leveler
+// "works almost every day yet under-levelled" escalation, for the scanned account AND workers.
+const workConsistencyFromTx = (wageTxs) => {
+  if (!wageTxs || wageTxs.length < 5) return null;
+  const days = new Set(); const employers = {}; let earned = 0, minT = Infinity, maxT = -Infinity;
+  for (const tx of wageTxs) {
+    const t = new Date(tx.createdAt || tx.timestamp || 0).getTime();
+    if (!t) continue;
+    days.add(new Date(t).toISOString().slice(0, 10)); minT = Math.min(minT, t); maxT = Math.max(maxT, t);
+    earned += (typeof tx.money === 'number' ? tx.money : 0);
+    if (tx.buyerId) employers[tx.buyerId] = (employers[tx.buyerId] || 0) + 1;
+  }
+  const spanDays = (maxT > minT) ? Math.round((maxT - minT) / 86400000) + 1 : 1;
+  return { workDays: days.size, spanDays, consistency: Math.min(1, days.size / spanDays), earned, topEmployer: Object.keys(employers).sort((a, b) => employers[b] - employers[a])[0] || null };
+};
+const isRelentless = (wc) => !!(wc && wc.spanDays >= 14 && wc.workDays >= 14 && wc.consistency >= 0.9);
+
 // Slow levelers — accounts far below the median level for their account age. Leveling in
 // WarEra is simple and automatic with activity, so a low level for age has no legit upside;
 // it points to an account that's parked, dormant, or run/managed by someone else (wage
@@ -671,28 +689,26 @@ const detectSlowLeveler = (player, allWorkers, settings, globalCache) => {
   const ratio = settings.slowLevelerRatio ?? 0.5;
   const MIN_AGE_DAYS = 21, MIN_EXPECTED = 5, MIN_SAMPLES = 5;
   const lagging = [];
-  let selfLagging = false;
-  const check = (createdAt, level, name, uid, isSelf) => {
+  const check = (createdAt, level, name, uid, wc) => {
     if (!createdAt || level == null) return;
     const ageDays = (Date.now() - new Date(createdAt).getTime()) / 86400000;
     if (!(ageDays >= MIN_AGE_DAYS)) return;
     const exp = getMedianLevelForAge(globalCache, ageDays);
     if (!exp || exp.avg < MIN_EXPECTED || exp.totalCount < MIN_SAMPLES) return;
-    if (level < ratio * exp.avg) { lagging.push({ uid, normalizedName: name, normalizedLevel: level, expectedLevel: Math.round(exp.avg), accountAgeDays: Math.floor(ageDays) }); if (isSelf) selfLagging = true; }
+    if (level < ratio * exp.avg) lagging.push({ uid, normalizedName: name, normalizedLevel: level, expectedLevel: Math.round(exp.avg), accountAgeDays: Math.floor(ageDays), relentless: isRelentless(wc), workDays: wc?.workDays, spanDays: wc?.spanDays });
   };
-  check(player.accountCreatedAt, extractUserLevel(player) ?? player.level, (player.name || 'This account') + ' (SELF)', player.id, true);
-  (allWorkers || []).forEach(w => check(w.resolvedUser?.createdAt, extractUserLevel(w.resolvedUser) ?? w.normalizedLevel, w.normalizedName, w.uid, false));
+  check(player.accountCreatedAt, extractUserLevel(player) ?? player.level, (player.name || 'This account') + ' (SELF)', player.id, player.workConsistency);
+  // Workers carry their own workConsistency (fetched in phase 2 for slow-leveler candidates),
+  // so the "works every day yet under-levelled" escalation fires for them too, not just self.
+  (allWorkers || []).forEach(w => check(w.resolvedUser?.createdAt, extractUserLevel(w.resolvedUser) ?? w.normalizedLevel, w.normalizedName, w.uid, w.workConsistency));
   if (!lagging.length) return [];
-  const top = lagging[0];
-  // Escalation: an under-levelled account that works almost every day (from its wage TX —
-  // distinct work-days over a real span, gaps lower it) is the wage-slave smoking gun.
-  const wc = player.workConsistency;
-  const relentless = selfLagging && wc && wc.spanDays >= 14 && wc.workDays >= 14 && wc.consistency >= 0.9;
+  const rel = lagging.find(l => l.relentless);   // any under-levelled account that works almost every day
+  const top = rel || lagging[0];
   let desc = `${lagging.length} account(s) far below the median level for their age — e.g. ${top.normalizedName.replace(' (SELF)','')}: level ${top.normalizedLevel} at ${top.accountAgeDays} days old (~level ${top.expectedLevel} expected). Slow leveling has no legitimate purpose; consistent with a parked or controlled account.`;
-  if (relentless) desc += ` This account works almost every day (${wc.workDays} work-days across ${wc.spanDays}) yet stays under-levelled — a strong wage-slave pattern.`;
+  if (rel) desc += ` ${rel.normalizedName.replace(' (SELF)','')} works almost every day (${rel.workDays} work-days across ${rel.spanDays}) yet stays under-levelled — a strong wage-slave pattern.`;
   return [{
-    type: 'slow_leveler', severity: relentless ? 'high' : 'medium',
-    desc, workers: lagging, detectionWeight: lagging.length + (relentless ? 3 : 0),
+    type: 'slow_leveler', severity: rel ? 'high' : 'medium',
+    desc, workers: lagging, detectionWeight: lagging.length + (rel ? 3 : 0),
   }];
 };
 
@@ -2736,24 +2752,7 @@ export function WarEraOracle() {
         // "works almost every day" — the wage-slave smoking gun when also under-levelled. A
         // real break shows up as a gap that lowers consistency (so returning players aren't
         // treated like relentless drones).
-        try {
-          const wageTxs = await gatherTx('wage', uId, cutoffTime);
-          if (wageTxs.length >= 5) {
-            const days = new Set(); const employers = {}; let earned = 0, minT = Infinity, maxT = -Infinity;
-            for (const tx of wageTxs) {
-              const t = new Date(tx.createdAt || tx.timestamp || 0).getTime();
-              if (!t) continue;
-              days.add(new Date(t).toISOString().slice(0, 10)); minT = Math.min(minT, t); maxT = Math.max(maxT, t);
-              earned += (typeof tx.money === 'number' ? tx.money : 0);
-              if (tx.buyerId) employers[tx.buyerId] = (employers[tx.buyerId] || 0) + 1;
-            }
-            const spanDays = (maxT > minT) ? Math.round((maxT - minT) / 86400000) + 1 : 1;
-            playerObj.workConsistency = {
-              workDays: days.size, spanDays, consistency: Math.min(1, days.size / spanDays),
-              earned, topEmployer: Object.keys(employers).sort((a, b) => employers[b] - employers[a])[0] || null,
-            };
-          }
-        } catch(e) { /* best-effort */ }
+        try { playerObj.workConsistency = workConsistencyFromTx(await gatherTx('wage', uId, cutoffTime)); } catch(e) { /* best-effort */ }
         // For flagged outflow accounts, resolve the leadership of each MU sink so the
         // map can show WHO controls the drain destination (the Eutectic connection).
         if (playerObj.coinFunnel || isDirectLaunderer) {
@@ -2972,6 +2971,18 @@ export function WarEraOracle() {
                     if (uData.rankings) { uData.userWealth = uData.userWealth || uData.rankings.userWealth; uData.userLevel = uData.userLevel || uData.rankings.userLevel; }
                     logUserWealth(uData.username||uData.name||userId, uData);
                     { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w, userId); if (_l != null && uData.createdAt) recordLevelBaseline(globalCacheRef.current, (Date.now() - new Date(uData.createdAt).getTime()) / 86400000, _l, userId); }
+                    // If this worker is a slow-leveler candidate (low level for its age), pull its
+                    // wage TX too — so the "works every day yet under-levelled" escalation fires for
+                    // workers (e.g. a boss's wage slave), not just a directly-scanned account.
+                    { const _wl = extractUserLevel(uData) ?? uData?.leveling?.level;
+                      if (_wl != null && uData.createdAt) {
+                        const _wAge = (Date.now() - new Date(uData.createdAt).getTime()) / 86400000;
+                        const _wExp = _wAge >= 21 ? getMedianLevelForAge(globalCacheRef.current, _wAge) : null;
+                        if (_wExp && _wExp.avg >= 5 && _wExp.totalCount >= 5 && _wl < (settings.slowLevelerRatio ?? 0.5) * _wExp.avg) {
+                          try { w.workConsistency = workConsistencyFromTx(await gatherTx('wage', userId, Date.now() - 60 * 86400000)); } catch { /* best-effort */ }
+                        }
+                      }
+                    }
                     globalCacheRef.current.names[userId]=uData.username||uData.name||userId;
                     let workerMuId=uData.mu?(typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu):(uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
                     w.workerMuId=workerMuId;
