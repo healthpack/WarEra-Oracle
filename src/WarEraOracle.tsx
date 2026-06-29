@@ -3983,7 +3983,10 @@ export function WarEraOracle() {
                                           ?dispName.split(new RegExp(`(${suspicion.overlapString})`, 'gi')).map((part,i)=>
                                               part.toLowerCase()===suspicion.overlapString?.toLowerCase()?<span key={i} style={{color:'#ffd84d',fontWeight:700}}>{part}</span>:<span key={i}>{part}</span>)
                                           :dispName}
-                                        
+                                        {!isSelf&&/^[0-9a-fA-F]{24}$/.test(String(w.resolvedUser?._id||w.uid||''))&&!isScanning&&(
+                                          <button onClick={(e)=>{e.preventDefault();e.stopPropagation();rescanPlayer(w.resolvedUser?._id||w.uid, activeResult.country);}} title="Scan this account as its own full case (adds it to the list if it flags; keeps the current results)" style={{fontSize:8.5,fontWeight:700,color:'#a98bff',background:'rgba(124,92,255,0.14)',border:'1px solid rgba(124,92,255,0.42)',borderRadius:3,padding:'1px 5px',cursor:'pointer'}}>⟳ Scan</button>
+                                        )}
+
                                         {/* APM tooltip */}
                                         {suspicion.type==='superhuman_apm'&&suspicion.apmDetails&&isSelf&&(
                                           <span className="group/tooltip" style={{position:'relative',fontSize:9,color:'#4fc3e8',background:'rgba(79,195,232,0.10)',border:'1px solid rgba(79,195,232,0.30)',borderRadius:4,padding:'1px 5px',cursor:'help',fontWeight:700}}>
