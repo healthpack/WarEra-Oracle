@@ -137,6 +137,40 @@ const getWealthAverageExtended = (globalCache, level) => {
   return null;
 };
 
+// ── Level-for-age baseline (mirror of the wealth baseline, keyed by account-age bucket) ──
+// Records each account's game level against how OLD the account is, so we can spot accounts
+// that are far below the median level for their age (slow levelers). Weekly age buckets.
+const AGE_BUCKET_DAYS = 7;
+const ageBucketOf = (ageDays) => Math.max(0, Math.floor(ageDays / AGE_BUCKET_DAYS));
+const recordLevelBaseline = (globalCache, ageDays, level, userId) => {
+  if (ageDays == null || isNaN(ageDays) || level == null || isNaN(level)) return;
+  const key = String(ageBucketOf(ageDays));
+  if (!globalCache.levelByAge) globalCache.levelByAge = {};
+  let e = globalCache.levelByAge[key];
+  if (!e || typeof e !== 'object') e = globalCache.levelByAge[key] = {};
+  if (!e.byUser || typeof e.byUser !== 'object') e.byUser = {};
+  const uk = userId || `anon:${Object.keys(e.byUser).length}`;
+  const isNew = !(uk in e.byUser);
+  e.byUser[uk] = level; // latest-wins
+  if (isNew) { const keys = Object.keys(e.byUser); if (keys.length > USER_CAP) delete e.byUser[keys[0]]; }
+};
+// Median (expected) level for an account of the given age, widening across adjacent age
+// buckets only when the exact bucket is sparse. Returns { avg, totalCount } or null.
+const getMedianLevelForAge = (globalCache, ageDays) => {
+  if (ageDays == null || !globalCache.levelByAge) return null;
+  const b = ageBucketOf(ageDays);
+  for (const radius of [0, 1, 2, 4, 8, 16, 32]) {
+    const medians = []; let totalCount = 0;
+    for (let k = b - radius; k <= b + radius; k++) {
+      if (k < 0) continue;
+      const e = globalCache.levelByAge[String(k)];
+      if (e?.byUser) { const vals = Object.values(e.byUser).filter(v => typeof v === 'number' && !isNaN(v)); if (vals.length) { medians.push(median(vals)); totalCount += vals.length; } }
+    }
+    if (medians.length > 0) return { avg: medians.reduce((a, b) => a + b, 0) / medians.length, radius, totalCount };
+  }
+  return null;
+};
+
 // Pull coin wealth / level out of a user profile, tolerant of where the API puts
 // them. getUserLite has been observed to omit userWealth, so we probe several
 // candidate paths rather than assuming a single field.
@@ -629,6 +663,33 @@ const detectTemporalClustering = (player, actionTimes) => {
   return suspicions;
 };
 
+// Slow levelers — accounts far below the median level for their account age. Leveling in
+// WarEra is simple and automatic with activity, so a low level for age has no legit upside;
+// it points to an account that's parked, dormant, or run/managed by someone else (wage
+// slave, piggybank, donation/tip mule). Checks the scanned account and (in phase 2) workers.
+const detectSlowLeveler = (player, allWorkers, settings, globalCache) => {
+  const ratio = settings.slowLevelerRatio ?? 0.5;
+  const MIN_AGE_DAYS = 21, MIN_EXPECTED = 5, MIN_SAMPLES = 5;
+  const lagging = [];
+  const check = (createdAt, level, name, uid) => {
+    if (!createdAt || level == null) return;
+    const ageDays = (Date.now() - new Date(createdAt).getTime()) / 86400000;
+    if (!(ageDays >= MIN_AGE_DAYS)) return;
+    const exp = getMedianLevelForAge(globalCache, ageDays);
+    if (!exp || exp.avg < MIN_EXPECTED || exp.totalCount < MIN_SAMPLES) return;
+    if (level < ratio * exp.avg) lagging.push({ uid, normalizedName: name, normalizedLevel: level, expectedLevel: Math.round(exp.avg), accountAgeDays: Math.floor(ageDays) });
+  };
+  check(player.accountCreatedAt, extractUserLevel(player) ?? player.level, (player.name || 'This account') + ' (SELF)', player.id);
+  (allWorkers || []).forEach(w => check(w.resolvedUser?.createdAt, extractUserLevel(w.resolvedUser) ?? w.normalizedLevel, w.normalizedName, w.uid));
+  if (!lagging.length) return [];
+  const top = lagging[0];
+  return [{
+    type: 'slow_leveler', severity: 'medium',
+    desc: `${lagging.length} account(s) far below the median level for their age — e.g. ${top.normalizedName.replace(' (SELF)','')}: level ${top.normalizedLevel} at ${top.accountAgeDays} days old (~level ${top.expectedLevel} expected). Slow leveling has no legitimate purpose; consistent with a parked or controlled account.`,
+    workers: lagging, detectionWeight: lagging.length,
+  }];
+};
+
 // Emits the coin_funnel suspicion (low wealth + concentrated outflow) — computed
 // in phase 1 and carried on player.coinFunnel; shared by both analyzers.
 const funnelRecipName = (r, globalCache) => globalCache?.names?.[r.id] || r.name || (r.kind === 'country' ? 'a country' : r.kind === 'mu' ? 'a military unit' : 'user_' + String(r.id).slice(-6));
@@ -785,6 +846,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   ({ suspicions: launderSuspicions, suspiciousWorkers: launderSuspiciousSet, hasLaundering, launderingWorkerCount, totalLaunderedCoins } = detectLaundering(allWorkers, player, settings, globalCache));
   ({ suspicions: shellSuspicions, suspiciousWorkers: shellSuspiciousSet, zeroBonusCompanyCount, bossNoBonusPercentage } = detectShellCompanies(allWorkers, settings, globalCache));
   const coordCreateSuspicions = detectCoordinatedCreation(player, allWorkers, globalCache);
+  const slowLevelerSuspicions = detectSlowLeveler(player, allWorkers, settings, globalCache);
 
   const allSuspicions = [
     ...automationSuspicions,
@@ -795,6 +857,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
     ...workerSuspicions,
     ...shellSuspicions,
     ...coordCreateSuspicions,
+    ...slowLevelerSuspicions,
   ];
 
   if (player.tipAbuse) {
@@ -827,6 +890,8 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   if (wageSus) summaryParts.push(`${wageSus.workers.length} workers paid very low wages.`);
   const slaveSus = allSuspicions.find(s => s.type === 'wage_slave');
   if (slaveSus) summaryParts.push(`${slaveSus.workers.length} production-only low-wage worker(s) (wage-slave profile).`);
+  const slowSus = allSuspicions.find(s => s.type === 'slow_leveler');
+  if (slowSus) summaryParts.push(`${slowSus.workers.length} account(s) under-levelled for their age.`);
   const wageUnif = allSuspicions.find(s => s.type === 'wage_uniformity');
   if (wageUnif) summaryParts.push(`Suspiciously uniform wages across workforce.`);
   const fidelSus = allSuspicions.find(s => s.type === 'fidelity_ring');
@@ -881,8 +946,9 @@ const analyzePhase1 = (player, settings, globalCache, addLog = null) => {
   const automationSuspicions = detectAutomation(player, settings);
   const { suspicions: econSuspicions, totalCoinsWashed } = detectEconomicNetwork(player, [], settings, globalCache);
   const ageSuspicions = detectAgeDateAnomaly(player, [], settings, globalCache, addLog);
+  const slowLevelerSuspicions = detectSlowLeveler(player, [], settings, globalCache);
 
-  const allSuspicions = [...automationSuspicions, ...econSuspicions, ...ageSuspicions];
+  const allSuspicions = [...automationSuspicions, ...econSuspicions, ...ageSuspicions, ...slowLevelerSuspicions];
 
   if (player.isDirectLaunderer) {
     const selfWorker = {
@@ -994,6 +1060,7 @@ const HEURISTICS = {
   coin_funnel:          { tier:'high', matrixChip:'FUNNEL', detail:{ observed:'Low-wealth account that pushed a large amount of coins out', rule:(s)=>`Wealth < ${s.wealthAnomalyLowerMultiplier}x the level median AND >= ${s.funnelMinCoins ?? 100} coins donated/tipped out`, note:'Explains low wealth by tracing where the coins went (donations to MUs/countries, tips to authors) — the destinations need not be the employer. A genuinely poor/slow player shows little outflow. Cannot see every sink (equipment, consumables, training), so treat as a lead.' } },
   fidelity_ring:        { tier:'high', matrixChip:'FID', detail:{ observed:'Workers holding maximum fidelity across the workforce', rule:()=>'Fidelity = 10/10 across workers', note:'Perfect fidelity cluster is unusual - may indicate artificially maintained relationships.' } },
   wage_slave:           { tier:'high', matrixChip:'SLAVE', detail:{ observed:'Worker skilled only for production, never for owning companies, on a low wage', rule:(s)=>`energy & production invested, companies + management skills = 0, wage <= ${s.suspiciousWageThreshold.toFixed(3)}`, note:'A pure-production skill build with zero company-ownership investment, on a sub-threshold wage, has no purpose for an independent player — it is the profile of an account run solely to produce for a controller (wage slavery).' } },
+  slow_leveler:         { matrixChip:'SLOWLVL', detail:{ observed:'Account level far below the median for its account age', rule:(s)=>`level < ${s.slowLevelerRatio ?? 0.5}x the median level of accounts the same age (createdAt-based; min age 21d, needs baseline)`, note:'Leveling in WarEra is simple and automatic with activity, so a low level for account age has no legitimate upside. It points to an account that is dormant, on a long break, parked, or run/managed by someone else (wage slave, piggybank, donation/tip mule) — worth a closer look, especially alongside wealth or outflow signals.' } },
   cloned_progression:   { tier:'high', matrixChip:'CLONE', detail:{ observed:'Progression stats mirror another account', rule:()=>'Level/wealth within 2% of a known clone signature', note:'Near-identical progression curves can indicate copy-cat account farming.' } },
   low_wage:             { matrixChip:'WAGE', detail:{ observed:'Workers paid below suspicious wage threshold', rule:(s)=>`Wage <= ${s.suspiciousWageThreshold.toFixed(3)}`, note:'Low wages alone are not conclusive; combine with other signals for stronger inference.' } },
   naming_pattern:       { matrixChip:'NAME', detail:{ observed:'Workers share a name substring or systematic pattern', rule:()=>'>=3 workers share an overlapping name fragment', note:'Bot farms sometimes use systematic naming. May also be coincidence in small regions.' } },
@@ -1701,6 +1768,7 @@ export function WarEraOracle() {
     concurrencyLimit: 50,
     wealthAnomalyMultiplier: 2,
     wealthAnomalyLowerMultiplier: 0.45,
+    slowLevelerRatio: 0.5,
     funnelMinCoins: 100,
     sniperThresholdMs: 1000,
     apmWindowMs: 500,
@@ -1733,8 +1801,9 @@ export function WarEraOracle() {
     countries: {}, 
     regions: {}, 
     names: {}, 
-    requestDeduper: new Map(), 
-    wealthByLevel: {}
+    requestDeduper: new Map(),
+    wealthByLevel: {},
+    levelByAge: {}
   });
   
   const globalWashPartners = useRef({});
@@ -2250,6 +2319,7 @@ export function WarEraOracle() {
             if (_ar && classifyWealth(_w, _l, _ar.avg, settings)) playerObj.wealthAnomalous = true;
             recordWealthBaseline(globalCacheRef.current, _l, _w, uId);
           }
+          if (_l != null && uData.createdAt) recordLevelBaseline(globalCacheRef.current, (Date.now() - new Date(uData.createdAt).getTime()) / 86400000, _l, uId);
         }
         if (foundName && foundName !== 'Unknown') globalCacheRef.current.names[uId] = foundName;
         // Ban status lives under infos.isBanned (and isActive:false). Mark it but keep
@@ -2834,7 +2904,7 @@ export function WarEraOracle() {
                     w.inactive=isInactiveAsOf(uData, inactiveRefFor(userId)); if (w.inactive) globalInactive.current[userId]=true;
                     if (uData.rankings) { uData.userWealth = uData.userWealth || uData.rankings.userWealth; uData.userLevel = uData.userLevel || uData.rankings.userLevel; }
                     logUserWealth(uData.username||uData.name||userId, uData);
-                    { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w, userId); }
+                    { const _w = extractCoinWealth(uData), _l = extractUserLevel(uData); if (_w != null && _l != null) recordWealthBaseline(globalCacheRef.current, _l, _w, userId); if (_l != null && uData.createdAt) recordLevelBaseline(globalCacheRef.current, (Date.now() - new Date(uData.createdAt).getTime()) / 86400000, _l, userId); }
                     globalCacheRef.current.names[userId]=uData.username||uData.name||userId;
                     let workerMuId=uData.mu?(typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu):(uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
                     w.workerMuId=workerMuId;
@@ -2971,6 +3041,11 @@ export function WarEraOracle() {
     txHealthRef.current = { ok: 0, fail: 0, warned: false };
     globalCacheRef.current.requestDeduper.clear();
 
+    try {
+      if (!globalCacheRef.current.levelByAge) globalCacheRef.current.levelByAge = {};
+      const localLba = localStorage.getItem('wera_level_baseline');
+      if (localLba) Object.assign(globalCacheRef.current.levelByAge, JSON.parse(localLba));
+    } catch(e) { /* ignore */ }
     try {
       if (!globalCacheRef.current.wealthByLevel) globalCacheRef.current.wealthByLevel = {};
       const localWb = localStorage.getItem('wera_wealth_baseline');
@@ -3156,6 +3231,7 @@ export function WarEraOracle() {
         localStorage.setItem('wera_wealth_baseline', JSON.stringify(globalCacheRef.current.wealthByLevel));
         fetch('/api/cache', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'set_wealth_baseline', data:globalCacheRef.current.wealthByLevel }) }).catch(()=>{});
       }
+      try { if (globalCacheRef.current.levelByAge && Object.keys(globalCacheRef.current.levelByAge).length > 0) localStorage.setItem('wera_level_baseline', JSON.stringify(globalCacheRef.current.levelByAge)); } catch(e) { /* quota */ }
     }
   };
 
@@ -3214,6 +3290,8 @@ export function WarEraOracle() {
     if (wageSus) parts.push(`${wageSus.workers.length} workers paid minimum wage.`);
     const slaveSus = result.suspicions.find(s => s.type === 'wage_slave');
     if (slaveSus) parts.push(`${slaveSus.workers.length} production-only low-wage worker(s) (wage-slave profile).`);
+    const slowSus = result.suspicions.find(s => s.type === 'slow_leveler');
+    if (slowSus) parts.push(`${slowSus.workers.length} account(s) under-levelled for their age.`);
     const cloneSus = result.suspicions.filter(s => s.type === 'cloned_progression');
     if (cloneSus.length > 0) parts.push(`${cloneSus.reduce((s,c) => s + c.workers.length, 0)} workers have cloned skills.`);
     const shellSus = result.suspicions.find(s => s.type === 'no_production_bonus');
@@ -3381,6 +3459,7 @@ export function WarEraOracle() {
     settings.suspiciousWageThreshold !== 0.110,
     settings.wealthAnomalyMultiplier !== 2,
     settings.wealthAnomalyLowerMultiplier !== 0.45,
+    settings.slowLevelerRatio !== 0.5,
     settings.funnelMinCoins !== 100,
     settings.sniperThresholdMs !== 1000,
     settings.apmWindowMs !== 500,
@@ -3929,6 +4008,7 @@ export function WarEraOracle() {
               {label:'Suspicious Wage Threshold',key:'suspiciousWageThreshold',min:0.01,max:0.15,step:0.001,fmt:(v)=>v.toFixed(3),isFloat:true},
               {label:'Wealth Anomaly Threshold (high)',key:'wealthAnomalyMultiplier',min:1,max:10,step:0.5,fmt:(v)=>`${v}x`,isFloat:true},
               {label:'Low Wealth Threshold',key:'wealthAnomalyLowerMultiplier',min:0.05,max:0.95,step:0.05,fmt:(v)=>`${v}x`,isFloat:true},
+              {label:'Slow Leveler Threshold',key:'slowLevelerRatio',min:0.2,max:0.9,step:0.05,fmt:(v)=>`${v}x`,isFloat:true},
               {label:'Coin Funnel Min Coins',key:'funnelMinCoins',min:25,max:1000,step:25,fmt:(v)=>`${v}`,isFloat:false},
               {label:'Sniper Threshold (ms)',key:'sniperThresholdMs',min:100,max:5000,step:100,fmt:(v)=>`${v}`,isFloat:false},
               {label:'Superhuman APM Window (ms)',key:'apmWindowMs',min:100,max:20000,step:100,fmt:(v)=>`${v}`,isFloat:false},
