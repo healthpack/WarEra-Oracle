@@ -1555,7 +1555,7 @@ const EngagementNetwork = ({ activeResult, names }) => {
           const given = sus.tipperAmounts?.[id] || 0;
           const sentTotal = sus.tipperSentTotals?.[id] || 0;
           const recvPct = total > 0 ? Math.round(cnt / total * 100) : 0;
-          const ownPct = sentTotal > 0 ? Math.round(given / sentTotal * 100) : 0;
+          const ownPct = sentTotal > 0 ? Math.min(100, Math.round(given / sentTotal * 100)) : 0;
           const conc = ownPct >= 75;
           const nm = names?.[id] || ('user_' + String(id).slice(-6));
           const Bar = ({ pct, color }) => <div style={{ height: 4, background: '#060a16', borderRadius: 99, overflow: 'hidden' }}><div style={{ width: Math.min(100, pct) + '%', height: '100%', background: color, borderRadius: 99 }} /></div>;
@@ -2545,8 +2545,9 @@ export function WarEraOracle() {
               }
             } catch { /* best-effort */ }
             try {
-              const tipperTxData = await smartFetch('transaction.getPaginatedTransactions', { transactionType: 'articleTip', userId: tipperId, limit: 100 });
-              const tipperItems = Array.isArray(tipperTxData) ? tipperTxData : (tipperTxData?.items||tipperTxData?.data||tipperTxData?.transactions||[]);
+              // Full windowed set (not just newest 100) so "of their own tipping" never exceeds
+              // 100% — the numerator (tips to this account) spans the same 60-day window.
+              const tipperItems = await gatherTx('articleTip', tipperId, cutoffTime);
               let totalSentCoins = 0;
               tipperItems.forEach(tx => {
                 const senderId = typeof tx.sender==='object' ? (tx.sender?._id||tx.sender?.id) : (tx.buyerId||tx.senderId||tx.sender||tx.fromId||tx.from||tx.authorId);
