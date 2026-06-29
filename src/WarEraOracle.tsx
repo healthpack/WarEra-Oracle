@@ -2155,6 +2155,69 @@ export function WarEraOracle() {
     return unique;
   };
 
+  // Gather a user's transactions of one type within the lookback window, with a Hybrid
+  // delta-refresh: instead of re-paging everything, fetch newest-first and STOP at the first
+  // transaction we already have stored, then merge the few new ones onto the stored set.
+  // (WarEra tx are cursor-paginated, so we diff by tx _id rather than by page/cursor.)
+  //   • local  → return the stored per-user set, no network.
+  //   • live   → full fetch (all pages in window), store the set.
+  //   • hybrid → fetch only what's new since last time, merge with stored, store.
+    // Backward-compat: rebuild a tx list from the OLD per-page cache (pre-gatherTx DBs stored
+    // transactions page-by-page), by walking the stored cursor chain.
+    const reconstructFromPages = (transactionType, userId, cutoffTime) => {
+      const all = []; let cursor = null;
+      for (let i = 0; i < 20; i++) {
+        const payload = { transactionType, userId, limit: 100 };
+        if (cursor) payload.cursor = cursor;
+        const page = localStore.get('transaction.getPaginatedTransactions' + JSON.stringify(payload));
+        if (page === undefined) break;
+        const items = Array.isArray(page) ? page : (page?.items || page?.data || page?.transactions || []);
+        let old = false;
+        for (const tx of items) { const t = new Date(tx.createdAt || tx.timestamp || 0).getTime(); if (t >= cutoffTime) all.push(tx); else old = true; }
+        cursor = page?.nextCursor || page?.meta?.nextCursor || null;
+        if (old || !cursor) break;
+      }
+      return all.length ? all : null;
+    };
+
+  const gatherTx = async (transactionType, userId, cutoffTime, maxItems = 1000) => {
+    const txKey = 'txfull:' + transactionType + ':' + userId;
+    const mode = dbModeRef.current;
+    const storedSet = localStore.isOpen() ? localStore.get(txKey) : undefined;
+    if (mode === 'local') {
+      if (Array.isArray(storedSet)) return storedSet;
+      return reconstructFromPages(transactionType, userId, cutoffTime) || [];   // old-format DB fallback
+    }
+    const storedArr = mode === 'hybrid'
+      ? (Array.isArray(storedSet) ? storedSet : reconstructFromPages(transactionType, userId, cutoffTime))
+      : null;
+    const storedIds = storedArr ? new Set(storedArr.map(t => t._id)) : null;
+    const fetched = [];
+    let nextCursor = null, stop = false;
+    do {
+      if (!isScanningRef.current) break;
+      const payload = { transactionType, userId, limit: 100 };
+      if (nextCursor) payload.cursor = nextCursor;
+      const txData = await smartFetch('transaction.getPaginatedTransactions', payload, false, true); // always live for tx
+      const items = Array.isArray(txData) ? txData : (txData?.items || txData?.data || txData?.transactions || []);
+      for (const tx of items) {
+        if (storedIds && tx._id && storedIds.has(tx._id)) { stop = true; break; }   // caught up to known data
+        const txTime = new Date(tx.createdAt || tx.timestamp || tx.date || Date.now()).getTime();
+        if (txTime < cutoffTime) { stop = true; break; }
+        fetched.push(tx);
+      }
+      if (stop || fetched.length >= maxItems) break;
+      nextCursor = txData?.nextCursor || txData?.meta?.nextCursor || null;
+    } while (nextCursor);
+    let merged = fetched;
+    if (storedArr) {
+      const seen = new Set(fetched.map(t => t._id));
+      merged = fetched.concat(storedArr.filter(t => !seen.has(t._id) && new Date(t.createdAt || t.timestamp || 0).getTime() >= cutoffTime));
+    }
+    if (localStore.isOpen()) localStore.put(txKey, 'txfull', merged, { userId, transactionType });
+    return merged;
+  };
+
   const processPlayerPhase1 = async (playerObj) => {
     const uId = playerObj._id || playerObj.id;
     // Full-scan resume: if this account is already in the Local DB (crawled in an earlier
@@ -2221,21 +2284,7 @@ export function WarEraOracle() {
     const lookbackDays = 60;
     const cutoffTime = Date.now() - lookbackDays * 24 * 60 * 60 * 1000;
     try {
-      let nextCursor=null, reachedOld=false;
-      do {
-        if (!isScanningRef.current) break;
-        const txPayload = { transactionType: 'itemMarket', userId: uId, limit: 100 };
-        if (nextCursor) txPayload.cursor = nextCursor;
-        const txData = await smartFetch('transaction.getPaginatedTransactions', txPayload);
-        let items = Array.isArray(txData) ? txData : (txData?.items||txData?.data||txData?.transactions||[]);
-        for (const tx of items) {
-          const txTime = new Date(tx.createdAt||tx.timestamp||tx.date||Date.now()).getTime();
-          if (txTime >= cutoffTime) itemMarketTxs.push(tx);
-          else reachedOld = true;
-        }
-        nextCursor = txData?.nextCursor||txData?.meta?.nextCursor||null;
-        if (reachedOld || itemMarketTxs.length >= 1000) break;
-      } while (nextCursor);
+      itemMarketTxs = await gatherTx('itemMarket', uId, cutoffTime);
       txHealthRef.current.ok += 1;
     } catch(e) {
       txHealthRef.current.fail += 1;
@@ -2407,8 +2456,8 @@ export function WarEraOracle() {
 
     {
       const [outTxResult, tipTxResult] = await Promise.allSettled([
-        smartFetch('transaction.getPaginatedTransactions', { transactionType: 'donation', userId: uId, limit: 100 }),
-        smartFetch('transaction.getPaginatedTransactions', { transactionType: 'articleTip', userId: uId, limit: 100 }),
+        gatherTx('donation', uId, cutoffTime),
+        gatherTx('articleTip', uId, cutoffTime),
       ]);
 
       // Coin-funnel reconstruction: where did THIS account's coins go? Accumulate
