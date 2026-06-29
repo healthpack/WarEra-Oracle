@@ -1548,7 +1548,7 @@ const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX, bossWealth })
 };
 
 // Sidebar beside the map: identity, verdict, summary, actions, signal ledger.
-const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onCopy, copied, workforceSize, banned, inactive }) => {
+const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onCopy, copied, workforceSize, banned, inactive, onDeepDive, deepDiveTarget }) => {
   const sc = activeResult.adjustedDetections ?? activeResult.detections;
   const tier = plScoreTier(sc);
   const ringCount = Object.keys(activeResult.washPartners || {}).length;
@@ -1583,6 +1583,7 @@ const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onC
         <button onClick={onRescan} style={{ ...btn, background: '#121b35', color: '#9fb0d4', border: '1px solid #2e3f6a' }}><RefreshCw size={12} /> Rescan</button>
       </div>
       {onCopy && <button onClick={onCopy} style={{ ...btn, width: '100%', background: copied ? 'rgba(63,208,163,0.12)' : 'transparent', color: copied ? '#3fd0a3' : '#5d6e96', border: `1px solid ${copied ? 'rgba(63,208,163,0.40)' : '#1f2b4e'}`, fontSize: 10.5, marginTop: -4 }}><CheckSquare size={11} /> {copied ? 'Copied!' : 'Copy 500-char summary'}</button>}
+      {deepDiveTarget && <button onClick={onDeepDive} title={`Compare when this account acts vs ${deepDiveTarget.name} (its ${deepDiveTarget.rel}) — an account only ever active in its boss's windows is a control tell.`} style={{ ...btn, width: '100%', background: 'rgba(124,92,255,0.14)', color: '#a98bff', border: '1px solid rgba(124,92,255,0.42)', fontSize: 10.5 }}><Activity size={11} /> Deep dive — timing vs {deepDiveTarget.name}</button>}
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.08em', color: '#9fb0d4', marginBottom: 8, textTransform: 'uppercase' }}>Signal Ledger</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
@@ -1823,6 +1824,7 @@ export function WarEraOracle() {
   const crawlFlaggedRef = useRef(0);                         // would-be flags seen during a gather crawl
   const [dbOpen, setDbOpen] = useState(false);
   const [dbStats, setDbStats] = useState(null);
+  const [deepDive, setDeepDive] = useState(null);          // timing-correlation modal state
   useEffect(() => { dbModeRef.current = dbMode; }, [dbMode]);
   // Flush any buffered writes to the DB file whenever a scan stops, and on tab close.
   useEffect(() => { if (!isScanning && localStore.isOpen()) localStore.flushNow(); }, [isScanning]);
@@ -2145,6 +2147,39 @@ export function WarEraOracle() {
   const handleDbOpen = async () => { try { const r = await localStore.openExisting(); setDbOpen(true); setDbRemembered(true); refreshDbStats(); addLog(`[DB] Opened local database — ${r.records} records loaded.`, 'info'); } catch (e) { if (e.name !== 'AbortError') addLog('[DB] ' + e.message, 'warning'); } };
   const handleDbReconnect = async () => { try { const r = await localStore.reconnect(); if (r) { setDbOpen(true); refreshDbStats(); addLog(`[DB] Reconnected to local database — ${r.records} records.`, 'info'); } else addLog('[DB] Could not reconnect (permission denied or file moved).', 'warning'); } catch (e) { addLog('[DB] ' + e.message, 'warning'); } };
   const handleDbClose = () => { localStore.flushNow(); localStore.close(); setDbOpen(false); setDbMode('live'); setDbStats(null); addLog('[DB] Local database closed (file kept on disk).', 'info'); };
+
+  // Deep dive — compare WHEN two accounts act (a slave only ever active in its boss's windows
+  // is a control tell). Pulls both accounts' action timestamps (all tx types, cached/delta'd
+  // via gatherTx) and computes: hour-of-day overlap, daily-rhythm correlation, and how often
+  // one acts within 10 min of the other. Uses the DB when in Hybrid/Local — fast & offline.
+  const runDeepDive = async (account, counterpart) => {
+    setDeepDive({ loading: true, account, counterpart });
+    isScanningRef.current = true; // let gatherTx's loop run outside a formal scan
+    try {
+      const cutoff = Date.now() - 60 * 86400000;
+      const types = ['itemMarket', 'donation', 'articleTip', 'wage', 'openCase', 'craftItem', 'dismantleItem'];
+      const fetchTimes = async (uid) => {
+        const times = [];
+        for (const t of types) {
+          try { const txs = await gatherTx(t, uid, cutoff); for (const tx of txs) { const ms = new Date(tx.createdAt || tx.timestamp || 0).getTime(); if (ms) times.push(ms); } } catch { /* skip type */ }
+        }
+        return times.sort((a, b) => a - b);
+      };
+      const [aTimes, bTimes] = await Promise.all([fetchTimes(account.id), fetchTimes(counterpart.id)]);
+      const hist = (times) => { const h = new Array(24).fill(0); for (const t of times) h[new Date(t).getUTCHours()]++; return h; };
+      const aH = hist(aTimes), bH = hist(bTimes);
+      const activeHrs = (h) => new Set(h.map((c, i) => c > 0 ? i : -1).filter(i => i >= 0));
+      const aHrs = activeHrs(aH), bHrs = activeHrs(bH);
+      const containment = aHrs.size ? [...aHrs].filter(h => bHrs.has(h)).length / aHrs.size : 0;
+      const pearson = (x, y) => { const n = x.length, mx = x.reduce((s, v) => s + v, 0) / n, my = y.reduce((s, v) => s + v, 0) / n; let num = 0, dx = 0, dy = 0; for (let i = 0; i < n; i++) { const a = x[i] - mx, b = y[i] - my; num += a * b; dx += a * a; dy += b * b; } return (dx && dy) ? num / Math.sqrt(dx * dy) : 0; };
+      const corr = pearson(aH, bH);
+      const W = 10 * 60000; let near = 0, j = 0;
+      for (const t of aTimes) { while (j < bTimes.length && bTimes[j] < t - W) j++; if (j < bTimes.length && bTimes[j] <= t + W) near++; }
+      const shadowPct = aTimes.length ? near / aTimes.length : 0;
+      setDeepDive({ loading: false, account, counterpart, aCount: aTimes.length, bCount: bTimes.length, aH, bH, containment, corr, shadowPct });
+    } catch (e) { setDeepDive({ loading: false, error: e.message, account, counterpart }); }
+    finally { if (!isScanning) isScanningRef.current = false; }
+  };
 
   const fetchRegions = async () => {
     addLog('Pinging WarEra API for regions...', 'info');
@@ -3762,9 +3797,15 @@ export function WarEraOracle() {
                 const _ar=_lv!=null?getWealthAverageExtended(globalCacheRef.current,_lv):null;
                 const _bx=(_cw!=null&&_ar&&_ar.avg>0)?_cw/_ar.avg:null;
                 const _wf=buildMatrixModel(activeResult.suspicions,globalCacheRef.current).rows.filter(r=>r.id!==activeResult.player.id).length;
+                // Deep-dive counterpart: the account's boss (employer) if known, else its
+                // strongest wash partner — the most likely controller to compare timing against.
+                const _emp=activeResult.player?.employer;
+                let _ddTarget=_emp?.id?{id:_emp.id,name:_emp.name||('user_'+String(_emp.id).slice(-6)),rel:'employer'}:null;
+                if(!_ddTarget){ const wp=globalWashPartners.current[activeResult.player.id]; if(wp){ const top=Object.entries(wp).sort((a,b)=>Math.abs(b[1].netProfit||b[1].volume||0)-Math.abs(a[1].netProfit||a[1].volume||0))[0]; if(top)_ddTarget={id:top[0],name:globalCacheRef.current.names[top[0]]||('user_'+String(top[0]).slice(-6)),rel:'wash partner'}; } }
                 return (
                   <div style={{padding:'14px 24px 0',display:'flex',gap:14,alignItems:'stretch'}}>
                     <MapSidebar activeResult={activeResult} isWatching={!!watchlist[activeResult.player.id]} workforceSize={_wf}
+                      deepDiveTarget={_ddTarget} onDeepDive={()=>_ddTarget&&runDeepDive({id:activeResult.player.id,name:String(activeResult.player.name)},_ddTarget)}
                       banned={!!(activeResult.player.isBanned||globalBans.current[activeResult.player.id])}
                       inactive={!!(activeResult.player.inactive||globalInactive.current[activeResult.player.id])}
                       copied={copiedId===activeResult.player.id}
@@ -4027,6 +4068,58 @@ export function WarEraOracle() {
           </div>
         )}
       </div>
+
+      {/* ── DEEP DIVE (timing correlation) ── */}
+      {deepDive&&(()=>{
+        const dd=deepDive, aName=dd.account?.name||'Account', bName=dd.counterpart?.name||'Counterpart', close=()=>setDeepDive(null);
+        return (
+        <div onClick={close} style={{position:'fixed',inset:0,zIndex:300,background:'rgba(3,6,16,0.72)',display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:'#0c1226',border:'1px solid #2e3f6a',borderRadius:12,padding:'18px 20px',width:580,maxWidth:'94vw',maxHeight:'88vh',overflowY:'auto',boxShadow:'0 18px 60px rgba(0,0,0,0.7)'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+              <Activity size={15} style={{color:'#a98bff'}}/>
+              <span style={{fontSize:13,fontWeight:700,color:'#eaf0ff',letterSpacing:'0.05em'}}>TIMING DEEP DIVE</span>
+              <button onClick={close} style={{marginLeft:'auto',background:'transparent',border:'none',color:'#5d6e96',cursor:'pointer',fontSize:15}}>✕</button>
+            </div>
+            <div style={{fontSize:11.5,color:'#9fb0d4',marginBottom:14}}><span style={{color:'#a98bff',fontFamily:"IBM Plex Mono, monospace"}}>{aName}</span> vs its {dd.counterpart?.rel} <span style={{color:'#4fc3e8',fontFamily:"IBM Plex Mono, monospace"}}>{bName}</span></div>
+            {dd.loading&&<div style={{padding:'34px 0',textAlign:'center',color:'#9fb0d4',fontSize:12}}>Pulling both accounts' activity…</div>}
+            {dd.error&&<div style={{padding:18,color:'#ff5d6c',fontSize:12}}>Failed: {dd.error}</div>}
+            {!dd.loading&&!dd.error&&(()=>{
+              const enough=dd.aCount>=20&&dd.bCount>=20;
+              let verdict,vc;
+              if(!enough){verdict='Not enough activity on one side to compare reliably.';vc='#5d6e96';}
+              else if(dd.containment>=0.85&&dd.corr>=0.6){verdict=`Tightly coupled — ${aName} is active almost only when ${bName} is, with a matching daily rhythm. Consistent with a controlled account.`;vc='#ff5d6c';}
+              else if(dd.containment>=0.85){verdict=`${aName}'s active hours sit entirely within ${bName}'s window.`;vc='#ffab3d';}
+              else if(dd.shadowPct>=0.5){verdict=`Half of ${aName}'s actions land within 10 min of a ${bName} action.`;vc='#ffab3d';}
+              else if(dd.corr>=0.7){verdict='Strongly matched daily activity rhythm.';vc='#ffab3d';}
+              else{verdict='No strong timing coupling — independent schedules.';vc='#3fd0a3';}
+              const mx=Math.max(1,...dd.aH,...dd.bH);
+              return (<>
+                <div style={{fontSize:9.5,color:'#5d6e96',marginBottom:6,letterSpacing:'0.05em'}}>ACTIVITY BY HOUR (UTC) — <span style={{color:'#a98bff'}}>{aName}</span> / <span style={{color:'#4fc3e8'}}>{bName}</span></div>
+                <div style={{display:'flex',alignItems:'flex-end',gap:2,height:72,background:'#070b18',border:'1px solid #1f2b4e',borderRadius:8,padding:'8px 8px 4px'}}>
+                  {dd.aH.map((_,i)=>(
+                    <div key={i} style={{flex:1,display:'flex',alignItems:'flex-end',justifyContent:'center',gap:1,height:'100%'}}>
+                      <div style={{width:'42%',maxWidth:5,height:`${dd.aH[i]/mx*100}%`,background:'#a98bff',borderRadius:'1px 1px 0 0'}}/>
+                      <div style={{width:'42%',maxWidth:5,height:`${dd.bH[i]/mx*100}%`,background:'#4fc3e8',borderRadius:'1px 1px 0 0'}}/>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:8,color:'#5d6e96',marginTop:3,padding:'0 4px'}}><span>0h</span><span>6h</span><span>12h</span><span>18h</span><span>23h</span></div>
+                <div style={{display:'flex',gap:8,marginTop:14}}>
+                  {[['Hours containment',Math.round(dd.containment*100)+'%',`Share of ${aName}'s active hours that fall inside ${bName}'s`],['Rhythm match',Math.round(Math.max(0,dd.corr)*100)+'%','How similar the two hour-of-day patterns are'],['10-min shadow',Math.round(dd.shadowPct*100)+'%',`${aName} actions within 10 min of a ${bName} action`]].map((m,i)=>(
+                    <div key={i} title={m[2]} style={{flex:1,background:'#121b35',border:'1px solid #1f2b4e',borderRadius:8,padding:'8px 10px',cursor:'help'}}>
+                      <div style={{fontSize:18,fontWeight:700,fontFamily:"IBM Plex Mono, monospace",color:'#eaf0ff'}}>{m[1]}</div>
+                      <div style={{fontSize:9,color:'#5d6e96',lineHeight:1.3,marginTop:2}}>{m[0]}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{marginTop:14,padding:'10px 12px',background:'rgba(18,27,53,0.7)',border:`1px solid ${vc}`,borderRadius:8,fontSize:12,color:vc,fontWeight:600,lineHeight:1.45}}>{verdict}</div>
+                <div style={{fontSize:9.5,color:'#5d6e96',marginTop:8}}>{dd.aCount.toLocaleString()} vs {dd.bCount.toLocaleString()} actions analysed (60-day window){!enough?' — too few for a confident read':''}. Tip: run this in Hybrid/Local DB mode for instant offline analysis.</div>
+              </>);
+            })()}
+          </div>
+        </div>
+        );
+      })()}
 
       {/* ── CONFIG POPOVER ── */}
       {configOpen&&(
