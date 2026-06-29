@@ -671,22 +671,28 @@ const detectSlowLeveler = (player, allWorkers, settings, globalCache) => {
   const ratio = settings.slowLevelerRatio ?? 0.5;
   const MIN_AGE_DAYS = 21, MIN_EXPECTED = 5, MIN_SAMPLES = 5;
   const lagging = [];
-  const check = (createdAt, level, name, uid) => {
+  let selfLagging = false;
+  const check = (createdAt, level, name, uid, isSelf) => {
     if (!createdAt || level == null) return;
     const ageDays = (Date.now() - new Date(createdAt).getTime()) / 86400000;
     if (!(ageDays >= MIN_AGE_DAYS)) return;
     const exp = getMedianLevelForAge(globalCache, ageDays);
     if (!exp || exp.avg < MIN_EXPECTED || exp.totalCount < MIN_SAMPLES) return;
-    if (level < ratio * exp.avg) lagging.push({ uid, normalizedName: name, normalizedLevel: level, expectedLevel: Math.round(exp.avg), accountAgeDays: Math.floor(ageDays) });
+    if (level < ratio * exp.avg) { lagging.push({ uid, normalizedName: name, normalizedLevel: level, expectedLevel: Math.round(exp.avg), accountAgeDays: Math.floor(ageDays) }); if (isSelf) selfLagging = true; }
   };
-  check(player.accountCreatedAt, extractUserLevel(player) ?? player.level, (player.name || 'This account') + ' (SELF)', player.id);
-  (allWorkers || []).forEach(w => check(w.resolvedUser?.createdAt, extractUserLevel(w.resolvedUser) ?? w.normalizedLevel, w.normalizedName, w.uid));
+  check(player.accountCreatedAt, extractUserLevel(player) ?? player.level, (player.name || 'This account') + ' (SELF)', player.id, true);
+  (allWorkers || []).forEach(w => check(w.resolvedUser?.createdAt, extractUserLevel(w.resolvedUser) ?? w.normalizedLevel, w.normalizedName, w.uid, false));
   if (!lagging.length) return [];
   const top = lagging[0];
+  // Escalation: an under-levelled account that works almost every day (from its wage TX —
+  // distinct work-days over a real span, gaps lower it) is the wage-slave smoking gun.
+  const wc = player.workConsistency;
+  const relentless = selfLagging && wc && wc.spanDays >= 14 && wc.workDays >= 14 && wc.consistency >= 0.9;
+  let desc = `${lagging.length} account(s) far below the median level for their age — e.g. ${top.normalizedName.replace(' (SELF)','')}: level ${top.normalizedLevel} at ${top.accountAgeDays} days old (~level ${top.expectedLevel} expected). Slow leveling has no legitimate purpose; consistent with a parked or controlled account.`;
+  if (relentless) desc += ` This account works almost every day (${wc.workDays} work-days across ${wc.spanDays}) yet stays under-levelled — a strong wage-slave pattern.`;
   return [{
-    type: 'slow_leveler', severity: 'medium',
-    desc: `${lagging.length} account(s) far below the median level for their age — e.g. ${top.normalizedName.replace(' (SELF)','')}: level ${top.normalizedLevel} at ${top.accountAgeDays} days old (~level ${top.expectedLevel} expected). Slow leveling has no legitimate purpose; consistent with a parked or controlled account.`,
-    workers: lagging, detectionWeight: lagging.length,
+    type: 'slow_leveler', severity: relentless ? 'high' : 'medium',
+    desc, workers: lagging, detectionWeight: lagging.length + (relentless ? 3 : 0),
   }];
 };
 
@@ -2688,6 +2694,31 @@ export function WarEraOracle() {
             drainedBeyondBalance: _fw != null && totalOut > _fw,
           };
         }
+        // Work consistency — how relentlessly does this account work? Count distinct calendar
+        // days with a wage payment vs the span those payments cover. (Using wage TX, not
+        // stats.worksCount, since the energy skill inflates works/day.) A low-level account
+        // produces little, so few wage tx/day → the window spans many days, letting us see
+        // "works almost every day" — the wage-slave smoking gun when also under-levelled. A
+        // real break shows up as a gap that lowers consistency (so returning players aren't
+        // treated like relentless drones).
+        try {
+          const wageTxs = await gatherTx('wage', uId, cutoffTime);
+          if (wageTxs.length >= 5) {
+            const days = new Set(); const employers = {}; let earned = 0, minT = Infinity, maxT = -Infinity;
+            for (const tx of wageTxs) {
+              const t = new Date(tx.createdAt || tx.timestamp || 0).getTime();
+              if (!t) continue;
+              days.add(new Date(t).toISOString().slice(0, 10)); minT = Math.min(minT, t); maxT = Math.max(maxT, t);
+              earned += (typeof tx.money === 'number' ? tx.money : 0);
+              if (tx.buyerId) employers[tx.buyerId] = (employers[tx.buyerId] || 0) + 1;
+            }
+            const spanDays = (maxT > minT) ? Math.round((maxT - minT) / 86400000) + 1 : 1;
+            playerObj.workConsistency = {
+              workDays: days.size, spanDays, consistency: Math.min(1, days.size / spanDays),
+              earned, topEmployer: Object.keys(employers).sort((a, b) => employers[b] - employers[a])[0] || null,
+            };
+          }
+        } catch(e) { /* best-effort */ }
         // For flagged outflow accounts, resolve the leadership of each MU sink so the
         // map can show WHO controls the drain destination (the Eutectic connection).
         if (playerObj.coinFunnel || isDirectLaunderer) {
@@ -2762,6 +2793,7 @@ export function WarEraOracle() {
       userLevel: playerObj.userLevel,
       tipAbuse,
       coinFunnel: playerObj.coinFunnel || null,
+      workConsistency: playerObj.workConsistency || null,
       outflowRecipients: playerObj.outflowRecipients || [],
     };
 
