@@ -764,37 +764,53 @@ const isInactiveAsOf = (u, refAt) => { const la = lastActiveAtMs(u); return la !
 // (Account↔own-company same-second is universal in WarEra — every account is born with a
 // starter company — so we compare account↔account only, never account↔company.)
 const detectCoordinatedCreation = (player, allWorkers, globalCache) => {
-  const bossSec = objIdSeconds(player.id);
-  if (bossSec == null) return [];
   const nameOf = (id, fallback) => globalCache?.names?.[id] || fallback || ('user_' + String(id).slice(-6));
-  const linked = [];
-  (allWorkers || []).forEach(w => {
-    const id = w.resolvedUser?._id || (typeof w.user === 'string' ? w.user : null) || w.uid;
-    if (isObjId(id)) linked.push({ id, name: w.normalizedName || w.resolvedUser?.username || nameOf(id), link: 'worker' });
-  });
-  Object.keys(player.washPartners || {}).forEach(id => {
-    if (isObjId(id)) linked.push({ id, name: player.washPartners[id]?.name || nameOf(id), link: 'wash partner' });
-  });
-  if (player.employer?.id && isObjId(player.employer.id)) linked.push({ id: player.employer.id, name: player.employer.name || nameOf(player.employer.id), link: 'employer' });
+  // Gather every account in the cluster (the scanned account + its linked accounts) with its
+  // creation time, deduped.
+  const accounts = []; const seen = new Set();
+  const add = (id, name, link) => {
+    if (!isObjId(id) || seen.has(id)) return;
+    const sec = objIdSeconds(id); if (sec == null) return;
+    seen.add(id); accounts.push({ id, name, link, sec });
+  };
+  add(player.id, (player.name || 'this account') + ' (SELF)', 'self');
+  (allWorkers || []).forEach(w => add(w.resolvedUser?._id || (typeof w.user === 'string' ? w.user : null) || w.uid, w.normalizedName || w.resolvedUser?.username || nameOf(w.uid), 'worker'));
+  Object.keys(player.washPartners || {}).forEach(id => add(id, player.washPartners[id]?.name || nameOf(id), 'wash partner'));
+  if (player.employer?.id) add(player.employer.id, player.employer.name || nameOf(player.employer.id), 'employer');
+  if (accounts.length < 2) return [];
 
-  const seen = new Set(), hits = [];
-  linked.forEach(a => {
-    if (!a.id || a.id === player.id || seen.has(a.id)) return;
-    seen.add(a.id);
-    const sec = objIdSeconds(a.id);
-    if (sec == null) return;
-    const delta = Math.abs(sec - bossSec);
-    if (delta <= COCREATE_WINDOW_S) hits.push({ ...a, delta });
-  });
-  if (!hits.length) return [];
-  hits.sort((a, b) => a.delta - b.delta);
-  const list = hits.map(h => `${h.name} (${h.link}, +${h.delta}s)`).join(', ');
+  // ALL-PAIRS: union accounts created within COCREATE_WINDOW_S of EACH OTHER (not just of the
+  // boss), so a sub-ring of workers minted together is caught even if the boss was made later.
+  const parent = accounts.map((_, i) => i);
+  const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  for (let i = 0; i < accounts.length; i++)
+    for (let j = i + 1; j < accounts.length; j++)
+      if (Math.abs(accounts[i].sec - accounts[j].sec) <= COCREATE_WINDOW_S) parent[find(i)] = find(j);
+
+  const groupsByRoot = {};
+  accounts.forEach((a, i) => { const r = find(i); (groupsByRoot[r] = groupsByRoot[r] || []).push(a); });
+  const coGroups = Object.values(groupsByRoot).filter(g => g.length >= 2);
+  if (!coGroups.length) return [];
+
+  // Per-account: delta to its NEAREST group-mate (drives the ⏱ map badge), and whether the
+  // scanned account is in its group.
+  const coCreated = [];
+  coGroups.forEach(g => g.forEach(a => {
+    if (a.id === player.id) return;
+    let nearest = Infinity, withBoss = false;
+    g.forEach(b => { if (b.id === a.id) return; nearest = Math.min(nearest, Math.abs(a.sec - b.sec)); if (b.id === player.id) withBoss = true; });
+    coCreated.push({ id: a.id, name: a.name, link: a.link, delta: Number.isFinite(nearest) ? nearest : 0, withBoss });
+  }));
+  if (!coCreated.length) return [];
+
+  const groupDescs = coGroups.map(g => g.map(a => a.name.replace(' (SELF)', '')).join(' + '));
+  const desc = `Coordinated account creation: ${coGroups.length} group${coGroups.length === 1 ? '' : 's'} of linked accounts minted within ${COCREATE_WINDOW_S}s of EACH OTHER — ${groupDescs.join('; ')}. Near-simultaneous signups among accounts that also share a relationship is consistent with scripted account farming.`;
   return [{
     type: 'coordinated_creation', severity: 'high',
-    desc: `Coordinated account creation: ${hits.length} linked account${hits.length === 1 ? '' : 's'} created within ${COCREATE_WINDOW_S}s of this account — ${list}. Near-simultaneous signups between accounts that ALSO share a relationship is consistent with scripted account farming.`,
-    workers: hits.map(h => ({ uid: h.id, normalizedName: h.name })),
-    coCreated: hits,
-    detectionWeight: hits.length * 2,
+    desc,
+    workers: coCreated.map(c => ({ uid: c.id, normalizedName: c.name })),
+    coCreated,
+    detectionWeight: coCreated.length * 2,
   }];
 };
 
@@ -1090,7 +1106,7 @@ const HEURISTICS = {
   wage_uniformity:      { matrixChip:'WAGE', detail:{ observed:'All workers paid identical wages', rule:()=>'Wage variance across workforce is zero', note:'Uniform wages may suggest batch configuration rather than individual negotiation.' } },
   no_production_bonus:  { matrixChip:'SHELL', detail:{ observed:'Companies issuing no production bonuses', rule:()=>'>=1 company with 0% bonus rate', note:'Bonus suppression can reduce worker incentive to audit their employment.' } },
   tip_farming:          { detail:{ observed:'Heavy, concentrated tip traffic from a small set of accounts', rule:()=>'Single tipper accounts for >=50% of all received tips', note:'Tip farming networks route coins through repeated small donations to obscure origin.' } },
-  coordinated_creation: { tier:'high', detail:{ observed:'A linked account was created within seconds of this one', rule:()=>`A worker, wash partner, or employer was created within ${COCREATE_WINDOW_S}s of this account`, note:'Account ObjectIds embed creation time. Two accounts that are independently linked (employment, trading) AND created near-simultaneously is consistent with scripted batch signup — humans do not register the same second. Account↔own-company timing is ignored (every WarEra account is born with a starter company the same second); only account↔account is compared.' } },
+  coordinated_creation: { tier:'high', detail:{ observed:'Linked accounts created within seconds of each other (batch signup)', rule:()=>`Two or more accounts in the cluster (the scanned account, workers, wash partners, employer) created within ${COCREATE_WINDOW_S}s of EACH OTHER`, note:'Account ObjectIds embed creation time. Accounts that are independently linked (employment, trading) AND created near-simultaneously is consistent with scripted batch signup — humans do not register the same second. Compared all-pairs, so a sub-ring of workers minted together is caught even if the boss was made later. Account↔own-company timing is ignored (every WarEra account is born with a starter company the same second); only account↔account is compared.' } },
   newborn_wealthy:      { matrixChip:'WEALTH' }, // legacy alias of wealth_anomaly (kept for old saved/imported findings)
 };
 const CRIT_TYPES = new Set(Object.keys(HEURISTICS).filter(t => HEURISTICS[t].tier === 'crit'));
@@ -1448,7 +1464,7 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150, onOpenUser,
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11.5, fontWeight: 600, color: nd.banned ? '#ff5d6c' : '#eaf0ff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nm}</span>
           {nd.banned && <span style={{ fontSize: 7.5, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0 }}>BAN</span>}
           {!nd.banned && nd.inactive && <span title={`No login in over ${INACTIVE_DAYS} days — possibly quit (often dumps wealth on the way out)`} style={{ fontSize: 7.5, fontWeight: 700, color: '#9fb0d4', background: 'rgba(159,176,212,0.12)', border: '1px solid rgba(159,176,212,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0 }}>INACTIVE</span>}
-          {nd.coCreatedDelta != null && <span title={`Created within ${nd.coCreatedDelta}s of the scanned account — possible scripted batch signup`} style={{ fontSize: 7.5, fontWeight: 700, color: '#ffd84d', background: 'rgba(255,216,77,0.12)', border: '1px solid rgba(255,216,77,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0, whiteSpace: 'nowrap' }}>⏱+{nd.coCreatedDelta}s</span>}
+          {nd.coCreatedDelta != null && <span title={`Created within ${nd.coCreatedDelta}s of another account in its cluster — possible scripted batch signup`} style={{ fontSize: 7.5, fontWeight: 700, color: '#ffd84d', background: 'rgba(255,216,77,0.12)', border: '1px solid rgba(255,216,77,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0, whiteSpace: 'nowrap' }}>⏱+{nd.coCreatedDelta}s</span>}
           {onOpenUser && (nd.kind !== 'funnel' || nd.sinkKind === 'user') && <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpenUser(nd.id); }} title={scannedIds?.has(nd.id) ? "Open this account's dossier" : 'Scan & open this account'} style={{ marginLeft: 'auto', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', color: scannedIds?.has(nd.id) ? '#3fd0a3' : '#a98bff', flexShrink: 0, display: 'inline-flex' }}><Search size={9} /></button>}
           {(nd.kind !== 'funnel' || nd.sinkKind === 'user') && <a href={`https://app.warera.io/user/${nd.id}`} target="_blank" rel="noopener noreferrer" onPointerDown={(e) => e.stopPropagation()} style={{ color: '#5d6e96', flexShrink: 0, marginLeft: onOpenUser ? 4 : 'auto' }}><ExternalLink size={9} /></a>}
         </div>
