@@ -816,7 +816,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   let allWorkers = Array.from(uniqueWorkersMap.values());
   const washPartners = player.washPartners || {};
   const hasAdvancedFlags = player.sniperHits >= 5 || player.maxConcurrentTxs >= 5 || player.isHermit || player.isMutualHermit || player.pacingHits >= settings.pacingMinHits;
-  if (!_forceRun && allWorkers.length < 2 && Object.keys(washPartners).length === 0 && !player.isDirectLaunderer && !hasAdvancedFlags) return null;
+  if (!_forceRun && !player.forceResult && allWorkers.length < 2 && Object.keys(washPartners).length === 0 && !player.isDirectLaunderer && !hasAdvancedFlags) return null;
 
   const validWorkers = [];
   allWorkers.forEach(w => {
@@ -900,7 +900,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   }
   pushCoinFunnel(allSuspicions, player, globalCache);
 
-  if (allSuspicions.length === 0) return null;
+  if (allSuspicions.length === 0 && !player.forceResult) return null;
 
   const summaryParts = [];
   if (player.sniperHits >= 5) summaryParts.push(`Sniper automation (${player.sniperHits} hits).`);
@@ -1005,7 +1005,7 @@ const analyzePhase1 = (player, settings, globalCache, addLog = null) => {
   }
   pushCoinFunnel(allSuspicions, player, globalCache);
 
-  if (allSuspicions.length === 0) return null;
+  if (allSuspicions.length === 0 && !player.forceResult) return null;
 
   allSuspicions.sort((a, b) => {
     const order = ['money_laundering', 'transaction_abuse', 'market_automation', 'superhuman_apm', 'script_pacing', 'mutual_hermit', 'hermit_network', 'wealth_anomaly', 'tip_farming'];
@@ -1154,7 +1154,7 @@ const MatrixNameCell = ({ name, frag }) => {
   </span>;
 };
 
-const LinkedAccountMatrix = ({ suspicions, wageThreshold = 0.11, bossId }) => {
+const LinkedAccountMatrix = ({ suspicions, wageThreshold = 0.11, bossId, onOpenUser, scannedIds }) => {
   const { rows: allRows, overlapString } = buildMatrixModel(suspicions);
   const rows = bossId ? allRows.filter(r => r.id !== bossId && r.uid !== bossId) : allRows;
   if (rows.length < 2) return null;
@@ -1180,9 +1180,12 @@ const LinkedAccountMatrix = ({ suspicions, wageThreshold = 0.11, bossId }) => {
             return (
               <tr key={w.uid} style={i === rows.length - 1 ? { ...td, borderBottom: 'none' } : undefined}>
                 <td style={td}>
-                  <a href={`https://app.warera.io/user/${w.id}`} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}>
-                    <MatrixNameCell name={w.name} frag={overlapString} /><ExternalLink size={10} style={{ color: '#5d6e96' }} />
-                  </a>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <a href={`https://app.warera.io/user/${w.id}`} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}>
+                      <MatrixNameCell name={w.name} frag={overlapString} /><ExternalLink size={10} style={{ color: '#5d6e96' }} />
+                    </a>
+                    {onOpenUser && /^[0-9a-fA-F]{24}$/.test(String(w.id || '')) && w.id !== bossId && <button onClick={() => onOpenUser(w.id)} title={scannedIds?.has(w.id) ? "Open this account's dossier" : 'Scan & open this account'} style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', color: scannedIds?.has(w.id) ? '#3fd0a3' : '#a98bff', display: 'inline-flex' }}><Search size={10} /></button>}
+                  </span>
                 </td>
                 <td style={{ ...td, fontFamily: "IBM Plex Mono, monospace", fontSize: 12, color: '#9fb0d4' }}>{w.level ?? '?'}</td>
                 <td style={{ ...td, fontFamily: "IBM Plex Mono, monospace", fontSize: 12, color: '#9fb0d4' }}>{w.age != null ? `${w.age}d` : '—'}</td>
@@ -1625,7 +1628,7 @@ const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onC
 };
 
 // Engagement network — tipper cards with share-of-received / share-of-own bars.
-const EngagementNetwork = ({ activeResult, names }) => {
+const EngagementNetwork = ({ activeResult, names, onOpenUser, scannedIds }) => {
   const sus = (activeResult.suspicions || []).find(s => s.type === 'tip_farming');
   if (!sus) return null;
   const counts = sus.tipperCounts || {};
@@ -1655,7 +1658,8 @@ const EngagementNetwork = ({ activeResult, names }) => {
             <a key={id} href={`https://app.warera.io/user/${id}`} target="_blank" rel="noopener noreferrer" style={{ flex: '1 1 160px', minWidth: 160, background: '#0c1226', border: '1px solid #1f2b4e', borderRadius: 8, padding: '10px 13px', textDecoration: 'none' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 9 }}>
                 <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5, color: '#4fc3e8', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nm}</span>
-                <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#5d6e96', marginLeft: 'auto', flexShrink: 0 }}>{cnt} tips</span>
+                {onOpenUser && /^[0-9a-fA-F]{24}$/.test(String(id || '')) && <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); onOpenUser(id); }} title={scannedIds?.has(id) ? "Open this account's dossier" : 'Scan & open this account'} style={{ marginLeft: 'auto', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', color: scannedIds?.has(id) ? '#3fd0a3' : '#a98bff', display: 'inline-flex', flexShrink: 0 }}><Search size={10} /></button>}
+                <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#5d6e96', marginLeft: onOpenUser ? 0 : 'auto', flexShrink: 0 }}>{cnt} tips</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}><span style={{ fontSize: 10, color: '#5d6e96' }}>of received tips</span><span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11, fontWeight: 700, color: '#9fb0d4' }}>{recvPct}%</span></div>
               <div style={{ marginBottom: 8 }}><Bar pct={recvPct} color="#9fb0d4" /></div>
@@ -2831,6 +2835,7 @@ export function WarEraOracle() {
       tipAbuse,
       coinFunnel: playerObj.coinFunnel || null,
       workConsistency: playerObj.workConsistency || null,
+      forceResult: !!playerObj.forceResult,
       outflowRecipients: playerObj.outflowRecipients || [],
     };
 
@@ -3424,10 +3429,12 @@ export function WarEraOracle() {
     document.body.removeChild(ta);
   };
 
-  const rescanPlayer = (playerId, country) => {
+  const rescanPlayer = (playerId, country, forceResult = false) => {
     delete phase2DataRef.current[playerId];
     setFindings(prev => { const n={...prev}; if(n[country]) n[country]=n[country].filter(r=>r.player.id!==playerId); return n; });
-    scanQueueRef.current.unshift({ _id: playerId, scanContext: country });
+    // forceResult: surface a dossier even when the account is clean (used by the manual
+    // "Scan/View" affordances, so drilling into a user always lands somewhere viewable).
+    scanQueueRef.current.unshift({ _id: playerId, scanContext: country, forceResult });
     if (!isScanningRef.current) {
       setIsScanning(true); isScanningRef.current=true; setProgress(0); setCurrentTask('Re-scanning player...');
       const processedIds=new Set(); let activePromises=[];
@@ -3458,7 +3465,7 @@ export function WarEraOracle() {
   const onOpenUser = (id) => {
     if (!id || !/^[0-9a-fA-F]{24}$/.test(String(id))) return;
     if (allResults.some(r => r.player.id === id)) openSuspect(id);
-    else { rescanPlayer(id, activeResult?.country || 'Unknown'); openSuspect(id); }
+    else { rescanPlayer(id, activeResult?.country || 'Unknown', true); openSuspect(id); }
   };
 
   const now = Date.now();
@@ -3855,11 +3862,11 @@ export function WarEraOracle() {
 
               {/* Linked-Account Matrix (Concept G) */}
               <div style={{paddingTop:18}}>
-                <LinkedAccountMatrix suspicions={activeResult.suspicions} wageThreshold={settings.suspiciousWageThreshold} bossId={activeResult.player.id}/>
+                <LinkedAccountMatrix suspicions={activeResult.suspicions} wageThreshold={settings.suspiciousWageThreshold} bossId={activeResult.player.id} onOpenUser={onOpenUser} scannedIds={scannedIds}/>
               </div>
 
               {/* Engagement network (Concept G) */}
-              <EngagementNetwork activeResult={activeResult} names={globalCacheRef.current.names}/>
+              <EngagementNetwork activeResult={activeResult} names={globalCacheRef.current.names} onOpenUser={onOpenUser} scannedIds={scannedIds}/>
 
               {/* Findings timeline (evidence detail) */}
               <div style={{padding:'20px 24px'}}>
@@ -4010,7 +4017,7 @@ export function WarEraOracle() {
                                         {(()=>{ const wid=w.resolvedUser?._id||w.uid; if(isSelf||!/^[0-9a-fA-F]{24}$/.test(String(wid||'')))return null;
                                           const done=allResults.some(r=>r.player.id===wid);
                                           if(done)return <button onClick={(e)=>{e.preventDefault();e.stopPropagation();openSuspect(wid);}} title="Open this account's dossier" style={{fontSize:8.5,fontWeight:700,color:'#3fd0a3',background:'rgba(63,208,163,0.14)',border:'1px solid rgba(63,208,163,0.42)',borderRadius:3,padding:'1px 5px',cursor:'pointer'}}>⊙ View profile</button>;
-                                          return <button disabled={isScanning} onClick={(e)=>{e.preventDefault();e.stopPropagation();rescanPlayer(wid, activeResult.country);}} title="Scan this account as its own full case (adds it to the list if it flags; keeps the current results)" style={{fontSize:8.5,fontWeight:700,color:'#a98bff',background:'rgba(124,92,255,0.14)',border:'1px solid rgba(124,92,255,0.42)',borderRadius:3,padding:'1px 5px',cursor:isScanning?'default':'pointer',opacity:isScanning?0.5:1}}>⟳ Scan</button>;
+                                          return <button disabled={isScanning} onClick={(e)=>{e.preventDefault();e.stopPropagation();rescanPlayer(wid, activeResult.country, true);}} title="Scan this account as its own full case and add it to the list" style={{fontSize:8.5,fontWeight:700,color:'#a98bff',background:'rgba(124,92,255,0.14)',border:'1px solid rgba(124,92,255,0.42)',borderRadius:3,padding:'1px 5px',cursor:isScanning?'default':'pointer',opacity:isScanning?0.5:1}}>⟳ Scan</button>;
                                         })()}
 
                                         {/* APM tooltip */}
