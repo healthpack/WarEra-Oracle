@@ -55,12 +55,28 @@ export function isOpen() { return !!handle; }
 async function loadFromHandle(h) {
   const file = await h.getFile();
   fileSize = file.size;
-  const text = file.size ? await file.text() : '';
   map = new Map(); newestAt = 0;
   let lines = 0;
-  for (const line of text.split('\n')) {
-    if (!line) continue;
+  const ingest = (line) => {
+    if (!line) return;
     try { const r = JSON.parse(line); if (r && r.k) { map.set(r.k, { data: r.d, fetchedAt: r.t, endpoint: r.e }); if (r.t > newestAt) newestAt = r.t; lines++; } } catch { /* skip bad line */ }
+  };
+  // Stream + decode in chunks rather than reading the whole file into one string.
+  // A multi-GB NDJSON file would otherwise allocate the full text AND the split-line
+  // array at once (2–3× the file size) and could blow past V8's max string length →
+  // "out of memory". Streaming keeps peak memory at (deduped Map + one chunk); because
+  // the file is append-only, superseded lines collapse into the Map as we go.
+  if (file.size) {
+    const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader();
+    let tail = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      tail += value;
+      let nl;
+      while ((nl = tail.indexOf('\n')) >= 0) { ingest(tail.slice(0, nl)); tail = tail.slice(nl + 1); }
+    }
+    ingest(tail);   // final line (no trailing newline)
   }
   handle = h; buffer = [];
   return { records: map.size, lines };
