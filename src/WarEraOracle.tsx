@@ -1356,7 +1356,7 @@ const WealthTag = ({ x, size = 10, coins }) => {
 };
 
 // ── Interactive relationship map (drag / zoom / hover) ───────────────────────
-const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
+const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150, onOpenUser, scannedIds }) => {
   const wrapRef = React.useRef(null);
   const [size, setSize] = React.useState({ w: 0, h: 0 });
   React.useLayoutEffect(() => {
@@ -1446,7 +1446,8 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
           {nd.banned && <span style={{ fontSize: 7.5, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0 }}>BAN</span>}
           {!nd.banned && nd.inactive && <span title={`No login in over ${INACTIVE_DAYS} days — possibly quit (often dumps wealth on the way out)`} style={{ fontSize: 7.5, fontWeight: 700, color: '#9fb0d4', background: 'rgba(159,176,212,0.12)', border: '1px solid rgba(159,176,212,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0 }}>INACTIVE</span>}
           {nd.coCreatedDelta != null && <span title={`Created within ${nd.coCreatedDelta}s of the scanned account — possible scripted batch signup`} style={{ fontSize: 7.5, fontWeight: 700, color: '#ffd84d', background: 'rgba(255,216,77,0.12)', border: '1px solid rgba(255,216,77,0.42)', borderRadius: 3, padding: '0 3px', flexShrink: 0, whiteSpace: 'nowrap' }}>⏱+{nd.coCreatedDelta}s</span>}
-          {(nd.kind !== 'funnel' || nd.sinkKind === 'user') && <a href={`https://app.warera.io/user/${nd.id}`} target="_blank" rel="noopener noreferrer" onPointerDown={(e) => e.stopPropagation()} style={{ color: '#5d6e96', flexShrink: 0, marginLeft: 'auto' }}><ExternalLink size={9} /></a>}
+          {onOpenUser && (nd.kind !== 'funnel' || nd.sinkKind === 'user') && <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpenUser(nd.id); }} title={scannedIds?.has(nd.id) ? "Open this account's dossier" : 'Scan & open this account'} style={{ marginLeft: 'auto', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', color: scannedIds?.has(nd.id) ? '#3fd0a3' : '#a98bff', flexShrink: 0, display: 'inline-flex' }}><Search size={9} /></button>}
+          {(nd.kind !== 'funnel' || nd.sinkKind === 'user') && <a href={`https://app.warera.io/user/${nd.id}`} target="_blank" rel="noopener noreferrer" onPointerDown={(e) => e.stopPropagation()} style={{ color: '#5d6e96', flexShrink: 0, marginLeft: onOpenUser ? 4 : 'auto' }}><ExternalLink size={9} /></a>}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: nd.kind === 'worker' ? 4 : 0 }}>
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 9.5, color: '#5d6e96' }}>{nd.kind === 'funnel' ? (nd.sinkKind === 'country' ? 'Country' : nd.sinkKind === 'user' ? `Lv.${nd.level ?? '?'}` : 'Military Unit') : `Lv.${nd.level ?? '?'}`}</span>
@@ -1533,7 +1534,7 @@ const ClusterMap = ({ boss, nodes, edges, height = 384, nodeW = 150 }) => {
 };
 
 // Builds the cluster map (or a placeholder) from a suspect's analysis result.
-const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX, bossWealth }) => {
+const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX, bossWealth, onOpenUser, scannedIds }) => {
   const [showOutflow, setShowOutflow] = React.useState(true);
   const { nodes, edges } = buildClusterGraph(activeResult, globalCache, showOutflow);
   const boss = { name: String(activeResult.player.name), id: activeResult.player.id, level: activeResult.player.level, score: activeResult.adjustedDetections ?? activeResult.detections, region: activeResult.country, wealthX: bossWealthX, wealth: bossWealth };
@@ -1552,7 +1553,7 @@ const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX, bossWealth })
       </div>
       <div style={{ flex: 1, minHeight: 384, border: '1px solid #1f2b4e', borderRadius: 10, background: '#0c1226', overflow: 'hidden' }}>
         {nodes.length >= 1
-          ? <ClusterMap boss={boss} nodes={nodes} edges={edges} />
+          ? <ClusterMap boss={boss} nodes={nodes} edges={edges} onOpenUser={onOpenUser} scannedIds={scannedIds} />
           : <div style={{ height: '100%', minHeight: 384, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#5d6e96', gap: 8, textAlign: 'center', padding: 24 }}>
               <Network size={30} style={{ opacity: 0.25 }} />
               <div style={{ fontSize: 12 }}>No linked-account cluster for this suspect.</div>
@@ -1564,7 +1565,7 @@ const ClusterMapPanel = ({ activeResult, globalCache, bossWealthX, bossWealth })
 };
 
 // Sidebar beside the map: identity, verdict, summary, actions, signal ledger.
-const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onCopy, copied, workforceSize, banned, inactive, onDeepDive, deepDiveTarget }) => {
+const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onCopy, copied, workforceSize, banned, inactive, onDeepDive, deepDiveTarget, onBack, canBack }) => {
   const sc = activeResult.adjustedDetections ?? activeResult.detections;
   const tier = plScoreTier(sc);
   const ringCount = Object.keys(activeResult.washPartners || {}).length;
@@ -1577,6 +1578,7 @@ const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onC
   return (
     <div style={{ width: 322, flex: '0 0 auto', alignSelf: 'stretch', background: '#0c1226', border: '1px solid #1f2b4e', borderRadius: 10, padding: '15px 16px', display: 'flex', flexDirection: 'column', gap: 12, marginTop: 25 }}>
       <div>
+        {canBack && <button onClick={onBack} title="Back to the previous account" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'transparent', border: 'none', color: '#9fb0d4', fontSize: 11, fontWeight: 600, cursor: 'pointer', padding: 0, marginBottom: 8 }}><ChevronRight size={13} style={{ transform: 'rotate(180deg)' }} /> Back</button>}
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 18, fontWeight: 700, color: '#eaf0ff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(activeResult.player.name)}</span>
           <a href={`https://app.warera.io/user/${activeResult.player.id}`} target="_blank" rel="noopener noreferrer" style={{ color: '#5d6e96', flexShrink: 0 }}><ExternalLink size={13} /></a>
@@ -1864,6 +1866,7 @@ export function WarEraOracle() {
   const [listType, setListType] = useState('all');                 // filter by heuristic type
   const [listSort, setListSort] = useState({ key: 'score', dir: 'desc' });
   const [activeSuspectId, setActiveSuspectId] = useState(null);
+  const [navHistory, setNavHistory] = useState([]);        // drill-down stack for user navigation
   const [configOpen, setConfigOpen] = useState(false);
   const [logExpanded, setLogExpanded] = useState(false);
   const [listSearch, setListSearch] = useState('');
@@ -3447,6 +3450,17 @@ export function WarEraOracle() {
     }
   };
 
+  // ── User dossier navigation (drill-down from worker cards / map nodes) ───────────
+  const openSuspect = (id) => { if (id && id !== activeSuspectId) { setNavHistory(h => [...h, activeSuspectId].filter(Boolean)); setActiveSuspectId(id); } };
+  const navBack = () => { setNavHistory(h => { if (!h.length) return h; setActiveSuspectId(h[h.length - 1]); return h.slice(0, -1); }); };
+  // Open a user's dossier: navigate if already scanned, else scan it first (it populates when
+  // the scan flags it). Users only — callers must not pass MU/country ids.
+  const onOpenUser = (id) => {
+    if (!id || !/^[0-9a-fA-F]{24}$/.test(String(id))) return;
+    if (allResults.some(r => r.player.id === id)) openSuspect(id);
+    else { rescanPlayer(id, activeResult?.country || 'Unknown'); openSuspect(id); }
+  };
+
   const now = Date.now();
   gatewayTokens.current = gatewayTokens.current.filter(t=>now-t<60000);
   officialTokens.current = officialTokens.current.filter(t=>now-t<60000);
@@ -3518,6 +3532,7 @@ export function WarEraOracle() {
   }, [findings, listSearch, listType, listFilter, listSort.key, listSort.dir]);
 
   const activeResult = allResults.find(r => r.player.id === activeSuspectId) || null;
+  const scannedIds = new Set(allResults.map(r => r.player.id));   // for map node "open dossier" affordance
   const orderedSuspicions = activeResult
     ? [...activeResult.suspicions].sort((a, b) => {
         const ta = tierOrder[sevTierOf(a.type)], tb = tierOrder[sevTierOf(b.type)];
@@ -3756,7 +3771,7 @@ export function WarEraOracle() {
                     const wealthRatio=(_pw!=null&&_pavg&&_pavg.avg>0)?(_pw/_pavg.avg):null;
                     const _kind=clusterKindOf(r,globalCacheRef.current);
                     return (
-                      <div key={r.player.id} onClick={()=>setActiveSuspectId(r.player.id)}
+                      <div key={r.player.id} onClick={()=>{setNavHistory([]);setActiveSuspectId(r.player.id);}}
                         style={{display:'flex',alignItems:'stretch',cursor:'pointer',
                           background:isActive?'rgba(79,195,232,0.08)':'transparent',
                           borderLeft:isActive?'3px solid #4fc3e8':`3px solid ${T_COLOR[tier]}`,
@@ -3795,9 +3810,17 @@ export function WarEraOracle() {
         <div style={{flex:1,overflowY:'auto',background:'#070b18',minWidth:0}}>
           {!activeResult?(
             <div style={{height:'100%',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',color:'#5d6e96'}}>
-              <ShieldAlert size={48} style={{opacity:0.1,marginBottom:16}}/>
-              <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>Select a suspect</div>
-              <div style={{fontSize:12,textAlign:'center',lineHeight:1.6,opacity:0.7}}>Click any row in the case list to load their dossier.</div>
+              {activeSuspectId&&isScanning?(<>
+                {navHistory.length>0&&<button onClick={navBack} style={{position:'absolute',top:90,left:332,background:'transparent',border:'none',color:'#9fb0d4',fontSize:11,fontWeight:600,cursor:'pointer'}}>← Back</button>}
+                <RefreshCw size={32} style={{opacity:0.4,marginBottom:14}} className="animate-spin"/>
+                <div style={{fontSize:13,fontWeight:600,marginBottom:6}}>Scanning this account…</div>
+                <div style={{fontSize:11.5,textAlign:'center',lineHeight:1.6,opacity:0.7}}>Their dossier will appear here if they flag. If clean, nothing will surface.</div>
+              </>):(<>
+                <ShieldAlert size={48} style={{opacity:0.1,marginBottom:16}}/>
+                <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>Select a suspect</div>
+                <div style={{fontSize:12,textAlign:'center',lineHeight:1.6,opacity:0.7}}>Click any row in the case list to load their dossier.</div>
+                {navHistory.length>0&&<button onClick={navBack} style={{marginTop:14,background:'rgba(124,92,255,0.14)',border:'1px solid rgba(124,92,255,0.42)',borderRadius:6,color:'#a98bff',fontSize:11,fontWeight:600,cursor:'pointer',padding:'5px 12px'}}>← Back to previous account</button>}
+              </>)}
             </div>
           ):(
             <div>
@@ -3823,8 +3846,9 @@ export function WarEraOracle() {
                       onWatch={()=>toggleWatchlist(activeResult.player.id,activeResult.player.name,activeResult.country)}
                       onRescan={()=>rescanPlayer(activeResult.player.id,activeResult.country)}
                       onReport={()=>exportSinglePlayer(activeResult)}
+                      onBack={navBack} canBack={navHistory.length>0}
                       onCopy={()=>{copySummaryToClipboard(activeResult);setCopiedId(activeResult.player.id);setTimeout(()=>setCopiedId(null),2500);}}/>
-                    <ClusterMapPanel activeResult={activeResult} globalCache={globalCacheRef.current} bossWealthX={_bx} bossWealth={_cw}/>
+                    <ClusterMapPanel activeResult={activeResult} globalCache={globalCacheRef.current} bossWealthX={_bx} bossWealth={_cw} onOpenUser={onOpenUser} scannedIds={scannedIds}/>
                   </div>
                 );
               })()}
@@ -3983,9 +4007,11 @@ export function WarEraOracle() {
                                           ?dispName.split(new RegExp(`(${suspicion.overlapString})`, 'gi')).map((part,i)=>
                                               part.toLowerCase()===suspicion.overlapString?.toLowerCase()?<span key={i} style={{color:'#ffd84d',fontWeight:700}}>{part}</span>:<span key={i}>{part}</span>)
                                           :dispName}
-                                        {!isSelf&&/^[0-9a-fA-F]{24}$/.test(String(w.resolvedUser?._id||w.uid||''))&&!isScanning&&(
-                                          <button onClick={(e)=>{e.preventDefault();e.stopPropagation();rescanPlayer(w.resolvedUser?._id||w.uid, activeResult.country);}} title="Scan this account as its own full case (adds it to the list if it flags; keeps the current results)" style={{fontSize:8.5,fontWeight:700,color:'#a98bff',background:'rgba(124,92,255,0.14)',border:'1px solid rgba(124,92,255,0.42)',borderRadius:3,padding:'1px 5px',cursor:'pointer'}}>⟳ Scan</button>
-                                        )}
+                                        {(()=>{ const wid=w.resolvedUser?._id||w.uid; if(isSelf||!/^[0-9a-fA-F]{24}$/.test(String(wid||'')))return null;
+                                          const done=allResults.some(r=>r.player.id===wid);
+                                          if(done)return <button onClick={(e)=>{e.preventDefault();e.stopPropagation();openSuspect(wid);}} title="Open this account's dossier" style={{fontSize:8.5,fontWeight:700,color:'#3fd0a3',background:'rgba(63,208,163,0.14)',border:'1px solid rgba(63,208,163,0.42)',borderRadius:3,padding:'1px 5px',cursor:'pointer'}}>⊙ View profile</button>;
+                                          return <button disabled={isScanning} onClick={(e)=>{e.preventDefault();e.stopPropagation();rescanPlayer(wid, activeResult.country);}} title="Scan this account as its own full case (adds it to the list if it flags; keeps the current results)" style={{fontSize:8.5,fontWeight:700,color:'#a98bff',background:'rgba(124,92,255,0.14)',border:'1px solid rgba(124,92,255,0.42)',borderRadius:3,padding:'1px 5px',cursor:isScanning?'default':'pointer',opacity:isScanning?0.5:1}}>⟳ Scan</button>;
+                                        })()}
 
                                         {/* APM tooltip */}
                                         {suspicion.type==='superhuman_apm'&&suspicion.apmDetails&&isSelf&&(
