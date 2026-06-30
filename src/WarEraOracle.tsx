@@ -822,7 +822,11 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   rawWorkers.forEach(w => {
     const rawUser = w.user;
     const resolvedUserId = typeof rawUser === 'string' ? rawUser : (rawUser?._id || rawUser?.id || null);
-    const uid = w._id || w.id || resolvedUserId || Math.random().toString(36).slice(2);
+    // IMPORTANT: a worker record's OWN _id is the employment document, not the user.
+    // The real user id (for links / dossiers / fetches) is w.user. getUserLite omits
+    // _id, so resolvedUser can't supply it either — prefer the user id and fall back
+    // to the employment-record id only when no user reference exists.
+    const uid = w.uid || resolvedUserId || w.resolvedUser?._id || w._id || w.id || Math.random().toString(36).slice(2);
     w.uid = uid;
     if (typeof rawUser === 'object' && rawUser !== null && !w.resolvedUser) {
       w.resolvedUser = rawUser;
@@ -1144,7 +1148,7 @@ const buildMatrixModel = (suspicions, globalCache) => {
           uid, name, wage: w.normalizedWage, level: w.normalizedLevel,
           fid: w.normalizedFidelity, build: w.normalizedBuild, wealthX, wealth,
           age: w.accountAgeDays ?? (w.resolvedUser?.createdAt ? Math.floor((Date.now() - new Date(w.resolvedUser.createdAt).getTime()) / 86400000) : null),
-          id: w.resolvedUser?._id || uid, links: new Set(),
+          id: uid, links: new Set(),
         });
         order.push(uid);
       }
@@ -2983,6 +2987,9 @@ export function WarEraOracle() {
             await Promise.all(flatWorkers.map(async w => {
               const rawUser = w.user || w.worker;
               const userId = typeof rawUser === 'string' ? rawUser : (rawUser?._id||rawUser?.id||rawUser?.userId||w.userId||w.playerId||w._id||w.id||null);
+              // Stamp the canonical user id (NOT the employment-record _id) so links and
+              // dossiers resolve to the real account even though getUserLite omits _id.
+              if (userId) w.uid = userId;
               if (typeof rawUser === 'object' && rawUser !== null && (rawUser.username||rawUser.name)) {
                 w.resolvedUser = w.resolvedUser || rawUser;
               }
