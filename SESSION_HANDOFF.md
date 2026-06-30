@@ -146,6 +146,11 @@ Medium: `low_wage`, `wage_uniformity`, `naming_pattern`, `temporal_clustering`, 
   Its market-price-anomaly idea is **unworkable** here — item prices are clamped to a daily band, so
   trades can't deviate enough to launder. Nothing to port; we already do the structural patterns.
 - **High-wealth provenance: user chose to SKIP** (inbound coins aren't a clean feed anyway).
+- **Worker id ≠ user id (FIXED):** `worker.getWorkers` returns EMPLOYMENT documents — `w._id`
+  is the employment record, the real account is `w.user`. `getUserLite` omits `_id`, so
+  `resolvedUser` can't supply it. `uid` must come from `w.user` (stamped at fetch time as
+  `w.uid`), NOT `w._id`, or links/map/matrix point at nonexistent users. Don't reintroduce
+  `w._id`-first id resolution.
 
 ## Open threads / next steps
 1. Threshold tuning against real scans: `COCREATE_WINDOW_S` (10s), `slowLevelerRatio` (0.5),
