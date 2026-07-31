@@ -217,9 +217,15 @@ const detectAutomation = (player, settings) => {
     const concentrationNote = maxHour && maxHour[1] >= Math.ceil(player.sniperHits * 0.6)
       ? ` All ${maxHour[1]} snipes concentrated in UTC hour ${maxHour[0]}:00 - a concentration consistent with automated scheduling.`
       : '';
+    // A rate beats a raw count: 5 fast buys out of 4,000 is luck, 8% of 4,000 is a poller.
+    // Reported as context only — the crit trigger stays the strict sub-threshold count.
+    const m = player.marketRhythm;
+    const rateNote = m && m.reactCount >= MKT_MIN_BUYS && m.lt5Pct != null
+      ? ` Across ${m.reactCount} timed buys, ${m.lt5} (${m.lt5Pct.toFixed(1)}%) landed within 5s of the listing appearing.`
+      : '';
     suspicions.push({
       type: 'market_automation', severity: 'critical',
-      desc: `Market Sniper: Account purchased ${player.sniperHits} items within ${settings.sniperThresholdMs}ms of listing.${concentrationNote}`,
+      desc: `Market Sniper: Account purchased ${player.sniperHits} items within ${settings.sniperThresholdMs}ms of listing.${concentrationNote}${rateNote}`,
       workers: [{ uid: player.id, normalizedName: player.name + " (SELF)", normalizedLevel: player.level || '?' }],
       detectionWeight: player.sniperHits, sniperDetails: player.sniperDetails
     });
@@ -681,6 +687,151 @@ const workConsistencyFromTx = (wageTxs) => {
 };
 const isRelentless = (wc) => !!(wc && wc.spanDays >= 14 && wc.workDays >= 14 && wc.consistency >= 0.9);
 
+// ── market rhythm ─────────────────────────────────────────────────────────────────────
+// Signals that only exist in the SHAPE of the whole buy tape, not in any single trade:
+// a step-change in daily buying that never comes back down (the day a gadget got plugged
+// in), buying every single day for weeks, and a daily on-time so long it reads as a shift
+// rather than a session. Pure post-processing on the itemMarket set phase 1 already
+// fetches — no extra API calls, instant in Hybrid/Local.
+const MKT_MIN_BUYS = 150;        // below this the day/hour statistics are too thin to mean anything
+const ONSET_STEP = 4;            // after-median must be >= this multiple of the before-median
+const ONSET_MIN_AFTER = 20;      // ...and >= this many buys/day in absolute terms
+const RELENTLESS_STREAK_D = 21;  // consecutive calendar days with >=1 buy
+const RELENTLESS_MIN_MEDIAN = 10;// ...at a median daily volume worth calling a grind
+const SHIFT_HOURS = 14;          // median daily first->last buy span that counts as a "shift"
+const SHIFT_MIN_DAYS = 14;       // ...sustained over this many days
+
+const marketRhythmFromTx = (txs, uId) => {
+  if (!txs || !txs.length) return null;
+  const buys = [];
+  for (const tx of txs) {
+    const bId = typeof tx.buyer === 'object' ? tx.buyer?._id : (tx.buyerId || tx.buyer);
+    if (bId !== uId) continue;
+    const t = new Date(tx.createdAt || tx.timestamp || 0).getTime();
+    if (!t) continue;
+    const offerRaw = tx.offerCreatedAt ? new Date(tx.offerCreatedAt).getTime() : null;
+    buys.push({ t, react: offerRaw ? (t - offerRaw) / 1000 : null });
+  }
+  if (buys.length < MKT_MIN_BUYS) return null;
+  buys.sort((a, b) => a.t - b.t);
+
+  // per-day counts and per-day first->last span
+  const byDay = new Map();
+  for (const b of buys) {
+    const d = new Date(b.t).toISOString().slice(0, 10);
+    const e = byDay.get(d) || { n: 0, min: b.t, max: b.t };
+    e.n++; if (b.t < e.min) e.min = b.t; if (b.t > e.max) e.max = b.t;
+    byDay.set(d, e);
+  }
+  const days = [...byDay.keys()].sort();
+  const vals = days.map(d => byDay.get(d).n);
+  const peakDay = Math.max(...vals);
+  const medDaily = median(vals);
+
+  // longest run of consecutive calendar days each carrying >=1 buy
+  let streak = 1, bestStreak = 1;
+  for (let i = 1; i < days.length; i++) {
+    const gap = (Date.parse(days[i]) - Date.parse(days[i - 1])) / 86400000;
+    if (gap === 1) { streak++; if (streak > bestStreak) bestStreak = streak; } else streak = 1;
+  }
+  if (days.length === 1) bestStreak = 1;
+
+  // onset: earliest split where the daily median steps up >=ONSET_STEP x and STAYS up.
+  // The tail check is the "never comes back down" part — a spike that decays (a war, a
+  // one-off buying spree) fails it, which a plain before/after median comparison would not.
+  let onset = null;
+  if (days.length >= 10) {
+    // Step size across a window of w days either side of the split.
+    const localRatio = (i, w) => {
+      const lb = median(vals.slice(Math.max(0, i - w), i)) || 0;
+      const la = median(vals.slice(i, i + w)) || 0;
+      return la / Math.max(1, lb);
+    };
+    let sharpest = 0;
+    for (let i = 3; i <= days.length - 7; i++) {
+      const before = median(vals.slice(0, i)), after = median(vals.slice(i));
+      if (!(before >= 1 && after >= ONSET_MIN_AFTER && after >= ONSET_STEP * before)) continue;
+      // Abruptness: the step must land AT the split rather than accumulate across the
+      // window. A week either side separates a switch-on from a player who simply grew
+      // into the market — a linear ramp clears the whole-window test but never shows a
+      // 4x jump week-over-week.
+      if (!(localRatio(i, 7) >= ONSET_STEP)) continue;
+      const tail = median(vals.slice(i + Math.floor((days.length - i) * 0.75)));
+      if (!(tail >= 2 * before)) continue;
+      // Several adjacent splits can qualify; the reported day is the evidence, so pin it
+      // to the sharpest short-window transition rather than the first one that passes.
+      const sharp = localRatio(i, 3);
+      if (sharp <= sharpest) continue;
+      sharpest = sharp;
+      // Adjacent splits tie on a median plateau, so pin the reported day to the actual
+      // crossing — the first day at/above the elevated median whose predecessor sat
+      // below it. Falls back to the split day if no clean crossing is nearby.
+      let dayIdx = i;
+      for (let j = Math.max(1, i - 3); j <= Math.min(days.length - 1, i + 3); j++) {
+        if (vals[j] >= after && vals[j - 1] < after) { dayIdx = j; break; }
+      }
+      onset = { day: days[dayIdx], before, after, tail };
+    }
+  }
+
+  // "a 14-hour shift, every day" — median daily span across days with real volume
+  const busyDays = days.filter(d => byDay.get(d).n >= 5);
+  const spansH = busyDays.map(d => { const e = byDay.get(d); return (e.max - e.min) / 3600000; });
+  const medSpanH = median(spansH);
+  const hoursCovered = new Set(buys.map(b => new Date(b.t).getUTCHours())).size;
+
+  // burst cadence — complements script_pacing, which at ±3ms only catches a perfectly
+  // clock-driven script and misses anything with jitter.
+  const gaps = [];
+  for (let i = 1; i < buys.length; i++) gaps.push((buys[i].t - buys[i - 1].t) / 1000);
+  const burstPairs = gaps.filter(g => g > 0 && g < 1.5).length;
+
+  // reaction fraction — a rate, not a raw count: 5 fast buys out of 4,000 is luck,
+  // 8% of 4,000 is a poller.
+  const reacts = buys.map(b => b.react).filter(r => r != null && r >= 0);
+  const lt5 = reacts.filter(r => r < 5).length;
+
+  return {
+    buys: buys.length, activeDays: days.length, streak: bestStreak, peakDay, medDaily,
+    onset, medSpanH, shiftDays: busyDays.length, hoursCovered, burstPairs, gapCount: gaps.length,
+    reactCount: reacts.length, lt5, lt5Pct: reacts.length ? (100 * lt5 / reacts.length) : null,
+    firstDay: days[0], lastDay: days[days.length - 1],
+  };
+};
+
+// Findings from the buy-tape shape. Deliberately NOT tiered 'crit': each of these is a
+// pattern of relentlessness rather than a physically-impossible act, so they read as
+// strong leads that corroborate the crit automation flags, not as proof on their own.
+const detectMarketRhythm = (player) => {
+  const m = player.marketRhythm;
+  if (!m) return [];
+  const suspicions = [];
+  const self = [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?' }];
+
+  if (m.onset) {
+    suspicions.push({
+      type: 'automation_onset', severity: 'high',
+      desc: `Switch-on: daily buying stepped from ~${m.onset.before.toFixed(0)} to ~${m.onset.after.toFixed(0)} buys/day around ${m.onset.day} and stayed there (still ~${m.onset.tail.toFixed(0)}/day at the end of the window).`,
+      workers: self, detectionWeight: 4, onsetDetails: m.onset,
+    });
+  }
+  if (m.streak >= RELENTLESS_STREAK_D && m.medDaily >= RELENTLESS_MIN_MEDIAN) {
+    suspicions.push({
+      type: 'relentless_trading', severity: 'medium',
+      desc: `Zero days off: bought on ${m.streak} consecutive days (${m.buys} buys over ${m.activeDays} active days, median ${m.medDaily}/day, peak ${m.peakDay}/day).`,
+      workers: self, detectionWeight: 2,
+    });
+  }
+  if (m.medSpanH >= SHIFT_HOURS && m.shiftDays >= SHIFT_MIN_DAYS) {
+    suspicions.push({
+      type: 'always_on', severity: 'medium',
+      desc: `Full-time shift: median ${m.medSpanH.toFixed(1)}h between first and last buy of the day across ${m.shiftDays} days; active in ${m.hoursCovered}/24 UTC hours.`,
+      workers: self, detectionWeight: 2,
+    });
+  }
+  return suspicions;
+};
+
 // Slow levelers — accounts far below the median level for their account age. Leveling in
 // WarEra is simple and automatic with activity, so a low level for age has no legit upside;
 // it points to an account that's parked, dormant, or run/managed by someone else (wage
@@ -889,6 +1040,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   ({ suspicions: shellSuspicions, suspiciousWorkers: shellSuspiciousSet, zeroBonusCompanyCount, bossNoBonusPercentage } = detectShellCompanies(allWorkers, settings, globalCache));
   const coordCreateSuspicions = detectCoordinatedCreation(player, allWorkers, globalCache);
   const slowLevelerSuspicions = detectSlowLeveler(player, allWorkers, settings, globalCache);
+  const rhythmSuspicions = detectMarketRhythm(player);
 
   const allSuspicions = [
     ...automationSuspicions,
@@ -900,6 +1052,7 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
     ...shellSuspicions,
     ...coordCreateSuspicions,
     ...slowLevelerSuspicions,
+    ...rhythmSuspicions,
   ];
 
   if (player.tipAbuse) {
@@ -926,6 +1079,8 @@ const analyzePlayer = (player, settings, globalCache, actionTimes = [], _forceRu
   if (player.sniperHits >= 5) summaryParts.push(`Sniper automation (${player.sniperHits} hits).`);
   if (player.maxConcurrentTxs >= 5) summaryParts.push(`Superhuman APM (${player.maxConcurrentTxs} concurrent ops).`);
   if (player.pacingHits >= settings.pacingMinHits) summaryParts.push(`Script pacing (${player.pacingHits} actions at ~${player.pacingAvgMs}ms).`);
+  if (player.marketRhythm?.onset) summaryParts.push(`Buying stepped up ~${player.marketRhythm.onset.day} and stayed up.`);
+  if (player.marketRhythm?.streak >= RELENTLESS_STREAK_D) summaryParts.push(`Bought on ${player.marketRhythm.streak} consecutive days.`);
   if (player.isHermit) summaryParts.push(`Hermit network (isolated trading).`);
   if (player.isMutualHermit) summaryParts.push(`Mutual hermit pair detected.`);
   const wageSus = allSuspicions.find(s => s.type === 'low_wage');
@@ -989,8 +1144,9 @@ const analyzePhase1 = (player, settings, globalCache, addLog = null) => {
   const { suspicions: econSuspicions, totalCoinsWashed } = detectEconomicNetwork(player, [], settings, globalCache);
   const ageSuspicions = detectAgeDateAnomaly(player, [], settings, globalCache, addLog);
   const slowLevelerSuspicions = detectSlowLeveler(player, [], settings, globalCache);
+  const rhythmSuspicions = detectMarketRhythm(player);
 
-  const allSuspicions = [...automationSuspicions, ...econSuspicions, ...ageSuspicions, ...slowLevelerSuspicions];
+  const allSuspicions = [...automationSuspicions, ...econSuspicions, ...ageSuspicions, ...slowLevelerSuspicions, ...rhythmSuspicions];
 
   if (player.isDirectLaunderer) {
     const selfWorker = {
@@ -1028,7 +1184,7 @@ const analyzePhase1 = (player, settings, globalCache, addLog = null) => {
   if (allSuspicions.length === 0 && !player.forceResult) return null;
 
   allSuspicions.sort((a, b) => {
-    const order = ['money_laundering', 'transaction_abuse', 'market_automation', 'superhuman_apm', 'script_pacing', 'mutual_hermit', 'hermit_network', 'wealth_anomaly', 'tip_farming'];
+    const order = ['money_laundering', 'transaction_abuse', 'market_automation', 'superhuman_apm', 'script_pacing', 'automation_onset', 'relentless_trading', 'always_on', 'mutual_hermit', 'hermit_network', 'wealth_anomaly', 'tip_farming'];
     const ai = order.indexOf(a.type); const bi = order.indexOf(b.type);
     if (ai !== -1 && bi !== -1) return ai - bi;
     if (ai !== -1) return -1; if (bi !== -1) return 1;
@@ -1039,6 +1195,8 @@ const analyzePhase1 = (player, settings, globalCache, addLog = null) => {
   if (player.sniperHits >= 5) summaryParts.push(`Sniper automation (${player.sniperHits} hits).`);
   if (player.maxConcurrentTxs >= 5) summaryParts.push(`Superhuman APM (${player.maxConcurrentTxs} concurrent ops).`);
   if (player.pacingHits >= settings.pacingMinHits) summaryParts.push(`Script pacing (${player.pacingHits} actions at ~${player.pacingAvgMs}ms).`);
+  if (player.marketRhythm?.onset) summaryParts.push(`Buying stepped up ~${player.marketRhythm.onset.day} and stayed up.`);
+  if (player.marketRhythm?.streak >= RELENTLESS_STREAK_D) summaryParts.push(`Bought on ${player.marketRhythm.streak} consecutive days.`);
   if (player.isHermit) summaryParts.push(`Hermit network (isolated trading).`);
   if (player.isMutualHermit) summaryParts.push(`Mutual hermit pair detected.`);
   if (player.isDirectLaunderer) summaryParts.push(`Outbound donation burner detected.`);
@@ -1111,6 +1269,9 @@ const HEURISTICS = {
   no_production_bonus:  { matrixChip:'SHELL', detail:{ observed:'Companies issuing no production bonuses', rule:()=>'>=1 company with 0% bonus rate', note:'Bonus suppression can reduce worker incentive to audit their employment.' } },
   tip_farming:          { detail:{ observed:'Heavy, concentrated tip traffic from a small set of accounts', rule:()=>'Single tipper accounts for >=50% of all received tips', note:'Tip farming networks route coins through repeated small donations to obscure origin.' } },
   coordinated_creation: { tier:'high', detail:{ observed:'Linked accounts created within seconds of each other (batch signup)', rule:()=>`Two or more accounts in the cluster (the scanned account, workers, wash partners, employer) created within ${COCREATE_WINDOW_S}s of EACH OTHER`, note:'Account ObjectIds embed creation time. Accounts that are independently linked (employment, trading) AND created near-simultaneously is consistent with scripted batch signup — humans do not register the same second. Compared all-pairs, so a sub-ring of workers minted together is caught even if the boss was made later. Account↔own-company timing is ignored (every WarEra account is born with a starter company the same second); only account↔account is compared.' } },
+  automation_onset:     { tier:'high', matrixChip:'ONSET', detail:{ observed:'Daily buying volume steps up sharply on one day and never returns to the old level', rule:()=>`Daily-buy median after a split-day >= ${ONSET_STEP}x the median before it AND >= ${ONSET_MIN_AFTER}/day, with the elevated rate still >= 2x baseline at the end of the window`, note:'A durable step-change dates the day the behaviour changed — the signature of a tool being switched on. A player who simply gets richer or more interested ramps gradually; a spike that decays (a war, a one-off spree) fails the persistence check by design. Bounded by the 60-day transaction window, so only recent switch-ons are visible.' } },
+  relentless_trading:   { matrixChip:'NODAYOFF', detail:{ observed:'Buying every single calendar day for weeks without a break', rule:()=>`>=${RELENTLESS_STREAK_D} consecutive days with at least one buy, median >=${RELENTLESS_MIN_MEDIAN}/day (min ${MKT_MIN_BUYS} buys overall)`, note:'Humans miss days — travel, illness, losing interest. An unbroken multi-week run at volume is the absence of a life rather than the presence of dedication. Deliberately scored as a supporting signal, not a verdict: a genuinely obsessive player can hold a streak, so this earns its weight alongside reaction-speed, pacing or onset flags rather than on its own.' } },
+  always_on:            { matrixChip:'SHIFT', detail:{ observed:'The daily active window spans a full working shift, day after day', rule:()=>`Median ${SHIFT_HOURS}h+ between the first and last buy of the day across >=${SHIFT_MIN_DAYS} days`, note:'Not 24/7 — an operator that sleeps still looks human on an hour histogram. What does not look human is a 14-hour on-time sustained every day including weekends. Timezone-neutral (it measures span, not which hours).' } },
   newborn_wealthy:      { matrixChip:'WEALTH' }, // legacy alias of wealth_anomaly (kept for old saved/imported findings)
 };
 const CRIT_TYPES = new Set(Object.keys(HEURISTICS).filter(t => HEURISTICS[t].tier === 'crit'));
@@ -2492,6 +2653,8 @@ export function WarEraOracle() {
       }
     });
 
+    playerObj.marketRhythm = marketRhythmFromTx(itemMarketTxs, uId);
+
     let maxConcurrentTxs=0, worstApmWindow=[];
     apmWindowMap.forEach(txs => { if (txs.length > maxConcurrentTxs) { maxConcurrentTxs=txs.length; worstApmWindow=txs; } });
     let apmAvgGapMs=0;
@@ -2832,7 +2995,8 @@ export function WarEraOracle() {
 
     const hasP1Flags = Object.keys(washPartners).length > 0 || isDirectLaunderer ||
       sniperHits >= 5 || maxConcurrentTxs >= 5 || isHermit || isMutualHermit ||
-      pacingHits >= settings.pacingMinHits || tipAbuse !== null || playerObj.wealthAnomalous || !!playerObj.coinFunnel;
+      pacingHits >= settings.pacingMinHits || tipAbuse !== null || playerObj.wealthAnomalous || !!playerObj.coinFunnel ||
+      detectMarketRhythm(playerObj).length > 0;
 
     if (!hasP1Flags && !alwaysPhase2Ref.current) { 
         addLog(`[OK] ${foundName} cleared (no transaction flags).`, 'info'); 
