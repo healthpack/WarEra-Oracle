@@ -104,8 +104,24 @@ High: `wealth_anomaly` (<0.45× or >2× level median; low bound lvl 11+), `coin_
 (energy+production skills, companies+management=0, low wage), `slow_leveler` (level < 0.5× median
 for account age via the level-for-age baseline; escalates to HIGH when the account ALSO works
 almost every day, per its wage-tx `workConsistency`).
+`automation_onset` (daily buying steps >=4x and STAYS up — dates the "switch-on"; requires the
+step to be abrupt week-over-week AND to persist to the end of the window, so gradual ramps and
+decaying war-week spikes don't trip it).
 Medium: `low_wage`, `wage_uniformity`, `naming_pattern`, `temporal_clustering`, `no_production_bonus`,
-`tip_farming`. Non-scored: BAN/INACTIVE badges, employer edge, MU-sink leadership, tipper-on-map.
+`tip_farming`, `relentless_trading` (>=21 consecutive buy-days at >=10/day median — medium ON PURPOSE:
+a dedicated human can hold a streak, so it corroborates rather than convicts), `always_on` (median
+14h+ first→last buy of the day over 14+ days; timezone-neutral — measures span, not which hours).
+Non-scored: BAN/INACTIVE badges, employer edge, MU-sink leadership, tipper-on-map.
+
+**Buy-tape rhythm** (`marketRhythmFromTx`) — the three above are pure post-processing on the
+itemMarket set phase 1 already fetches (no extra API calls, instant in Hybrid/Local). Absorbed from
+an external scanner; its other two signals were already covered (their <5s snipe = our
+`market_automation` at a stricter 1000ms; their metronome = our `script_pacing`). Caveats: the tx
+window is 60d and a LIVE `gatherTx` caps at `maxItems=1000`, so a heavy trader's fresh Live scan
+truncates to the most recent ~1000 buys and biases the daily-volume/onset math — Hybrid/Local DBs
+accumulate past that. Only switch-ons inside the window are visible.
+NOTE: `script_pacing` uses `pacingToleranceMs: 3` (±3ms) — it only catches a perfectly clock-driven
+script and will MISS a bot with jitter. Loosening it is an open tuning question.
 
 ## Key API / data facts (verified)
 - **Auth:** the `wae_` key as `X-API-Key` authenticates everything the app uses on BOTH the
