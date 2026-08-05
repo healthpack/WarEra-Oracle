@@ -49,6 +49,11 @@ const API = 'https://api2.warera.io/trpc/ranking.getRanking';
 // +0/10/15/20%). Premium is a separate EUR/month subscription that can be gifted.
 const PACKS = [[12000, 99.99], [5750, 49.99], [2200, 19.99], [600, 5.99]];
 const PREMIUM_EUR_PER_MONTH = 5.99;
+const GIFT_COST_GEMS = 600;   // gifting a sub costs exactly the smallest pack
+
+// Note the arbitrage this creates, and why gifting is so popular: 600 gems bought
+// inside the 12,000 pack costs €5.00, against €5.99 to subscribe directly — so the
+// cheapest route to a premium month is to buy the biggest gem pack and gift yourself.
 
 const argv = process.argv.slice(2);
 const flag = (n) => argv.includes(n);
@@ -116,6 +121,20 @@ const main = async () => {
   const giftedValue = totalGifts * PREMIUM_EUR_PER_MONTH;
   const net = (v) => v * (1 - VAT / 100) * (1 - FEES / 100);
 
+  // Cross-check: gems consumed by gifting must not exceed gems ever purchased. It also
+  // shows what share of gem revenue is really a premium-distribution channel.
+  const giftGems = totalGifts * GIFT_COST_GEMS;
+  const giftShare = 100 * giftGems / totalGems;
+  // Gifters who spent more on gifts than they ever bought reveal a NON-CASH gem source
+  // (rewards, transfers, grants). Doesn't dent revenue — gemsPurchased is cash-only —
+  // but it means gem-funded activity is not 1:1 with gem spend.
+  const bought = Object.fromEntries(gems.map(x => [x.user, x.value]));
+  let shortfall = 0, overspenders = 0;
+  for (const g of gifts) {
+    const need = g.value * GIFT_COST_GEMS, has = bought[g.user] || 0;
+    if (need > has) { overspenders++; shortfall += need - has; }
+  }
+
   if (AS_JSON) {
     console.log(JSON.stringify({
       measuredAt: new Date().toISOString(), freshestAccount: new Date(newest).toISOString(),
@@ -123,6 +142,8 @@ const main = async () => {
       premiumHolders: prem.length, gifters: gifts.length, tierValues: gemsD.tierValues,
       gemRevenueEur: { min: gemMin, max: gemMax, uniquelyDecomposed: unique, undecodable },
       cashPremiumMonths: cashMonths, giftedMonths: totalGifts,
+      giftGemsConsumed: giftGems, giftShareOfGemsPct: giftShare,
+      nonCashGemSource: { overspendingGifters: overspenders, gemShortfall: shortfall },
       premiumRevenueEur: premRevenue, giftedMonthsValueEur: giftedValue,
       totalEur: { min: gemMin + premRevenue, max: gemMax + premRevenue },
       netEur: { min: net(gemMin + premRevenue), max: net(gemMax + premRevenue) },
@@ -141,6 +162,13 @@ const main = async () => {
   console.log(`Premium months  : ${totalMonths.toLocaleString()} months by ${prem.length.toLocaleString()} users (${pct(prem.length)} of active)`);
   console.log(`Premium gifted  : ${totalGifts.toLocaleString()} subs by ${gifts.length.toLocaleString()} users`);
   console.log(`Pack decomposition: ${gems.length - undecodable}/${gems.length} exact, ${unique} of them unique`);
+  console.log('');
+  console.log(`Where the gems go: ${giftGems.toLocaleString()} gems (${giftShare.toFixed(1)}%) were spent gifting subs`);
+  console.log(`  -> ${(totalGems - giftGems).toLocaleString()} gems left for cosmetics/everything else`);
+  console.log(`  -> consistency: gift spend ${giftGems <= totalGems ? 'fits inside' : 'EXCEEDS'} total purchases` +
+    `${giftGems <= totalGems ? ' (model holds)' : ' — MODEL BROKEN'}`);
+  if (shortfall > 0) console.log(`  -> ${overspenders} gifters outspent their own purchases by ${shortfall.toLocaleString()} gems ` +
+    `(${(100 * shortfall / totalGems).toFixed(1)}%) — gems have a non-cash source too`);
   console.log('');
   console.log(`GEM revenue     : ${eur(gemMin)} – ${eur(gemMax)}   (all cash spent on gems)`);
   console.log(`PREMIUM revenue : ${eur(premRevenue)}   (${cashMonths.toLocaleString()} months billed in EUR)`);
