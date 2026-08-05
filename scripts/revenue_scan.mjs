@@ -27,12 +27,19 @@
  *   node scripts/revenue_scan.mjs --vat 21 --fees 2.9
  *
  * Options:
- *   --vat N              consumer VAT % included in the shelf prices (default 0 = gross)
- *   --fees N             payment-processor % (default 0)
- *   --premium-via-gems   treat premium as bought WITH gems, so it is NOT added to the
- *                        total. Default is OFF: the store bills premium at EUR/month
- *                        separately from gems, so the two are additive.
- *   --json               machine-readable output
+ *   --vat N          consumer VAT % included in the shelf prices (default 0 = gross)
+ *   --fees N         payment-processor % (default 0)
+ *   --all-cash       bill EVERY premium month at the EUR price, including gifted ones.
+ *                    Wrong under the current rules (gifting is paid in gems) — kept only
+ *                    to show how much the gift correction is worth.
+ *   --json           machine-readable output
+ *
+ * DOUBLE-COUNTING, the one thing that decides this number:
+ * Gifting a sub is paid for in GEMS, and gems are bought with cash — so a gifted month's
+ * money is already inside the gem total. Only months a user paid EUR for directly are
+ * additive. Gifted months do land in the recipient's premium-months count (no user
+ * exceeds the game's age in months, so the board tracks months HELD, however obtained),
+ * which is exactly why they must be subtracted back out here.
  */
 
 const API = 'https://api2.warera.io/trpc/ranking.getRanking';
@@ -47,7 +54,7 @@ const argv = process.argv.slice(2);
 const flag = (n) => argv.includes(n);
 const opt = (n, d = 0) => { const i = argv.indexOf(n); return i >= 0 && argv[i + 1] ? parseFloat(argv[i + 1]) : d; };
 const VAT = opt('--vat'), FEES = opt('--fees');
-const PREMIUM_VIA_GEMS = flag('--premium-via-gems'), AS_JSON = flag('--json');
+const ALL_CASH = flag('--all-cash'), AS_JSON = flag('--json');
 
 const fetchRanking = async (type) => {
   const input = encodeURIComponent(JSON.stringify({ 0: { rankingType: type } }));
@@ -101,8 +108,12 @@ const main = async () => {
     gemMin += lo; gemMax += hi;
     if (Math.abs(lo - hi) < 0.005) unique++;
   }
-  const premRevenue = totalMonths * PREMIUM_EUR_PER_MONTH;
-  const addPrem = PREMIUM_VIA_GEMS ? 0 : premRevenue;
+  // Gifted subs are paid in gems, so their money is already inside the gem revenue.
+  // Only directly-subscribed months add new cash. (One gift is assumed to be one month,
+  // matching the store's per-month billing.)
+  const cashMonths = ALL_CASH ? totalMonths : Math.max(0, totalMonths - totalGifts);
+  const premRevenue = cashMonths * PREMIUM_EUR_PER_MONTH;
+  const giftedValue = totalGifts * PREMIUM_EUR_PER_MONTH;
   const net = (v) => v * (1 - VAT / 100) * (1 - FEES / 100);
 
   if (AS_JSON) {
@@ -111,10 +122,11 @@ const main = async () => {
       totalGems, totalMonths, totalGifts, activePop, gemBuyers: gems.length,
       premiumHolders: prem.length, gifters: gifts.length, tierValues: gemsD.tierValues,
       gemRevenueEur: { min: gemMin, max: gemMax, uniquelyDecomposed: unique, undecodable },
-      premiumRevenueEur: premRevenue, premiumCountedInTotal: !PREMIUM_VIA_GEMS,
-      totalEur: { min: gemMin + addPrem, max: gemMax + addPrem },
-      netEur: { min: net(gemMin + addPrem), max: net(gemMax + addPrem) },
-      assumptions: { PACKS, PREMIUM_EUR_PER_MONTH, VAT, FEES },
+      cashPremiumMonths: cashMonths, giftedMonths: totalGifts,
+      premiumRevenueEur: premRevenue, giftedMonthsValueEur: giftedValue,
+      totalEur: { min: gemMin + premRevenue, max: gemMax + premRevenue },
+      netEur: { min: net(gemMin + premRevenue), max: net(gemMax + premRevenue) },
+      assumptions: { PACKS, PREMIUM_EUR_PER_MONTH, VAT, FEES, giftsPaidInGems: !ALL_CASH },
     }, null, 2));
     return;
   }
@@ -130,14 +142,16 @@ const main = async () => {
   console.log(`Premium gifted  : ${totalGifts.toLocaleString()} subs by ${gifts.length.toLocaleString()} users`);
   console.log(`Pack decomposition: ${gems.length - undecodable}/${gems.length} exact, ${unique} of them unique`);
   console.log('');
-  console.log(`GEM revenue     : ${eur(gemMin)} – ${eur(gemMax)}`);
-  console.log(`PREMIUM revenue : ${eur(premRevenue)}${PREMIUM_VIA_GEMS ? '   [EXCLUDED — assumed bought with gems]' : ''}`);
-  console.log(`TOTAL (gross)   : ${eur(gemMin + addPrem)} – ${eur(gemMax + addPrem)}`);
-  if (VAT || FEES) console.log(`NET  (−${VAT}% VAT, −${FEES}% fees) : ${eur(net(gemMin + addPrem))} – ${eur(net(gemMax + addPrem))}`);
+  console.log(`GEM revenue     : ${eur(gemMin)} – ${eur(gemMax)}   (all cash spent on gems)`);
+  console.log(`PREMIUM revenue : ${eur(premRevenue)}   (${cashMonths.toLocaleString()} months billed in EUR)`);
+  if (!ALL_CASH) console.log(`  gift-funded   : ${totalGifts.toLocaleString()} months paid in GEMS — worth ${eur(giftedValue)} at shelf price,`);
+  if (!ALL_CASH) console.log(`                  excluded here because that cash is already in the gem line.`);
+  console.log(`TOTAL (gross)   : ${eur(gemMin + premRevenue)} – ${eur(gemMax + premRevenue)}`);
+  if (VAT || FEES) console.log(`NET  (−${VAT}% VAT, −${FEES}% fees) : ${eur(net(gemMin + premRevenue))} – ${eur(net(gemMax + premRevenue))}`);
   console.log('');
-  console.log('Notes: lifetime totals since launch, not a run-rate. Gifted premium already');
-  console.log('sits in the recipient\'s premium-months (no user exceeds the game\'s age in');
-  console.log('months), so gifts are redistribution, not extra revenue — do not add them.');
+  console.log('Notes: lifetime totals since launch, not a run-rate. Gifting is paid in gems,');
+  console.log('so gifted months are already funded by the gem line — billing them again at');
+  console.log('the EUR price would double-count (see --all-cash for that inflated figure).');
   console.log('Shelf prices are EU consumer prices, so VAT is included until you strip it.');
 };
 
