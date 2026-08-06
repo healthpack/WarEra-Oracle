@@ -893,10 +893,14 @@ const COCREATE_WINDOW_S = 10;
 // flagged outflow account that has also gone quiet is worth surfacing — badged in the same
 // slots as a ban. Computed from the lite payload, so no extra fetch.
 const INACTIVE_DAYS = 5;
-// Donation-feed discovery: how far back to walk, and a page cap so a scan can't run away
-// (a busy country runs ~4,000 donations/month, i.e. ~40 pages).
-const DONATION_LOOKBACK_DAYS = 365;
-const DONATION_MAX_PAGES = 400;
+// Donation-feed discovery. A single country's ENTIRE donation history is small: measured
+// at 181 pages / 18,091 transactions / 374 days / 46s before the API ran out of cursor, on
+// one of the busier countries. So the lookback is deliberately set past the game's own age
+// — the feed exhausts naturally rather than being cut short by a date, and you get the
+// whole history for free. The page cap is only a runaway guard; it matters for the global
+// (all-regions) feed, which is every country at once and will hit it.
+const DONATION_LOOKBACK_DAYS = 730;
+const DONATION_MAX_PAGES = 600;
 // "Last active" = the most recent of ALL the per-user activity timestamps WarEra exposes in
 // getUserLite.dates (login, work, daily-reward claim, message/event checks, hires, work-offer
 // applications, etc.) — any of these means the account was online doing something. Far more
@@ -3510,7 +3514,7 @@ export function WarEraOracle() {
       alwaysPhase2Ref.current = true;
       watchlistScanRef.current = false;
       addLog(`Scanning ${wlEntries.length} watchlisted suspect(s)...`, 'info');
-    } else if (settings.bannedOnly && localStore.isOpen()) {
+    } else if (settings.bannedOnly && localStore.isOpen() && !settings.donationDiscovery) {
       // Banned-only + an open Local DB: sweep every account the DB has ever seen instead of
       // the country roster. The roster only lists recently-active players, and a banned
       // account stops acting — so within days it drops out and a region scan can never find
@@ -3580,7 +3584,12 @@ export function WarEraOracle() {
           const rName = scope ? (availableRegions.find(r => (r._id || r.id) === scope)?.name || scope) : 'Global';
           let added = 0;
           donors.forEach((info, uid) => {
-            donationTotalsRef.current[uid] = info;
+            // Merge rather than overwrite: an account can donate to several countries, and a
+            // multi-region scan would otherwise keep only the last one's figures.
+            const prev = donationTotalsRef.current[uid];
+            donationTotalsRef.current[uid] = prev
+              ? { total: prev.total + info.total, count: prev.count + info.count, firstAt: Math.min(prev.firstAt, info.firstAt), lastAt: Math.max(prev.lastAt, info.lastAt), scopes: { ...prev.scopes, [rName]: (prev.scopes?.[rName] || 0) + info.total } }
+              : { ...info, scopes: { [rName]: info.total } };
             if (!allCitizens.some(c => (c._id || c.id || c.userId) === uid)) { allCitizens.push({ _id: uid, scanContext: rName }); added++; }
           });
           addLog(`[DONATIONS] ${rName}: ${added} account(s) not in the roster added to the queue.`, 'info');
@@ -3643,6 +3652,28 @@ export function WarEraOracle() {
       if (txH.ok > 0) addLog(`[INFO] Transaction endpoint healthy (${txH.ok} ok / ${txH.fail} failed). Transaction heuristics ran with live data.`, 'info');
       else if (txH.fail > 0) addLog(`[CRITICAL] Transaction endpoint failed on all ${txH.fail} attempt(s) — transaction-based heuristics had no data this scan.`, 'warning');
       if (isScanningRef.current) { setCurrentTask('Scan Complete'); setProgress(100); addLog('Scan sequence terminated.', 'info'); }
+      // Donation report: what banned accounts put into each country's treasury. Every donor
+      // harvested from the feed was queued and profile-checked, so globalBans is populated
+      // by the time this runs. Grouped by the country the coins went TO, not the donor's own.
+      if (settings.donationDiscovery && Object.keys(donationTotalsRef.current).length > 0) {
+        const byCountry = {};
+        for (const [uid, info] of Object.entries(donationTotalsRef.current)) {
+          if (!globalBans.current[uid]) continue;
+          for (const [country, amount] of Object.entries(info.scopes || {})) {
+            (byCountry[country] = byCountry[country] || []).push({ uid, amount });
+          }
+        }
+        const countries = Object.keys(byCountry).sort();
+        if (countries.length === 0) addLog(`[DONATION REPORT] No banned accounts found among the donors harvested from the feed.`, 'info');
+        for (const country of countries) {
+          const rows = byCountry[country].sort((a, b) => b.amount - a.amount);
+          const total = rows.reduce((s, r) => s + r.amount, 0);
+          addLog(`[DONATION REPORT] A total of ${total.toLocaleString('en-US', { maximumFractionDigits: 1 })} coins were donated to ${country} by ${rows.length} banned user(s).`, 'warning');
+          for (const r of rows) {
+            addLog(`    ${globalCacheRef.current.names[r.uid] || ('user_' + String(r.uid).slice(-6))}, ${r.amount.toLocaleString('en-US', { maximumFractionDigits: 1 })} coins`, 'info');
+          }
+        }
+      }
       if (bannedSkippedRef.current > 0) addLog(`[BANNED ONLY] Skipped ${bannedSkippedRef.current} account(s) that were not banned.`, 'info');
       if (crawlSkippedRef.current > 0) addLog(`[FULL SCAN] Resumed — skipped ${crawlSkippedRef.current} account(s) already in the Local DB.`, 'info');
       if (crawlFlaggedRef.current > 0) addLog(`[FULL SCAN] Gathered data only (no findings shown); ${crawlFlaggedRef.current} account(s) would flag — run a Local DB scan to see them.`, 'info');
