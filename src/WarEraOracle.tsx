@@ -901,6 +901,11 @@ const INACTIVE_DAYS = 5;
 // (all-regions) feed, which is every country at once and will hit it.
 const DONATION_LOOKBACK_DAYS = 730;
 const DONATION_MAX_PAGES = 600;
+// Report floor. The long tail of a country's banned donors is mostly 1-6 coin one-offs
+// (170 banned donors for one country, but only ~5 above this line), which buries the few
+// that actually moved money. Filters the report only — every donor is still scanned and
+// still gets a dossier; this is presentation, not detection.
+const DONATION_REPORT_MIN_COINS = 150;
 // "Last active" = the most recent of ALL the per-user activity timestamps WarEra exposes in
 // getUserLite.dates (login, work, daily-reward claim, message/event checks, hires, work-offer
 // applications, etc.) — any of these means the account was online doing something. Far more
@@ -3666,12 +3671,21 @@ export function WarEraOracle() {
         const countries = Object.keys(byCountry).sort();
         if (countries.length === 0) addLog(`[DONATION REPORT] No banned accounts found among the donors harvested from the feed.`, 'info');
         for (const country of countries) {
-          const rows = byCountry[country].sort((a, b) => b.amount - a.amount);
+          const all = byCountry[country].sort((a, b) => b.amount - a.amount);
+          const rows = all.filter(r => r.amount > DONATION_REPORT_MIN_COINS);
+          const hidden = all.length - rows.length;
+          // Both the headline total and the rows use the filtered set, so they agree.
           const total = rows.reduce((s, r) => s + r.amount, 0);
+          if (rows.length === 0) {
+            addLog(`[DONATION REPORT] ${country}: ${all.length} banned donor(s) found, none above ${DONATION_REPORT_MIN_COINS} coins.`, 'info');
+            continue;
+          }
           addLog(`[DONATION REPORT] A total of ${total.toLocaleString('en-US', { maximumFractionDigits: 1 })} coins were donated to ${country} by ${rows.length} banned user(s).`, 'warning');
           for (const r of rows) {
             addLog(`    ${globalCacheRef.current.names[r.uid] || ('user_' + String(r.uid).slice(-6))}, ${r.amount.toLocaleString('en-US', { maximumFractionDigits: 1 })} coins`, 'info');
           }
+          // Say what was left out, so a quiet filter never looks like an empty tail.
+          if (hidden > 0) addLog(`    (${hidden} further banned donor(s) below the ${DONATION_REPORT_MIN_COINS}-coin floor omitted — they are still scanned and still appear as cases.)`, 'info');
         }
       }
       if (bannedSkippedRef.current > 0) addLog(`[BANNED ONLY] Skipped ${bannedSkippedRef.current} account(s) that were not banned.`, 'info');
