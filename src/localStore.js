@@ -115,6 +115,20 @@ export function close() { handle = null; map = new Map(); fileSize = 0; buffer =
 
 export function get(key) { const r = map.get(key); return r ? r.data : undefined; }
 
+// Every userId the DB has ever seen a profile for.
+//
+// This is the only way to find accounts banned more than a few days ago: WarEra's country
+// roster (user.getUsersByCountry) returns ONLY recently-active players — sampling 120
+// members of one roster found nothing staler than 3.1 days — and a banned account stops
+// acting, so it drops out of the roster within days and can never be enumerated again.
+// The DB, being append-only, still holds it from back when it was active.
+const USER_KEY_RE = /^user\.getUserLite\{"userId":"([0-9a-fA-F]{24})"\}$/;
+export function knownUserIds() {
+  const ids = new Set();
+  for (const k of map.keys()) { const m = USER_KEY_RE.exec(k); if (m) ids.add(m[1]); }
+  return [...ids];
+}
+
 // Record a response: update the in-memory map and queue an append line. Never blocks the
 // scan — writes are batched and flushed on a short timer.
 export function put(key, endpoint, data, payload) {

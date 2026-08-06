@@ -2570,7 +2570,8 @@ export function WarEraOracle() {
     // Full-scan resume: if this account is already in the Local DB (crawled in an earlier
     // pass), skip it — so an interrupted "Full scan" continues where it left off instead of
     // re-walking everything. (Use the DB's data later via Local DB mode to surface flags.)
-    if (fullScanRef.current && localStore.isOpen() && localStore.get('user.getUserLite' + JSON.stringify({ userId: uId })) !== undefined) {
+    // Never applies in banned-only mode, where re-checking known accounts IS the job.
+    if (!settings.bannedOnly && fullScanRef.current && localStore.isOpen() && localStore.get('user.getUserLite' + JSON.stringify({ userId: uId })) !== undefined) {
       crawlSkippedRef.current = (crawlSkippedRef.current || 0) + 1;
       return;
     }
@@ -2578,7 +2579,9 @@ export function WarEraOracle() {
     let bossMuId = null, hasMuLeadership = false;
 
     try {
-      const uData = await smartFetch('user.getUserLite', { userId: uId });
+      // Banned-only mode always reads the profile LIVE: the point is to catch bans that
+      // landed after the DB copy was written, and a cached profile still says "not banned".
+      const uData = await smartFetch('user.getUserLite', { userId: uId }, false, !!settings.bannedOnly);
       if (uData) {
         foundName = uData.username || uData.name || uData.displayName || uData.nickname || uData.user?.username || uData.user?.name || uData.profile?.username || uData.profile?.name || foundName;
         if (foundName==='Unknown'&&!didLogUserLiteShapeRef.current){didLogUserLiteShapeRef.current=true;addLog(`[INFO] getUserLite shape (first Unknown): ${JSON.stringify(uData).substring(0,300)}`, 'info');}
@@ -3456,6 +3459,16 @@ export function WarEraOracle() {
       alwaysPhase2Ref.current = true;
       watchlistScanRef.current = false;
       addLog(`Scanning ${wlEntries.length} watchlisted suspect(s)...`, 'info');
+    } else if (settings.bannedOnly && localStore.isOpen()) {
+      // Banned-only + an open Local DB: sweep every account the DB has ever seen instead of
+      // the country roster. The roster only lists recently-active players, and a banned
+      // account stops acting — so within days it drops out and a region scan can never find
+      // it again. The DB remembers it from when it was active, which makes this the only
+      // route to bans older than a few days. Profiles are re-fetched live (bypassing the
+      // DB's cached copy) since we are specifically looking for what changed since.
+      const ids = localStore.knownUserIds();
+      addLog(`[BANNED ONLY] Re-checking ${ids.length} account(s) known to the Local DB for bans (the country roster only lists players active in the last few days, so it cannot see older bans).`, 'info');
+      scanQueueRef.current = ids.map(id => ({ _id: id, scanContext: 'Local DB' }));
     } else if (fullScanRef.current || targetRegionId) {
       let targetRegions = (fullScanRef.current || targetRegionId==='ALL') ? availableRegions.map(r=>r._id||r.id) : [targetRegionId];
       let allCitizens=[];
@@ -4468,9 +4481,9 @@ export function WarEraOracle() {
               <input type="checkbox" checked={settings.includeBanned} onChange={e=>setSettings({...settings,includeBanned:e.target.checked})} style={{accentColor:'#ff5d6c'}} disabled={isScanning}/>
               Include banned users <span style={{fontSize:9.5,color:'#5d6e96'}}>(always deep-scan)</span>
             </label>
-            <label title="Scan ONLY banned accounts: every account still costs one profile fetch (ban state is only visible there — the API has no 'list the banned' query), but everything heavier is skipped, so the sweep is much faster than a normal scan. Note banned users are purged from the public rankings, so they are only reachable via the country roster, a direct search, or as someone's worker/partner/employer." style={{display:'flex',alignItems:'center',gap:8,fontSize:11.5,color:'#9fb0d4',cursor:'pointer'}}>
+            <label title={"Scan ONLY banned accounts. Every account still costs one live profile fetch (ban state is visible nowhere else), but the heavy transaction work is skipped.\n\nIMPORTANT — with a Local DB open this re-checks every account the DB has ever seen, and that is the ONLY way to find older bans. WarEra's country roster lists just the last few days of active players, and a banned account stops acting, so it drops out within days and a region scan can never see it again. Banned users are also purged from the public rankings."} style={{display:'flex',alignItems:'center',gap:8,fontSize:11.5,color:'#9fb0d4',cursor:'pointer'}}>
               <input type="checkbox" checked={settings.bannedOnly} onChange={e=>setSettings({...settings,bannedOnly:e.target.checked})} style={{accentColor:'#ff5d6c'}} disabled={isScanning}/>
-              Scan banned users ONLY <span style={{fontSize:9.5,color:'#5d6e96'}}>(skip everyone else)</span>
+              Scan banned users ONLY <span style={{fontSize:9.5,color:'#5d6e96'}}>{localStore.isOpen()?'(re-checks the whole Local DB)':'(roster = last ~3d only)'}</span>
             </label>
             <label style={{display:'flex',alignItems:'center',gap:8,fontSize:11.5,color:'#9fb0d4',cursor:'pointer'}}>
               <input type="checkbox" checked={settings.verboseDebug} onChange={e=>setSettings({...settings,verboseDebug:e.target.checked})} style={{accentColor:'#4fc3e8'}} disabled={isScanning}/>
