@@ -1766,7 +1766,7 @@ const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onC
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 18, fontWeight: 700, color: '#eaf0ff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(activeResult.player.name)}</span>
           <a href={`https://app.warera.io/user/${activeResult.player.id}`} target="_blank" rel="noopener noreferrer" style={{ color: '#5d6e96', flexShrink: 0 }}><ExternalLink size={13} /></a>
-          {banned && <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 4, padding: '3px 7px', flexShrink: 0 }}>BANNED</span>}
+          {banned && <span title={activeResult.player.lastActiveAt ? `Last action ${new Date(activeResult.player.lastActiveAt).toISOString().slice(0,10)} — the game exposes no ban date, but a banned account cannot act, so this bounds when the ban landed.` : 'The game exposes no ban date.'} style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 4, padding: '3px 7px', flexShrink: 0 }}>BANNED{activeResult.player.lastActiveAt ? ` ~${new Date(activeResult.player.lastActiveAt).toISOString().slice(0,10)}` : ''}</span>}
           {!banned && inactive && <span title={`No login in over ${INACTIVE_DAYS} days — possibly quit`} style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#9fb0d4', background: 'rgba(159,176,212,0.12)', border: '1px solid rgba(159,176,212,0.42)', borderRadius: 4, padding: '3px 7px', flexShrink: 0 }}>INACTIVE</span>}
           <div style={{ marginLeft: (banned || inactive) ? 8 : 'auto', padding: '4px 11px', background: PL_SEV[tier].bg, border: `2px solid ${PL_SEV[tier].line}`, borderRadius: 8, textAlign: 'center', flexShrink: 0 }}>
             <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 17, fontWeight: 700, color: PL_SEV[tier].c }}>{sc}</span>
@@ -1987,6 +1987,7 @@ export function WarEraOracle() {
     verboseDebug: false,
     phase2AutoThreshold: 3,
     includeBanned: true,
+    bannedOnly: false,
   });
   
   const [apiKey, setApiKey] = useState(() => {
@@ -2025,6 +2026,7 @@ export function WarEraOracle() {
   const dbModeRef = useRef('live');
   const fullScanRef = useRef(false);                        // throttled all-regions crawl → DB
   const crawlSkippedRef = useRef(0);                         // users skipped on full-scan resume
+  const bannedSkippedRef = useRef(0);                        // non-banned users skipped in banned-only mode
   const crawlFlaggedRef = useRef(0);                         // would-be flags seen during a gather crawl
   const [dbOpen, setDbOpen] = useState(false);
   const [dbStats, setDbStats] = useState(null);
@@ -2571,14 +2573,20 @@ export function WarEraOracle() {
         // Ban status lives under infos.isBanned (and isActive:false). Mark it but keep
         // analysing — a flagged banned account should still surface, badged as BANNED.
         playerObj.isBanned = !!(uData.isBanned || uData.banned || uData.infos?.isBanned);
+        // Ban DATE is not exposed anywhere (a banned profile's `infos` collapses to exactly
+        // {isBanned:true} — no date, no reason). But a banned account cannot act, so its
+        // final timestamp is a tight upper bound on when the ban landed. Stored as the
+        // ban-date proxy the case list sorts on.
+        playerObj.lastActiveAt = lastActiveAtMs(uData);
         if (playerObj.isBanned) {
           globalBans.current[uId] = true;
           // A ban is a confirmed verdict, so the account is worth mapping whatever its
           // transaction history looks like: force phase 2 (companies, workers, employer)
           // and force a dossier, so a banned account can't be "cleared" into invisibility.
-          if (settings.includeBanned) {
+          if (settings.includeBanned || settings.bannedOnly) {
             playerObj.forceResult = true;
-            addLog(`[BANNED] ${foundName} is banned — deep-scanning.`, 'warning');
+            const when = playerObj.lastActiveAt ? new Date(playerObj.lastActiveAt).toISOString().slice(0, 10) : 'unknown';
+            addLog(`[BANNED] ${foundName} is banned (last active ${when}) — deep-scanning.`, 'warning');
           }
         }
         const _bossRef = inactiveRefFor(uId);
@@ -2594,6 +2602,16 @@ export function WarEraOracle() {
         bossMuId = uData.mu ? (typeof uData.mu==='object'?uData.mu._id||uData.mu.id:uData.mu) : (uData.militaryUnit?(typeof uData.militaryUnit==='object'?uData.militaryUnit._id||uData.militaryUnit.id:uData.militaryUnit):(uData.muId||null));
       }
     } catch(e) { addLog(`[DEBUG] getUserLite failed for ${uId}: ${e.message}`, 'debug'); }
+
+    // Banned-only sweep: ban state is only visible on the profile, so every account still
+    // costs its one getUserLite — there is no "list the banned" query. Bailing out here
+    // still skips the far heavier part (four paginated transaction gathers per account),
+    // so the sweep runs much faster than a normal scan even though it enumerates the same
+    // population. An account whose profile fetch failed is skipped too: unknown != banned.
+    if (settings.bannedOnly && !playerObj.isBanned) {
+      bannedSkippedRef.current = (bannedSkippedRef.current || 0) + 1;
+      return;
+    }
 
     if (bossMuId) {
       try {
@@ -3016,7 +3034,7 @@ export function WarEraOracle() {
     }
 
     const livePlayer = {
-      id: uId, name: foundName, level: playerObj.level, isBanned: playerObj.isBanned, inactive: playerObj.inactive, country: playerObj.scanContext||'Unknown Target',
+      id: uId, name: foundName, level: playerObj.level, isBanned: playerObj.isBanned, inactive: playerObj.inactive, lastActiveAt: playerObj.lastActiveAt || null, country: playerObj.scanContext||'Unknown Target',
       companies: [],
       washPartners, isDirectLaunderer, directLaunderAmount,
       sniperHits, sniperDetails, maxConcurrentTxs, apmDetails: { avgGapMs: apmAvgGapMs, txs: worstApmWindow },
@@ -3316,7 +3334,7 @@ export function WarEraOracle() {
   const startScan = async (overrideUserId = null) => {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
-    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={}; crawlSkippedRef.current=0; crawlFlaggedRef.current=0;
+    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={}; crawlSkippedRef.current=0; crawlFlaggedRef.current=0; bannedSkippedRef.current=0;
     phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false; didLogDonationShapeRef.current=false;
     // A full-scan crawl runs deliberately throttled (low concurrency) to stay polite and
     // well under rate limits, since it walks every region; a normal scan uses the setting.
@@ -3512,6 +3530,7 @@ export function WarEraOracle() {
       if (txH.ok > 0) addLog(`[INFO] Transaction endpoint healthy (${txH.ok} ok / ${txH.fail} failed). Transaction heuristics ran with live data.`, 'info');
       else if (txH.fail > 0) addLog(`[CRITICAL] Transaction endpoint failed on all ${txH.fail} attempt(s) — transaction-based heuristics had no data this scan.`, 'warning');
       if (isScanningRef.current) { setCurrentTask('Scan Complete'); setProgress(100); addLog('Scan sequence terminated.', 'info'); }
+      if (bannedSkippedRef.current > 0) addLog(`[BANNED ONLY] Skipped ${bannedSkippedRef.current} account(s) that were not banned.`, 'info');
       if (crawlSkippedRef.current > 0) addLog(`[FULL SCAN] Resumed — skipped ${crawlSkippedRef.current} account(s) already in the Local DB.`, 'info');
       if (crawlFlaggedRef.current > 0) addLog(`[FULL SCAN] Gathered data only (no findings shown); ${crawlFlaggedRef.current} account(s) would flag — run a Local DB scan to see them.`, 'info');
       setIsScanning(false); isScanningRef.current=false; fullScanRef.current=false;
@@ -3720,18 +3739,23 @@ export function WarEraOracle() {
     const levelOf = (r) => extractUserLevel(r.player) ?? r.player.level ?? 0;
     const ageSecOf = (r) => objIdSeconds(r.player.id) ?? 0;
     const nameOf = (r) => String(r.player.name || '').toLowerCase();
+    // Ban-date proxy: the API exposes no ban timestamp, but a banned account cannot act,
+    // so its last activity bounds when the ban landed. Unbanned accounts sort to the end.
+    const banAtOf = (r) => (r.player.isBanned ? (r.player.lastActiveAt ?? 0) : -1);
     const scoreCmp = (a, b) => { const ta = tierOrder[maxSevTierOf(a)], tb = tierOrder[maxSevTierOf(b)]; return ta !== tb ? ta - tb : scoreOf(b) - scoreOf(a); };
     const baseCmp = ({
       score: scoreCmp,
       wealth: (a, b) => wealthRatio.get(b.player.id) - wealthRatio.get(a.player.id),
       level: (a, b) => levelOf(b) - levelOf(a),
       age: (a, b) => ageSecOf(b) - ageSecOf(a),
+      banned: (a, b) => banAtOf(b) - banAtOf(a),
       name: (a, b) => nameOf(a).localeCompare(nameOf(b)),
     })[listSort.key] || scoreCmp;
     const filteredResults = allResults.filter(r => {
       if (listSearch && !String(r.player.name).toLowerCase().includes(listSearch.toLowerCase())) return false;
       if (listType !== 'all' && !(r.suspicions || []).some(s => s.type === listType)) return false;
-      if (listFilter !== 'all') { const tier = maxSevTierOf(r); if (listFilter === 'critical' && tier !== 'crit') return false; if (listFilter === 'high' && tier !== 'high') return false; if (listFilter === 'medium' && tier !== 'med') return false; }
+      if (listFilter === 'banned') { if (!r.player.isBanned) return false; }
+      else if (listFilter !== 'all') { const tier = maxSevTierOf(r); if (listFilter === 'critical' && tier !== 'crit') return false; if (listFilter === 'high' && tier !== 'high') return false; if (listFilter === 'medium' && tier !== 'med') return false; }
       return true;
     }).sort((a, b) => (listSort.dir === 'asc' ? -1 : 1) * baseCmp(a, b));
     // Only render the top N rows — a full crawl can produce thousands of flags, and
@@ -3934,11 +3958,14 @@ export function WarEraOracle() {
               <input value={listSearch} onChange={e=>setListSearch(e.target.value)} placeholder="Filter suspects..." style={{background:'transparent',border:'none',outline:'none',color:'#eaf0ff',fontSize:12,flex:1,fontFamily:"IBM Plex Sans, system-ui, sans-serif"}}/>
             </div>
             <div style={{display:'flex',gap:4,marginBottom:8}}>
-              {['all','critical','high','medium'].map(f=>(
-                <button key={f} onClick={()=>setListFilter(f)} style={{padding:'3px 8px',borderRadius:99,fontSize:10,fontWeight:600,cursor:'pointer',background:listFilter===f?'rgba(79,195,232,0.12)':'#121b35',border:`1px solid ${listFilter===f?'#2e3f6a':'#1f2b4e'}`,color:listFilter===f?'#4fc3e8':'#5d6e96'}}>
+              {['all','critical','high','medium','banned'].map(f=>{
+                const on=listFilter===f, ban=f==='banned';
+                return (
+                <button key={f} onClick={()=>setListFilter(f)} title={ban?'Only accounts confirmed banned by the game':undefined} style={{padding:'3px 8px',borderRadius:99,fontSize:10,fontWeight:600,cursor:'pointer',background:on?(ban?'rgba(255,93,108,0.14)':'rgba(79,195,232,0.12)'):'#121b35',border:`1px solid ${on?(ban?'rgba(255,93,108,0.50)':'#2e3f6a'):'#1f2b4e'}`,color:on?(ban?'#ff5d6c':'#4fc3e8'):'#5d6e96'}}>
                   {f==='all'?'All':f.charAt(0).toUpperCase()+f.slice(1)}
                 </button>
-              ))}
+                );
+              })}
             </div>
             {/* Sort + heuristic-type filter */}
             {(() => {
@@ -3947,7 +3974,7 @@ export function WarEraOracle() {
                 <div style={{display:'flex',alignItems:'center',gap:4}}>
                   <span style={{fontSize:9.5,color:'#5d6e96',flexShrink:0}}>Sort</span>
                   <select value={listSort.key} onChange={e=>setListSort(s=>({...s,key:e.target.value}))} style={sel} title="Sort by">
-                    {[['score','Score'],['wealth','Wealth ×'],['level','Level'],['age','Newest'],['name','Name']].map(([v,l])=><option key={v} value={v} style={{background:'#121b35'}}>{l}</option>)}
+                    {[['score','Score'],['wealth','Wealth ×'],['level','Level'],['age','Newest'],['banned','Ban date (est.)'],['name','Name']].map(([v,l])=><option key={v} value={v} style={{background:'#121b35'}}>{l}</option>)}
                   </select>
                   <button onClick={()=>setListSort(s=>({...s,dir:s.dir==='asc'?'desc':'asc'}))} title={listSort.dir==='asc'?'Ascending — click for descending':'Descending — click for ascending'} style={{...sel,padding:'3px 7px',color:'#4fc3e8'}}>{listSort.dir==='asc'?'▲':'▼'}</button>
                   <select value={listType} onChange={e=>setListType(e.target.value)} style={{...sel,flex:1,minWidth:0}} title="Filter by heuristic">
@@ -4407,6 +4434,10 @@ export function WarEraOracle() {
             <label title="Banned accounts are otherwise cleared like anyone else when they have no transaction flags. With this on, every banned account is deep-scanned (phase 2) and always opens a dossier, even a clean one — a ban is a confirmed verdict, so its network is worth mapping." style={{display:'flex',alignItems:'center',gap:8,fontSize:11.5,color:'#9fb0d4',cursor:'pointer'}}>
               <input type="checkbox" checked={settings.includeBanned} onChange={e=>setSettings({...settings,includeBanned:e.target.checked})} style={{accentColor:'#ff5d6c'}} disabled={isScanning}/>
               Include banned users <span style={{fontSize:9.5,color:'#5d6e96'}}>(always deep-scan)</span>
+            </label>
+            <label title="Scan ONLY banned accounts: every account still costs one profile fetch (ban state is only visible there — the API has no 'list the banned' query), but everything heavier is skipped, so the sweep is much faster than a normal scan. Note banned users are purged from the public rankings, so they are only reachable via the country roster, a direct search, or as someone's worker/partner/employer." style={{display:'flex',alignItems:'center',gap:8,fontSize:11.5,color:'#9fb0d4',cursor:'pointer'}}>
+              <input type="checkbox" checked={settings.bannedOnly} onChange={e=>setSettings({...settings,bannedOnly:e.target.checked})} style={{accentColor:'#ff5d6c'}} disabled={isScanning}/>
+              Scan banned users ONLY <span style={{fontSize:9.5,color:'#5d6e96'}}>(skip everyone else)</span>
             </label>
             <label style={{display:'flex',alignItems:'center',gap:8,fontSize:11.5,color:'#9fb0d4',cursor:'pointer'}}>
               <input type="checkbox" checked={settings.verboseDebug} onChange={e=>setSettings({...settings,verboseDebug:e.target.checked})} style={{accentColor:'#4fc3e8'}} disabled={isScanning}/>
