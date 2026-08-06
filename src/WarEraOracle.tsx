@@ -2111,6 +2111,7 @@ export function WarEraOracle() {
   const donationBurstsRef = useRef({});                      // userId -> { sum, from, to, count, country } peak rolling-window donation
   const burstHitsRef = useRef([]);                           // burst sweep results, for the end-of-scan report
   const burstScanRef = useRef(false);                        // this run is a donation-burst sweep
+  const activityCheckedRef = useRef({});                     // userId -> true(active) / false(inactive); absent = never checked
   const crawlFlaggedRef = useRef(0);                         // would-be flags seen during a gather crawl
   const [dbOpen, setDbOpen] = useState(false);
   const [dbStats, setDbStats] = useState(null);
@@ -2745,6 +2746,10 @@ export function WarEraOracle() {
         }
         const _bossRef = inactiveRefFor(uId);
         playerObj.inactive = isInactiveAsOf(uData, _bossRef);
+        // Record the VERDICT, not just the inactive case: globalInactive only stores
+        // inactives, so absence from it can't distinguish "active" from "never checked".
+        // The burst report needs that difference to avoid marking unchecked accounts.
+        activityCheckedRef.current[uId] = !playerObj.inactive;
         if (playerObj.inactive) {
           globalInactive.current[uId] = true;
           // Diagnostic: print the most-recent activity the app saw, so a wrongly-flagged
@@ -3489,7 +3494,7 @@ export function WarEraOracle() {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
     gatewayEndpointFails.current={}; gatewayEndpointDead.current={};
-    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={}; crawlSkippedRef.current=0; crawlFlaggedRef.current=0; bannedSkippedRef.current=0; donationTotalsRef.current={}; donationBurstsRef.current={}; burstHitsRef.current=[];
+    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={}; crawlSkippedRef.current=0; crawlFlaggedRef.current=0; bannedSkippedRef.current=0; donationTotalsRef.current={}; donationBurstsRef.current={}; burstHitsRef.current=[]; activityCheckedRef.current={};
     phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false; didLogDonationShapeRef.current=false;
     // A full-scan crawl runs deliberately throttled (low concurrency) to stay polite and
     // well under rate limits, since it walks every region; a normal scan uses the setting.
@@ -3795,12 +3800,17 @@ export function WarEraOracle() {
       if (burstHitsRef.current.length > 0) {
         const hits = burstHitsRef.current;
         const coins = (n) => Math.round(n).toLocaleString('en-US');
-        addLog(`${hits.length} account(s) donated more than ${BURST_MIN_COINS} coins inside a single ${BURST_WINDOW_DAYS}-day window.`, 'warning');
+        const activeCount = hits.filter(h => activityCheckedRef.current[h.uid] === true).length;
+        addLog(`${hits.length} account(s) donated more than ${BURST_MIN_COINS} coins inside a single ${BURST_WINDOW_DAYS}-day window. ${activeCount} still active.`, 'warning');
         for (const h of hits) {
           const hrs = ((h.b.to - h.b.from) / 3600000).toFixed(1);
           const nm = globalCacheRef.current.names[h.uid] || ('user_' + String(h.uid).slice(-6));
-          addLog(`${nm}, ${coins(h.b.sum)} coins in ${hrs}h across ${h.b.count} donation(s) — lifetime ${coins(h.info.total)} over ${h.info.count}`, 'info', true);
+          // Strictly true — an account whose profile was never read stays unmarked rather
+          // than being assumed active, so the asterisk always means "checked and active".
+          const star = activityCheckedRef.current[h.uid] === true ? '*' : '';
+          addLog(`${star}${nm}, ${coins(h.b.sum)} coins in ${hrs}h across ${h.b.count} donation(s) — lifetime ${coins(h.info.total)} over ${h.info.count}`, 'info', true);
         }
+        addLog(`(* = still active: some activity within the last ${INACTIVE_DAYS} days. Unmarked accounts are inactive or were not reached.)`, 'info', true);
       }
       setIsScanning(false); isScanningRef.current=false; fullScanRef.current=false;
       if (localStore.isOpen()) localStore.flushNow().then(refreshDbStats);
