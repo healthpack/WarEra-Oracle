@@ -1986,6 +1986,7 @@ export function WarEraOracle() {
     pacingMinHits: 6,
     verboseDebug: false,
     phase2AutoThreshold: 3,
+    includeBanned: true,
   });
   
   const [apiKey, setApiKey] = useState(() => {
@@ -2570,6 +2571,16 @@ export function WarEraOracle() {
         // Ban status lives under infos.isBanned (and isActive:false). Mark it but keep
         // analysing — a flagged banned account should still surface, badged as BANNED.
         playerObj.isBanned = !!(uData.isBanned || uData.banned || uData.infos?.isBanned);
+        if (playerObj.isBanned) {
+          globalBans.current[uId] = true;
+          // A ban is a confirmed verdict, so the account is worth mapping whatever its
+          // transaction history looks like: force phase 2 (companies, workers, employer)
+          // and force a dossier, so a banned account can't be "cleared" into invisibility.
+          if (settings.includeBanned) {
+            playerObj.forceResult = true;
+            addLog(`[BANNED] ${foundName} is banned — deep-scanning.`, 'warning');
+          }
+        }
         const _bossRef = inactiveRefFor(uId);
         playerObj.inactive = isInactiveAsOf(uData, _bossRef);
         if (playerObj.inactive) {
@@ -2996,7 +3007,8 @@ export function WarEraOracle() {
     const hasP1Flags = Object.keys(washPartners).length > 0 || isDirectLaunderer ||
       sniperHits >= 5 || maxConcurrentTxs >= 5 || isHermit || isMutualHermit ||
       pacingHits >= settings.pacingMinHits || tipAbuse !== null || playerObj.wealthAnomalous || !!playerObj.coinFunnel ||
-      detectMarketRhythm(playerObj).length > 0;
+      detectMarketRhythm(playerObj).length > 0 ||
+      (settings.includeBanned && playerObj.isBanned);
 
     if (!hasP1Flags && !alwaysPhase2Ref.current) { 
         addLog(`[OK] ${foundName} cleared (no transaction flags).`, 'info'); 
@@ -3019,6 +3031,7 @@ export function WarEraOracle() {
       tipAbuse,
       coinFunnel: playerObj.coinFunnel || null,
       workConsistency: playerObj.workConsistency || null,
+      marketRhythm: playerObj.marketRhythm || null,
       forceResult: !!playerObj.forceResult,
       outflowRecipients: playerObj.outflowRecipients || [],
     };
@@ -3032,7 +3045,7 @@ export function WarEraOracle() {
     // don't push to findings or render anything. (Surface flags later via Local DB mode.)
     if (fullScanRef.current) {
       if (phase1Result) crawlFlaggedRef.current = (crawlFlaggedRef.current || 0) + 1;
-      if (phase1Result?.detections >= 1) await processPlayerPhase2(uId, livePlayer.country, true);
+      if (phase1Result?.detections >= 1 || (settings.includeBanned && livePlayer.isBanned)) await processPlayerPhase2(uId, livePlayer.country, true);
       return;
     }
     if (phase1Result) {
@@ -3044,7 +3057,10 @@ export function WarEraOracle() {
         if (!newState[livePlayer.country].some(r=>r.player.id===phase1Result.player.id)) newState[livePlayer.country].push(phase1Result);
         return newState;
       });
-      if (alwaysPhase2Ref.current || phase1Result.detections >= 1) {
+      // A banned account deep-scans on the ban alone: it can score 0 detections (forceResult
+      // still produces a dossier), and gating phase 2 on the score would leave its network
+      // unmapped — which is the part actually worth having.
+      if (alwaysPhase2Ref.current || phase1Result.detections >= 1 || (settings.includeBanned && livePlayer.isBanned)) {
         await processPlayerPhase2(uId, livePlayer.country, true);
       }
     } else if (alwaysPhase2Ref.current) {
@@ -3598,6 +3614,10 @@ export function WarEraOracle() {
     if (coordCreateSus) parts.push(`${coordCreateSus.coCreated.length} linked account(s) created within ${COCREATE_WINDOW_S}s of this one (possible batch signup).`);
     const funnelSus = result.suspicions.find(s => s.type === 'coin_funnel');
     if (funnelSus?.funnelData) { const f = funnelSus.funnelData; parts.push(`Coin funnel: low-wealth account routed ${Math.round(f.share*100)}% of ${Math.round(f.accountOut)} coins out via ${f.recipientVia === 'tip' ? 'tips' : 'donations'} to a single recipient.`); }
+    // A banned account can legitimately reach here with nothing else to say (it was pulled
+    // in on the ban, not on a heuristic). Say so, rather than returning an empty summary
+    // that reads like a failed scan.
+    if (result.player.isBanned) parts.unshift(parts.length ? `Account is BANNED.` : `Account is BANNED; no other flags surfaced from its own activity — see the map for its network.`);
     let summary = parts.join(' ');
     if (summary.length > 500) summary = summary.substring(0, 497).replace(/\s\S*$/, '') + '...';
     return summary;
@@ -4384,6 +4404,10 @@ export function WarEraOracle() {
                   style={{width:'100%',accentColor:'#4fc3e8'}} disabled={isScanning}/>
               </div>
             ))}
+            <label title="Banned accounts are otherwise cleared like anyone else when they have no transaction flags. With this on, every banned account is deep-scanned (phase 2) and always opens a dossier, even a clean one — a ban is a confirmed verdict, so its network is worth mapping." style={{display:'flex',alignItems:'center',gap:8,fontSize:11.5,color:'#9fb0d4',cursor:'pointer'}}>
+              <input type="checkbox" checked={settings.includeBanned} onChange={e=>setSettings({...settings,includeBanned:e.target.checked})} style={{accentColor:'#ff5d6c'}} disabled={isScanning}/>
+              Include banned users <span style={{fontSize:9.5,color:'#5d6e96'}}>(always deep-scan)</span>
+            </label>
             <label style={{display:'flex',alignItems:'center',gap:8,fontSize:11.5,color:'#9fb0d4',cursor:'pointer'}}>
               <input type="checkbox" checked={settings.verboseDebug} onChange={e=>setSettings({...settings,verboseDebug:e.target.checked})} style={{accentColor:'#4fc3e8'}} disabled={isScanning}/>
               Verbose Debug Logging
