@@ -909,6 +909,33 @@ const lastActiveAtMs = (u) => {
 // judged against the present clock and mass-flagged.
 const isInactiveAsOf = (u, refAt) => { const la = lastActiveAtMs(u); return la != null && ((refAt || Date.now()) - la) > INACTIVE_DAYS * 86400000; };
 
+// ── ban-date proxy ────────────────────────────────────────────────────────────────────
+// WarEra records no ban timestamp (a banned profile's `infos` is exactly {isBanned:true}),
+// so the ban is dated by the last thing the account DID. The distinction from
+// lastActiveAtMs matters: these are all things the game must let you do, so a ban stops
+// them dead. Logins and "check" timestamps are excluded because a banned player can still
+// open the site and hit the ban screen — observed on a live banned account, whose
+// lastConnectionAt sits 32 minutes past its final real action. lastFiredFromGovAt is
+// excluded too: it happens TO an account, so it can fire after the ban.
+const ACTION_DATE_KEYS = [
+  'lastWorkAt',                 // worked a shift
+  'lastDailyRewardClaimedAt',   // claimed the free daily reward
+  'lastWorkOfferApplications',  // applied for a job (array)
+  'lastHiresAt',                // hired someone (array)
+  'lastCompanyJoinedAt',        // joined a company
+  'lastHelpAskedAt',            // asked for help
+  'lastSkillsResetAt',          // reset skills
+  'lastCitizenshipChangeAt',    // changed citizenship
+  'lastTakingControlAt',        // took control in government
+];
+const lastActionAtMs = (u) => {
+  const d = u?.dates; if (!d || typeof d !== 'object') return null;
+  let best = null;
+  const consider = (v) => { if (typeof v === 'string') { const ms = Date.parse(v); if (Number.isFinite(ms) && (best == null || ms > best)) best = ms; } };
+  for (const k of ACTION_DATE_KEYS) { const v = d[k]; if (Array.isArray(v)) v.forEach(consider); else consider(v); }
+  return best;
+};
+
 // Coordinated account creation — two accounts that are ALREADY linked to this one
 // (worker, wash partner, employer) AND were created within COCREATE_WINDOW_S of it.
 // Two humans don't sign up the same second; a script minting accounts in a burst does.
@@ -1766,7 +1793,10 @@ const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onC
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
           <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 18, fontWeight: 700, color: '#eaf0ff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(activeResult.player.name)}</span>
           <a href={`https://app.warera.io/user/${activeResult.player.id}`} target="_blank" rel="noopener noreferrer" style={{ color: '#5d6e96', flexShrink: 0 }}><ExternalLink size={13} /></a>
-          {banned && <span title={activeResult.player.lastActiveAt ? `Last action ${new Date(activeResult.player.lastActiveAt).toISOString().slice(0,10)} — the game exposes no ban date, but a banned account cannot act, so this bounds when the ban landed.` : 'The game exposes no ban date.'} style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 4, padding: '3px 7px', flexShrink: 0 }}>BANNED{activeResult.player.lastActiveAt ? ` ~${new Date(activeResult.player.lastActiveAt).toISOString().slice(0,10)}` : ''}</span>}
+          {banned && (() => {
+            const banAt = activeResult.player.lastActionAt ?? activeResult.player.lastActiveAt;
+            return <span title={banAt ? `Last in-game action ${new Date(banAt).toISOString().slice(0,16).replace('T',' ')} UTC. The game records no ban date, so this is an upper bound: the account was still unbanned then. Logins are ignored — a banned player can still reach the ban screen.` : 'The game records no ban date, and this account has no action timestamps.'} style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#ff5d6c', background: 'rgba(255,93,108,0.12)', border: '1px solid rgba(255,93,108,0.42)', borderRadius: 4, padding: '3px 7px', flexShrink: 0 }}>BANNED{banAt ? ` ~${new Date(banAt).toISOString().slice(0,10)}` : ''}</span>;
+          })()}
           {!banned && inactive && <span title={`No login in over ${INACTIVE_DAYS} days — possibly quit`} style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#9fb0d4', background: 'rgba(159,176,212,0.12)', border: '1px solid rgba(159,176,212,0.42)', borderRadius: 4, padding: '3px 7px', flexShrink: 0 }}>INACTIVE</span>}
           <div style={{ marginLeft: (banned || inactive) ? 8 : 'auto', padding: '4px 11px', background: PL_SEV[tier].bg, border: `2px solid ${PL_SEV[tier].line}`, borderRadius: 8, textAlign: 'center', flexShrink: 0 }}>
             <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 17, fontWeight: 700, color: PL_SEV[tier].c }}>{sc}</span>
@@ -2574,10 +2604,11 @@ export function WarEraOracle() {
         // analysing — a flagged banned account should still surface, badged as BANNED.
         playerObj.isBanned = !!(uData.isBanned || uData.banned || uData.infos?.isBanned);
         // Ban DATE is not exposed anywhere (a banned profile's `infos` collapses to exactly
-        // {isBanned:true} — no date, no reason). But a banned account cannot act, so its
-        // final timestamp is a tight upper bound on when the ban landed. Stored as the
-        // ban-date proxy the case list sorts on.
+        // {isBanned:true} — no date, no reason). The last thing the account DID bounds when
+        // the ban landed; logins don't, since a banned player can still reach the ban screen.
+        // lastActiveAt stays the any-sign-of-life value that inactivity uses.
         playerObj.lastActiveAt = lastActiveAtMs(uData);
+        playerObj.lastActionAt = lastActionAtMs(uData);
         if (playerObj.isBanned) {
           globalBans.current[uId] = true;
           // A ban is a confirmed verdict, so the account is worth mapping whatever its
@@ -2585,8 +2616,9 @@ export function WarEraOracle() {
           // and force a dossier, so a banned account can't be "cleared" into invisibility.
           if (settings.includeBanned || settings.bannedOnly) {
             playerObj.forceResult = true;
-            const when = playerObj.lastActiveAt ? new Date(playerObj.lastActiveAt).toISOString().slice(0, 10) : 'unknown';
-            addLog(`[BANNED] ${foundName} is banned (last active ${when}) — deep-scanning.`, 'warning');
+            const _ba = playerObj.lastActionAt ?? playerObj.lastActiveAt;
+            const when = _ba ? new Date(_ba).toISOString().slice(0, 10) : 'unknown';
+            addLog(`[BANNED] ${foundName} is banned (last action ~${when}) — deep-scanning.`, 'warning');
           }
         }
         const _bossRef = inactiveRefFor(uId);
@@ -3034,7 +3066,7 @@ export function WarEraOracle() {
     }
 
     const livePlayer = {
-      id: uId, name: foundName, level: playerObj.level, isBanned: playerObj.isBanned, inactive: playerObj.inactive, lastActiveAt: playerObj.lastActiveAt || null, country: playerObj.scanContext||'Unknown Target',
+      id: uId, name: foundName, level: playerObj.level, isBanned: playerObj.isBanned, inactive: playerObj.inactive, lastActiveAt: playerObj.lastActiveAt || null, lastActionAt: playerObj.lastActionAt || null, country: playerObj.scanContext||'Unknown Target',
       companies: [],
       washPartners, isDirectLaunderer, directLaunderAmount,
       sniperHits, sniperDetails, maxConcurrentTxs, apmDetails: { avgGapMs: apmAvgGapMs, txs: worstApmWindow },
@@ -3739,9 +3771,10 @@ export function WarEraOracle() {
     const levelOf = (r) => extractUserLevel(r.player) ?? r.player.level ?? 0;
     const ageSecOf = (r) => objIdSeconds(r.player.id) ?? 0;
     const nameOf = (r) => String(r.player.name || '').toLowerCase();
-    // Ban-date proxy: the API exposes no ban timestamp, but a banned account cannot act,
-    // so its last activity bounds when the ban landed. Unbanned accounts sort to the end.
-    const banAtOf = (r) => (r.player.isBanned ? (r.player.lastActiveAt ?? 0) : -1);
+    // Ban-date proxy: the API exposes no ban timestamp, but a banned account cannot ACT,
+    // so its last real action bounds when the ban landed (a login doesn't — the ban screen
+    // is still reachable). Falls back to any activity. Unbanned accounts sort to the end.
+    const banAtOf = (r) => (r.player.isBanned ? (r.player.lastActionAt ?? r.player.lastActiveAt ?? 0) : -1);
     const scoreCmp = (a, b) => { const ta = tierOrder[maxSevTierOf(a)], tb = tierOrder[maxSevTierOf(b)]; return ta !== tb ? ta - tb : scoreOf(b) - scoreOf(a); };
     const baseCmp = ({
       score: scoreCmp,
