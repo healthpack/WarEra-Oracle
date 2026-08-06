@@ -3549,9 +3549,19 @@ export function WarEraOracle() {
       }
     }
 
+    // One-shot mode flags: consume them into locals and clear the refs IMMEDIATELY. They
+    // used to be cleared only in the scan loop's finally, which never runs if the setup
+    // exits early (e.g. a burst sweep that matches nobody hits "No targets acquired" and
+    // returns) or if the user aborts — leaving the flag set so the NEXT plain Scan silently
+    // ran as a burst sweep. Clearing at the point of use makes that impossible.
+    const isBurstScan = burstScanRef.current;
+    const isWatchlistScan = watchlistScanRef.current;
+    burstScanRef.current = false;
+    watchlistScanRef.current = false;
+
     // A watchlist scan must ignore the User ID field (otherwise it hijacks into a
     // single-user targeted scan).
-    const effectiveTargetUserId = overrideUserId || (watchlistScanRef.current ? '' : targetUserId);
+    const effectiveTargetUserId = overrideUserId || (isWatchlistScan ? '' : targetUserId);
     if (effectiveTargetUserId) {
       let actualTargetId=effectiveTargetUserId.trim();
       if (actualTargetId&&!/^[0-9a-fA-F]{24}$/.test(actualTargetId)) {
@@ -3573,13 +3583,12 @@ export function WarEraOracle() {
       }
       scanQueueRef.current=[{ _id: actualTargetId, scanContext: 'Targeted User' }];
       alwaysPhase2Ref.current = true;
-    } else if (watchlistScanRef.current) {
+    } else if (isWatchlistScan) {
       const wlEntries = Object.values(watchlist);
       scanQueueRef.current = wlEntries.map(p => ({ _id: p.id, scanContext: p.country || 'Watchlist' }));
       alwaysPhase2Ref.current = true;
-      watchlistScanRef.current = false;
       addLog(`Scanning ${wlEntries.length} watchlisted suspect(s)...`, 'info');
-    } else if (burstScanRef.current) {
+    } else if (isBurstScan) {
       // Donation-burst sweep: walk the selected country's whole donation history and keep
       // only accounts that pushed BURST_MIN_COINS through a single rolling
       // BURST_WINDOW_DAYS window. Rolling is what makes it selective — a steady daily
@@ -3690,7 +3699,9 @@ export function WarEraOracle() {
       if (allCitizens.length>0) { addLog(`✅ ${allCitizens.length} users acquired.`, 'info'); scanQueueRef.current=allCitizens; }
     }
 
-    if (scanQueueRef.current.length===0) { addLog(`[CRITICAL] No targets acquired.`, 'warning'); setIsScanning(false); isScanningRef.current=false; setCurrentTask('Idle'); return; }
+    // fullScanRef can't be consumed up front (phase 1/2 read it for the whole run), so every
+    // exit path has to clear it — including this one.
+    if (scanQueueRef.current.length===0) { addLog(`[CRITICAL] No targets acquired.`, 'warning'); setIsScanning(false); isScanningRef.current=false; fullScanRef.current=false; setCurrentTask('Idle'); return; }
 
     const processedIds=new Set(); let playersScanned=0;
     const activePromises = new Set();
@@ -3791,7 +3802,7 @@ export function WarEraOracle() {
           addLog(`${nm}, ${coins(h.b.sum)} coins in ${hrs}h across ${h.b.count} donation(s) — lifetime ${coins(h.info.total)} over ${h.info.count}`, 'info', true);
         }
       }
-      setIsScanning(false); isScanningRef.current=false; fullScanRef.current=false; burstScanRef.current=false;
+      setIsScanning(false); isScanningRef.current=false; fullScanRef.current=false;
       if (localStore.isOpen()) localStore.flushNow().then(refreshDbStats);
       if (globalCacheRef.current.wealthByLevel && Object.keys(globalCacheRef.current.wealthByLevel).length > 0) {
         localStorage.setItem('wera_wealth_baseline', JSON.stringify(globalCacheRef.current.wealthByLevel));
