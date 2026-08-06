@@ -3800,17 +3800,20 @@ export function WarEraOracle() {
       if (burstHitsRef.current.length > 0) {
         const hits = burstHitsRef.current;
         const coins = (n) => Math.round(n).toLocaleString('en-US');
-        const activeCount = hits.filter(h => activityCheckedRef.current[h.uid] === true).length;
-        addLog(`${hits.length} account(s) donated more than ${BURST_MIN_COINS} coins inside a single ${BURST_WINDOW_DAYS}-day window. ${activeCount} still active.`, 'warning');
+        const bannedCount = hits.filter(h => globalBans.current[h.uid]).length;
+        const activeCount = hits.filter(h => !globalBans.current[h.uid] && activityCheckedRef.current[h.uid] === true).length;
+        addLog(`${hits.length} account(s) donated more than ${BURST_MIN_COINS} coins inside a single ${BURST_WINDOW_DAYS}-day window. ${activeCount} still active, ${bannedCount} banned.`, 'warning');
         for (const h of hits) {
           const hrs = ((h.b.to - h.b.from) / 3600000).toFixed(1);
           const nm = globalCacheRef.current.names[h.uid] || ('user_' + String(h.uid).slice(-6));
-          // Strictly true — an account whose profile was never read stays unmarked rather
-          // than being assumed active, so the asterisk always means "checked and active".
-          const star = activityCheckedRef.current[h.uid] === true ? '*' : '';
-          addLog(`${star}${nm}, ${coins(h.b.sum)} coins in ${hrs}h across ${h.b.count} donation(s) — lifetime ${coins(h.info.total)} over ${h.info.count}`, 'info', true);
+          // A ban outranks the activity marker: the 5-day check reads a freshly-banned
+          // account as active (its final actions are recent), so without precedence it
+          // would be starred as if still playing. Both markers are strictly positive —
+          // an account whose profile was never read stays unmarked rather than assumed.
+          const mark = globalBans.current[h.uid] ? '-' : (activityCheckedRef.current[h.uid] === true ? '*' : '');
+          addLog(`${mark}${nm}, ${coins(h.b.sum)} coins in ${hrs}h across ${h.b.count} donation(s) — lifetime ${coins(h.info.total)} over ${h.info.count}`, 'info', true);
         }
-        addLog(`(* = still active: some activity within the last ${INACTIVE_DAYS} days. Unmarked accounts are inactive or were not reached.)`, 'info', true);
+        addLog(`(- = banned. * = still active: some activity within the last ${INACTIVE_DAYS} days. Unmarked accounts are inactive or were not reached.)`, 'info', true);
       }
       setIsScanning(false); isScanningRef.current=false; fullScanRef.current=false;
       if (localStore.isOpen()) localStore.flushNow().then(refreshDbStats);
