@@ -804,10 +804,20 @@ const marketRhythmFromTx = (txs, uId) => {
 // strong leads that corroborate the crit automation flags, not as proof on their own.
 const detectMarketRhythm = (player) => {
   const m = player.marketRhythm;
-  if (!m) return [];
+  if (!m && !player.donationBurst) return [];
   const suspicions = [];
   const self = [{ uid: player.id, normalizedName: player.name + ' (SELF)', normalizedLevel: player.level || '?' }];
 
+  const db = player.donationBurst;
+  if (db && db.sum > BURST_MIN_COINS) {
+    const hrs = ((db.to - db.from) / 3600000).toFixed(1);
+    suspicions.push({
+      type: 'donation_burst', severity: 'high',
+      desc: `Donation burst: ${db.sum.toLocaleString('en-US', { maximumFractionDigits: 1 })} coins to ${db.country} across ${db.count} donation(s) inside ${hrs}h, peaking ${new Date(db.to).toISOString().slice(0, 10)}.`,
+      workers: self, detectionWeight: 4, burstDetails: db,
+    });
+  }
+  if (!m) return suspicions;
   if (m.onset) {
     suspicions.push({
       type: 'automation_onset', severity: 'high',
@@ -906,6 +916,28 @@ const DONATION_MAX_PAGES = 600;
 // that actually moved money. Filters the report only — every donor is still scanned and
 // still gets a dossier; this is presentation, not detection.
 const DONATION_REPORT_MIN_COINS = 150;
+// Phase 1's transaction lookback. Named here so the donation report can state it: the report
+// walks the full donation history, so its totals legitimately exceed a dossier's signals.
+const lookbackDaysForSignals = 60;
+// Donation burst: a large amount pushed through in a short time. The window is ROLLING,
+// which is the whole point — 15x200 coins 90 minutes apart all land in one 3-day window
+// and trigger, while 15x200 spread one-a-day never gets more than ~800 into any window and
+// stays quiet. A first-to-last span check could not tell those two apart.
+const BURST_WINDOW_DAYS = 3;
+const BURST_MIN_COINS = 1000;
+
+// Largest total that fits in any `windowMs` window. Two pointers over time-sorted events.
+const maxDonationBurst = (events, windowMs) => {
+  if (!events || events.length === 0) return null;
+  const ev = [...events].sort((a, b) => a.t - b.t);
+  let best = null, sum = 0, lo = 0;
+  for (let hi = 0; hi < ev.length; hi++) {
+    sum += ev[hi].amount;
+    while (ev[hi].t - ev[lo].t > windowMs) { sum -= ev[lo].amount; lo++; }
+    if (!best || sum > best.sum) best = { sum, from: ev[lo].t, to: ev[hi].t, count: hi - lo + 1 };
+  }
+  return best;
+};
 // "Last active" = the most recent of ALL the per-user activity timestamps WarEra exposes in
 // getUserLite.dates (login, work, daily-reward claim, message/event checks, hires, work-offer
 // applications, etc.) — any of these means the account was online doing something. Far more
@@ -1309,6 +1341,7 @@ const HEURISTICS = {
   no_production_bonus:  { matrixChip:'SHELL', detail:{ observed:'Companies issuing no production bonuses', rule:()=>'>=1 company with 0% bonus rate', note:'Bonus suppression can reduce worker incentive to audit their employment.' } },
   tip_farming:          { detail:{ observed:'Heavy, concentrated tip traffic from a small set of accounts', rule:()=>'Single tipper accounts for >=50% of all received tips', note:'Tip farming networks route coins through repeated small donations to obscure origin.' } },
   coordinated_creation: { tier:'high', detail:{ observed:'Linked accounts created within seconds of each other (batch signup)', rule:()=>`Two or more accounts in the cluster (the scanned account, workers, wash partners, employer) created within ${COCREATE_WINDOW_S}s of EACH OTHER`, note:'Account ObjectIds embed creation time. Accounts that are independently linked (employment, trading) AND created near-simultaneously is consistent with scripted batch signup — humans do not register the same second. Compared all-pairs, so a sub-ring of workers minted together is caught even if the boss was made later. Account↔own-company timing is ignored (every WarEra account is born with a starter company the same second); only account↔account is compared.' } },
+  donation_burst:       { tier:'high', matrixChip:'BURST', detail:{ observed:'A large sum donated in a short space of time', rule:()=>`More than ${BURST_MIN_COINS} coins donated inside any rolling ${BURST_WINDOW_DAYS}-day window`, note:'The window rolls, so this separates a lump transfer from a steady contributor: fifteen 200-coin donations ninety minutes apart all fall inside one window and trigger, while the same fifteen spread one per day never put more than ~800 into any window and stay quiet. Both have the same lifetime total. Rapid concentrated outflow to a country treasury is consistent with draining an account before abandoning it, or routing coins out of a ring — but a genuine war-effort push looks the same, so check the timing against events.' } },
   automation_onset:     { tier:'high', matrixChip:'ONSET', detail:{ observed:'Daily buying volume steps up sharply on one day and never returns to the old level', rule:()=>`Daily-buy median after a split-day >= ${ONSET_STEP}x the median before it AND >= ${ONSET_MIN_AFTER}/day, with the elevated rate still >= 2x baseline at the end of the window`, note:'A durable step-change dates the day the behaviour changed — the signature of a tool being switched on. A player who simply gets richer or more interested ramps gradually; a spike that decays (a war, a one-off spree) fails the persistence check by design. Bounded by the 60-day transaction window, so only recent switch-ons are visible.' } },
   relentless_trading:   { matrixChip:'NODAYOFF', detail:{ observed:'Buying every single calendar day for weeks without a break', rule:()=>`>=${RELENTLESS_STREAK_D} consecutive days with at least one buy, median >=${RELENTLESS_MIN_MEDIAN}/day (min ${MKT_MIN_BUYS} buys overall)`, note:'Humans miss days — travel, illness, losing interest. An unbroken multi-week run at volume is the absence of a life rather than the presence of dedication. Deliberately scored as a supporting signal, not a verdict: a genuinely obsessive player can hold a streak, so this earns its weight alongside reaction-speed, pacing or onset flags rather than on its own.' } },
   always_on:            { matrixChip:'SHIFT', detail:{ observed:'The daily active window spans a full working shift, day after day', rule:()=>`Median ${SHIFT_HOURS}h+ between the first and last buy of the day across >=${SHIFT_MIN_DAYS} days`, note:'Not 24/7 — an operator that sleeps still looks human on an hour histogram. What does not look human is a 14-hour on-time sustained every day including weekends. Timezone-neutral (it measures span, not which hours).' } },
@@ -2073,6 +2106,11 @@ export function WarEraOracle() {
   const crawlSkippedRef = useRef(0);                         // users skipped on full-scan resume
   const bannedSkippedRef = useRef(0);                        // non-banned users skipped in banned-only mode
   const donationTotalsRef = useRef({});                      // userId -> { total, count, firstAt, lastAt } from the donation feed
+  const gatewayEndpointFails = useRef({});                   // endpoint -> consecutive gateway failures
+  const gatewayEndpointDead = useRef({});                    // endpoint -> skip the gateway for this endpoint until this ms
+  const donationBurstsRef = useRef({});                      // userId -> { sum, from, to, count, country } peak rolling-window donation
+  const burstHitsRef = useRef([]);                           // burst sweep results, for the end-of-scan report
+  const burstScanRef = useRef(false);                        // this run is a donation-burst sweep
   const crawlFlaggedRef = useRef(0);                         // would-be flags seen during a gather crawl
   const [dbOpen, setDbOpen] = useState(false);
   const [dbStats, setDbStats] = useState(null);
@@ -2117,9 +2155,11 @@ export function WarEraOracle() {
   const fileInputRef = useRef(null);
   const [copiedId, setCopiedId] = useState(null);
 
-  const addLog = useCallback((msg, type='info') => {
+  // noTime omits the [hh:mm:ss] prefix — used for report bodies, where a timestamp on every
+  // row breaks up a block that is meant to read as one table.
+  const addLog = useCallback((msg, type='info', noTime=false) => {
     if (type === 'debug' && !settings.verboseDebug) return;
-    setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), msg, type }]);
+    setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), msg, type, noTime }]);
   }, [settings.verboseDebug]);
 
   // Logs a per-user wealth check against the level baseline, for EVERY scanned user.
@@ -2288,8 +2328,19 @@ export function WarEraOracle() {
           }
         } catch(e) { }
 
+        // Per-endpoint circuit breaker. The global one alone is not enough: it needs 4
+        // CONSECUTIVE gateway failures, but any successful gateway call resets the counter,
+        // and under concurrency the healthy endpoints keep resetting it while one broken
+        // endpoint fails forever. The symptom is "Miss #1" repeating and never reaching #4
+        // — every call to the broken endpoint burns the full 15s timeout before falling
+        // back, which is what stalls a scan (gatherTx alone makes dozens of tx calls per
+        // account). So once an endpoint has failed twice on the gateway, send it straight
+        // to the official API for a cooldown instead of paying that 15s again and again.
+        const epDeadUntil = gatewayEndpointDead.current[endpoint] || 0;
+        const epSkipGateway = epDeadUntil > Date.now();
         let route;
-        if (isScanningRef.current) { route = await getToken(currentForceOfficial); }
+        if (epSkipGateway && apiKey && apiKey.trim() !== '') { route = 'official'; }
+        else if (isScanningRef.current) { route = await getToken(currentForceOfficial); }
         else { route = currentForceOfficial ? 'official' : (isGatewayDead.current ? 'official' : 'gateway'); }
         const baseUrl = route === 'gateway' ? 'https://gateway.warerastats.io/trpc/' : 'https://api2.warera.io/trpc/';
         const activeKey = apiKey.trim();
@@ -2299,8 +2350,9 @@ export function WarEraOracle() {
             try { result = JSON.parse(result[0]); } catch { }
           }
           // A good gateway response clears the failure streak so only *consecutive*
-          // failures (a real outage) can trip the breaker, not sporadic blips.
-          if (route === 'gateway') gatewayFails.current = 0;
+          // failures (a real outage) can trip the breaker, not sporadic blips. Cleared per
+          // endpoint as well, so a healthy endpoint can't vouch for a broken one.
+          if (route === 'gateway') { gatewayFails.current = 0; gatewayEndpointFails.current[endpoint] = 0; }
           return result;
         } catch (e) {
           if (e.message.includes('RATE LIMIT')) {
@@ -2347,6 +2399,12 @@ export function WarEraOracle() {
           }
           if (route === 'gateway' && !isSchemaErr) {
             gatewayFails.current += 1;
+            const epFails = (gatewayEndpointFails.current[endpoint] || 0) + 1;
+            gatewayEndpointFails.current[endpoint] = epFails;
+            if (epFails >= 2 && !(gatewayEndpointDead.current[endpoint] > Date.now())) {
+              gatewayEndpointDead.current[endpoint] = Date.now() + 120000;
+              addLog(`[GATEWAY] ${endpoint} failed ${epFails}x — routing it to the Official API for 2 min (each gateway miss costs a 15s timeout).`, 'warning');
+            }
             if (gatewayFails.current >= 4 && !isGatewayDead.current) {
               isGatewayDead.current = true;
               addLog(`[CRITICAL] Gateway failed 4 times. Circuit Breaker tripped. Falling back to Official API.`, 'warning');
@@ -2609,10 +2667,11 @@ export function WarEraOracle() {
         if (t && t < cutoffMs) { hitCutoff = true; continue; }
         const uid = tx.buyerId;
         if (!uid) continue;
-        const e = donors.get(uid) || { total: 0, count: 0, firstAt: t, lastAt: t };
-        e.total += (typeof tx.money === 'number' ? tx.money : 0);
+        const e = donors.get(uid) || { total: 0, count: 0, firstAt: t, lastAt: t, events: [] };
+        const amount = (typeof tx.money === 'number' ? tx.money : 0);
+        e.total += amount;
         e.count += 1;
-        if (t) { if (t < e.firstAt || !e.firstAt) e.firstAt = t; if (t > e.lastAt) e.lastAt = t; }
+        if (t) { e.events.push({ t, amount }); if (t < e.firstAt || !e.firstAt) e.firstAt = t; if (t > e.lastAt) e.lastAt = t; }
         donors.set(uid, e);
         if (t && t < oldest) oldest = t;
       }
@@ -2720,7 +2779,7 @@ export function WarEraOracle() {
     }
 
     let itemMarketTxs = [];
-    const lookbackDays = 60;
+    const lookbackDays = lookbackDaysForSignals;
     const cutoffTime = Date.now() - lookbackDays * 24 * 60 * 60 * 1000;
     try {
       itemMarketTxs = await gatherTx('itemMarket', uId, cutoffTime);
@@ -3129,7 +3188,7 @@ export function WarEraOracle() {
     }
 
     const livePlayer = {
-      id: uId, name: foundName, level: playerObj.level, isBanned: playerObj.isBanned, inactive: playerObj.inactive, lastActiveAt: playerObj.lastActiveAt || null, lastActionAt: playerObj.lastActionAt || null, donations: donationTotalsRef.current[uId] || null, country: playerObj.scanContext||'Unknown Target',
+      id: uId, name: foundName, level: playerObj.level, isBanned: playerObj.isBanned, inactive: playerObj.inactive, lastActiveAt: playerObj.lastActiveAt || null, lastActionAt: playerObj.lastActionAt || null, donations: donationTotalsRef.current[uId] || null, donationBurst: donationBurstsRef.current[uId] || null, country: playerObj.scanContext||'Unknown Target',
       companies: [],
       washPartners, isDirectLaunderer, directLaunderAmount,
       sniperHits, sniperDetails, maxConcurrentTxs, apmDetails: { avgGapMs: apmAvgGapMs, txs: worstApmWindow },
@@ -3429,7 +3488,8 @@ export function WarEraOracle() {
   const startScan = async (overrideUserId = null) => {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
-    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={}; crawlSkippedRef.current=0; crawlFlaggedRef.current=0; bannedSkippedRef.current=0; donationTotalsRef.current={};
+    gatewayEndpointFails.current={}; gatewayEndpointDead.current={};
+    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={}; crawlSkippedRef.current=0; crawlFlaggedRef.current=0; bannedSkippedRef.current=0; donationTotalsRef.current={}; donationBurstsRef.current={}; burstHitsRef.current=[];
     phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false; didLogDonationShapeRef.current=false;
     // A full-scan crawl runs deliberately throttled (low concurrency) to stay polite and
     // well under rate limits, since it walks every region; a normal scan uses the setting.
@@ -3519,6 +3579,31 @@ export function WarEraOracle() {
       alwaysPhase2Ref.current = true;
       watchlistScanRef.current = false;
       addLog(`Scanning ${wlEntries.length} watchlisted suspect(s)...`, 'info');
+    } else if (burstScanRef.current) {
+      // Donation-burst sweep: walk the selected country's whole donation history and keep
+      // only accounts that pushed BURST_MIN_COINS through a single rolling
+      // BURST_WINDOW_DAYS window. Rolling is what makes it selective — a steady daily
+      // trickle of the same lifetime total never fills one window.
+      const cutoff = Date.now() - DONATION_LOOKBACK_DAYS * 86400000;
+      const scopes = (targetRegionId && targetRegionId !== 'ALL') ? [targetRegionId] : [null];
+      const hits = [];
+      for (const scope of scopes) {
+        if (!isScanningRef.current) break;
+        const rName = scope ? (availableRegions.find(r => (r._id || r.id) === scope)?.name || scope) : 'Global';
+        addLog(`[BURST] Walking ${rName} donation history for >${BURST_MIN_COINS} coins inside any ${BURST_WINDOW_DAYS}-day window...`, 'info');
+        const donors = await harvestDonors(scope, cutoff);
+        donors.forEach((info, uid) => {
+          const b = maxDonationBurst(info.events, BURST_WINDOW_DAYS * 86400000);
+          if (!b || b.sum <= BURST_MIN_COINS) return;
+          donationBurstsRef.current[uid] = { ...b, country: rName };
+          donationTotalsRef.current[uid] = { ...info, scopes: { [rName]: info.total } };
+          hits.push({ uid, rName, b, info });
+        });
+        hits.sort((a, b2) => b2.b.sum - a.b.sum);
+        addLog(`[BURST] ${rName}: ${hits.length} account(s) of ${donors.size} donor(s) cleared the threshold.`, hits.length ? 'warning' : 'info');
+      }
+      scanQueueRef.current = hits.map(h => ({ _id: h.uid, scanContext: h.rName }));
+      burstHitsRef.current = hits;
     } else if (settings.bannedOnly && localStore.isOpen() && !settings.donationDiscovery) {
       // Banned-only + an open Local DB: sweep every account the DB has ever seen instead of
       // the country roster. The roster only lists recently-active players, and a banned
@@ -3680,18 +3765,33 @@ export function WarEraOracle() {
             addLog(`[DONATION REPORT] ${country}: ${all.length} banned donor(s) found, none above ${DONATION_REPORT_MIN_COINS} coins.`, 'info');
             continue;
           }
-          addLog(`[DONATION REPORT] A total of ${total.toLocaleString('en-US', { maximumFractionDigits: 1 })} coins were donated to ${country} by ${rows.length} banned user(s).`, 'warning');
+          const coins = (n) => Math.round(n).toLocaleString('en-US');
+          addLog(`A total of ${coins(total)} coins were donated to ${country} by ${rows.length} banned user(s).`, 'warning');
           for (const r of rows) {
-            addLog(`    ${globalCacheRef.current.names[r.uid] || ('user_' + String(r.uid).slice(-6))}, ${r.amount.toLocaleString('en-US', { maximumFractionDigits: 1 })} coins`, 'info');
+            addLog(`${globalCacheRef.current.names[r.uid] || ('user_' + String(r.uid).slice(-6))}, ${coins(r.amount)} coins`, 'info', true);
           }
           // Say what was left out, so a quiet filter never looks like an empty tail.
-          if (hidden > 0) addLog(`    (${hidden} further banned donor(s) below the ${DONATION_REPORT_MIN_COINS}-coin floor omitted — they are still scanned and still appear as cases.)`, 'info');
+          if (hidden > 0) addLog(`(${hidden} further banned donor(s) below the ${DONATION_REPORT_MIN_COINS}-coin floor omitted — still scanned, still cases.)`, 'info', true);
+          // These totals span the FULL donation history, while a dossier's own signals only
+          // look back 60 days — so the same account reads higher here. Stated inline because
+          // that gap looks like a bug otherwise.
+          addLog(`(Totals cover the full donation history; dossier signals use a ${lookbackDaysForSignals}-day window, so they read lower.)`, 'info', true);
         }
       }
       if (bannedSkippedRef.current > 0) addLog(`[BANNED ONLY] Skipped ${bannedSkippedRef.current} account(s) that were not banned.`, 'info');
       if (crawlSkippedRef.current > 0) addLog(`[FULL SCAN] Resumed — skipped ${crawlSkippedRef.current} account(s) already in the Local DB.`, 'info');
       if (crawlFlaggedRef.current > 0) addLog(`[FULL SCAN] Gathered data only (no findings shown); ${crawlFlaggedRef.current} account(s) would flag — run a Local DB scan to see them.`, 'info');
-      setIsScanning(false); isScanningRef.current=false; fullScanRef.current=false;
+      if (burstHitsRef.current.length > 0) {
+        const hits = burstHitsRef.current;
+        const coins = (n) => Math.round(n).toLocaleString('en-US');
+        addLog(`${hits.length} account(s) donated more than ${BURST_MIN_COINS} coins inside a single ${BURST_WINDOW_DAYS}-day window.`, 'warning');
+        for (const h of hits) {
+          const hrs = ((h.b.to - h.b.from) / 3600000).toFixed(1);
+          const nm = globalCacheRef.current.names[h.uid] || ('user_' + String(h.uid).slice(-6));
+          addLog(`${nm}, ${coins(h.b.sum)} coins in ${hrs}h across ${h.b.count} donation(s) — lifetime ${coins(h.info.total)} over ${h.info.count}`, 'info', true);
+        }
+      }
+      setIsScanning(false); isScanningRef.current=false; fullScanRef.current=false; burstScanRef.current=false;
       if (localStore.isOpen()) localStore.flushNow().then(refreshDbStats);
       if (globalCacheRef.current.wealthByLevel && Object.keys(globalCacheRef.current.wealthByLevel).length > 0) {
         localStorage.setItem('wera_wealth_baseline', JSON.stringify(globalCacheRef.current.wealthByLevel));
@@ -4020,6 +4120,9 @@ export function WarEraOracle() {
             <div style={{display:'flex',gap:4}}>
               <button onClick={() => startScan(null)} style={{padding:'5px 14px',background:'#ff5d6c',border:'none',borderRadius:5,color:'#070b18',fontSize:11.5,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap'}}>
                 <Play size={11} fill="currentColor"/> Scan
+              </button>
+              <button onClick={()=>{burstScanRef.current=true;startScan(null);}} title={`Donation burst sweep: walk the selected country's entire donation history and surface accounts that pushed more than ${BURST_MIN_COINS} coins through a single rolling ${BURST_WINDOW_DAYS}-day window.\n\nThe window rolls, so it separates a lump transfer from a steady contributor: 15 donations of 200 coins ninety minutes apart all land in one window and trigger; the same 15 spread one per day never exceed ~800 in any window and stay quiet — despite an identical lifetime total.\n\nMatches are then scanned normally, so each gets a full dossier.`} style={{padding:'5px 9px',background:'rgba(63,208,163,0.18)',border:'1px solid rgba(63,208,163,0.50)',borderRadius:5,color:'#3fd0a3',fontSize:11,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:4,whiteSpace:'nowrap'}}>
+                <Zap size={10}/> Burst
               </button>
               {Object.keys(watchlist).length>0&&(
                 <button onClick={()=>{watchlistScanRef.current=true;startScan(null);}} style={{padding:'5px 9px',background:'rgba(255,171,61,0.20)',border:'1px solid rgba(255,171,61,0.50)',borderRadius:5,color:'#ffab3d',fontSize:11,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
@@ -4500,7 +4603,7 @@ export function WarEraOracle() {
           <div style={{height:200,background:'#060a16',borderTop:'1px solid #1f2b4e',padding:'8px 12px',overflowY:'auto',fontFamily:"IBM Plex Mono, monospace",fontSize:11,display:'flex',flexDirection:'column',gap:2}}>
             {logs.map((log,i)=>(
               <div key={i} style={{color:log.type==='warning'?'#ff5d6c':log.type==='debug'?'#2e3f6a':'#5d6e96',display:'flex',gap:8}}>
-                <span style={{color:'#1f2b4e',flexShrink:0}}>[{log.time}]</span>
+                {!log.noTime&&<span style={{color:'#1f2b4e',flexShrink:0}}>[{log.time}]</span>}
                 <span style={{wordBreak:'break-all'}}>{log.msg}</span>
               </div>
             ))}
