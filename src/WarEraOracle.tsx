@@ -893,6 +893,10 @@ const COCREATE_WINDOW_S = 10;
 // flagged outflow account that has also gone quiet is worth surfacing — badged in the same
 // slots as a ban. Computed from the lite payload, so no extra fetch.
 const INACTIVE_DAYS = 5;
+// Donation-feed discovery: how far back to walk, and a page cap so a scan can't run away
+// (a busy country runs ~4,000 donations/month, i.e. ~40 pages).
+const DONATION_LOOKBACK_DAYS = 365;
+const DONATION_MAX_PAGES = 400;
 // "Last active" = the most recent of ALL the per-user activity timestamps WarEra exposes in
 // getUserLite.dates (login, work, daily-reward claim, message/event checks, hires, work-offer
 // applications, etc.) — any of these means the account was online doing something. Far more
@@ -1803,7 +1807,8 @@ const MapSidebar = ({ activeResult, isWatching, onWatch, onRescan, onReport, onC
           </div>
         </div>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 9, fontSize: 10.5, fontWeight: 700, letterSpacing: '.04em', color: PL_SEV[verdict.tier].c, background: PL_SEV[verdict.tier].bg, border: `1px solid ${PL_SEV[verdict.tier].line}`, borderRadius: 5, padding: '3px 8px' }}>{verdict.txt}</div>
-        <div style={{ fontSize: 11, color: '#5d6e96', marginBottom: 8 }}>{activeResult.country}{activeResult.player.level && <span style={{ fontFamily: "IBM Plex Mono, monospace" }}> · Lv.{activeResult.player.level}</span>}{activeResult.player.isBanned && <span style={{ marginLeft: 6, color: '#ff5d6c', fontWeight: 700 }}>BANNED</span>}{!activeResult.player.isBanned && (activeResult.player.inactive || inactive) && <span style={{ marginLeft: 6, color: '#9fb0d4', fontWeight: 700 }}>INACTIVE</span>}</div>
+        <div style={{ fontSize: 11, color: '#5d6e96', marginBottom: 8 }}>{activeResult.country}{activeResult.player.level && <span style={{ fontFamily: "IBM Plex Mono, monospace" }}> · Lv.{activeResult.player.level}</span>}{activeResult.player.isBanned && <span style={{ marginLeft: 6, color: '#ff5d6c', fontWeight: 700 }}>BANNED</span>}{!activeResult.player.isBanned && (activeResult.player.inactive || inactive) && <span style={{ marginLeft: 6, color: '#9fb0d4', fontWeight: 700 }}>INACTIVE</span>}
+          {activeResult.player.donations && <span title={`Found via the donation feed. ${activeResult.player.donations.count} donation(s) totalling ${activeResult.player.donations.total.toFixed(1)} coins between ${new Date(activeResult.player.donations.firstAt).toISOString().slice(0,10)} and ${new Date(activeResult.player.donations.lastAt).toISOString().slice(0,10)}.`} style={{ marginLeft: 6, color: '#3fd0a3', fontFamily: "IBM Plex Mono, monospace" }}>· donated {activeResult.player.donations.total.toFixed(1)} ({activeResult.player.donations.count}×)</span>}</div>
         <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5, color: '#9fb0d4' }}>{String(activeResult.summary)}</p>
         {activeResult.phase2Status === 'pending' && <p style={{ marginTop: 8, fontSize: 11, color: '#4fc3e8' }}>Worker analysis pending.</p>}
         {activeResult.phase2Status === 'running' && <p style={{ marginTop: 8, fontSize: 11, color: '#9fb0d4' }}>Fetching companies and workers…</p>}
@@ -2018,6 +2023,7 @@ export function WarEraOracle() {
     phase2AutoThreshold: 3,
     includeBanned: true,
     bannedOnly: false,
+    donationDiscovery: false,
   });
   
   const [apiKey, setApiKey] = useState(() => {
@@ -2057,6 +2063,7 @@ export function WarEraOracle() {
   const fullScanRef = useRef(false);                        // throttled all-regions crawl → DB
   const crawlSkippedRef = useRef(0);                         // users skipped on full-scan resume
   const bannedSkippedRef = useRef(0);                        // non-banned users skipped in banned-only mode
+  const donationTotalsRef = useRef({});                      // userId -> { total, count, firstAt, lastAt } from the donation feed
   const crawlFlaggedRef = useRef(0);                         // would-be flags seen during a gather crawl
   const [dbOpen, setDbOpen] = useState(false);
   const [dbStats, setDbStats] = useState(null);
@@ -2565,6 +2572,50 @@ export function WarEraOracle() {
     return merged;
   };
 
+  // ── donation-feed discovery ──────────────────────────────────────────────────────────
+  // transaction.getPaginatedTransactions does NOT require a userId: with just a
+  // transactionType it returns a global feed, and `countryId` narrows it to donations sent
+  // to that country. (`sellerCountryId` looks like it should work but is silently ignored —
+  // it returns the unfiltered feed.) That gives a user-ID source with no activity filter,
+  // which is the whole point: the country roster only lists players active in the last few
+  // days, so a banned account disappears from it within days. A donation record is
+  // permanent, so the feed still names accounts banned months ago. Measured on one country,
+  // one month: 140 donors absent from the roster, 28 of them banned.
+  const harvestDonors = async (countryId, cutoffMs) => {
+    const donors = new Map();   // userId -> { total, count, firstAt, lastAt }
+    let cursor = null, pages = 0, oldest = Infinity;
+    while (pages < DONATION_MAX_PAGES) {
+      if (!isScanningRef.current) break;
+      const payload = { transactionType: 'donation', limit: 100 };
+      if (countryId) payload.countryId = countryId;
+      if (cursor) payload.cursor = cursor;
+      let data;
+      try { data = await smartFetch('transaction.getPaginatedTransactions', payload, false, true); }
+      catch (e) { addLog(`[DONATIONS] Feed failed after ${pages} page(s): ${e.message.split('\n')[0]}`, 'warning'); break; }
+      const items = Array.isArray(data) ? data : (data?.items || data?.data || []);
+      if (!items.length) break;
+      let hitCutoff = false;
+      for (const tx of items) {
+        const t = Date.parse(tx.createdAt || tx.timestamp || '') || 0;
+        if (t && t < cutoffMs) { hitCutoff = true; continue; }
+        const uid = tx.buyerId;
+        if (!uid) continue;
+        const e = donors.get(uid) || { total: 0, count: 0, firstAt: t, lastAt: t };
+        e.total += (typeof tx.money === 'number' ? tx.money : 0);
+        e.count += 1;
+        if (t) { if (t < e.firstAt || !e.firstAt) e.firstAt = t; if (t > e.lastAt) e.lastAt = t; }
+        donors.set(uid, e);
+        if (t && t < oldest) oldest = t;
+      }
+      pages++;
+      cursor = data?.nextCursor || data?.meta?.nextCursor || null;
+      if (!cursor || hitCutoff) break;
+    }
+    const back = Number.isFinite(oldest) ? new Date(oldest).toISOString().slice(0, 10) : '?';
+    addLog(`[DONATIONS] ${countryId ? 'Country' : 'Global'} feed: ${pages} page(s) back to ${back} → ${donors.size} distinct donor(s).${pages >= DONATION_MAX_PAGES ? ` Stopped at the ${DONATION_MAX_PAGES}-page cap — increase the lookback cap for deeper history.` : ''}`, 'info');
+    return donors;
+  };
+
   const processPlayerPhase1 = async (playerObj) => {
     const uId = playerObj._id || playerObj.id;
     // Full-scan resume: if this account is already in the Local DB (crawled in an earlier
@@ -3069,7 +3120,7 @@ export function WarEraOracle() {
     }
 
     const livePlayer = {
-      id: uId, name: foundName, level: playerObj.level, isBanned: playerObj.isBanned, inactive: playerObj.inactive, lastActiveAt: playerObj.lastActiveAt || null, lastActionAt: playerObj.lastActionAt || null, country: playerObj.scanContext||'Unknown Target',
+      id: uId, name: foundName, level: playerObj.level, isBanned: playerObj.isBanned, inactive: playerObj.inactive, lastActiveAt: playerObj.lastActiveAt || null, lastActionAt: playerObj.lastActionAt || null, donations: donationTotalsRef.current[uId] || null, country: playerObj.scanContext||'Unknown Target',
       companies: [],
       washPartners, isDirectLaunderer, directLaunderAmount,
       sniperHits, sniperDetails, maxConcurrentTxs, apmDetails: { avgGapMs: apmAvgGapMs, txs: worstApmWindow },
@@ -3369,7 +3420,7 @@ export function WarEraOracle() {
   const startScan = async (overrideUserId = null) => {
     setIsScanning(true); isScanningRef.current=true; setProgress(0); setFindings({}); setLogs([]);
     gatewayFails.current=0; isGatewayDead.current=false; globalRateLimitRelease.current=0; setIsRateLimited(false);
-    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={}; crawlSkippedRef.current=0; crawlFlaggedRef.current=0; bannedSkippedRef.current=0;
+    globalWashPartners.current={}; globalBans.current={}; globalInactive.current={}; globalHermitPrimaries.current={}; crawlSkippedRef.current=0; crawlFlaggedRef.current=0; bannedSkippedRef.current=0; donationTotalsRef.current={};
     phase2DataRef.current={}; didLogTipPayloadRef.current=false; didLogUserLiteShapeRef.current=false; didLogWorkerShapeRef.current=false; didLogDonationShapeRef.current=false;
     // A full-scan crawl runs deliberately throttled (low concurrency) to stay polite and
     // well under rate limits, since it walks every region; a normal scan uses the setting.
@@ -3517,6 +3568,23 @@ export function WarEraOracle() {
           } catch(e) { addLog(`[WARNING] ${ep} for ${rName} failed: ${e.message.substring(0,120)}`, 'warning'); }
         }
         if (!success) addLog(`[WARNING] ${rName}: no citizens extracted (endpoint loop exhausted).`, 'warning');
+      }
+      // Donation-feed discovery: adds accounts the roster structurally cannot show, because
+      // it only lists players active in the last few days and a banned account stops acting.
+      if (settings.donationDiscovery) {
+        const cutoff = Date.now() - DONATION_LOOKBACK_DAYS * 86400000;
+        const scopes = (fullScanRef.current || targetRegionId === 'ALL') ? [null] : targetRegions;
+        for (const scope of scopes) {
+          if (!isScanningRef.current) break;
+          const donors = await harvestDonors(scope, cutoff);
+          const rName = scope ? (availableRegions.find(r => (r._id || r.id) === scope)?.name || scope) : 'Global';
+          let added = 0;
+          donors.forEach((info, uid) => {
+            donationTotalsRef.current[uid] = info;
+            if (!allCitizens.some(c => (c._id || c.id || c.userId) === uid)) { allCitizens.push({ _id: uid, scanContext: rName }); added++; }
+          });
+          addLog(`[DONATIONS] ${rName}: ${added} account(s) not in the roster added to the queue.`, 'info');
+        }
       }
       const finalMap=new Map(); allCitizens.forEach(c=>{ const id=c._id||c.id||c.userId; finalMap.set(id,c); });
       allCitizens=Array.from(finalMap.values());
@@ -4484,6 +4552,10 @@ export function WarEraOracle() {
             <label title={"Scan ONLY banned accounts. Every account still costs one live profile fetch (ban state is visible nowhere else), but the heavy transaction work is skipped.\n\nIMPORTANT — with a Local DB open this re-checks every account the DB has ever seen, and that is the ONLY way to find older bans. WarEra's country roster lists just the last few days of active players, and a banned account stops acting, so it drops out within days and a region scan can never see it again. Banned users are also purged from the public rankings."} style={{display:'flex',alignItems:'center',gap:8,fontSize:11.5,color:'#9fb0d4',cursor:'pointer'}}>
               <input type="checkbox" checked={settings.bannedOnly} onChange={e=>setSettings({...settings,bannedOnly:e.target.checked})} style={{accentColor:'#ff5d6c'}} disabled={isScanning}/>
               Scan banned users ONLY <span style={{fontSize:9.5,color:'#5d6e96'}}>{localStore.isOpen()?'(re-checks the whole Local DB)':'(roster = last ~3d only)'}</span>
+            </label>
+            <label title={`Also discover accounts from the donation feed (last ${DONATION_LOOKBACK_DAYS} days), not just the country roster.\n\nThe roster only lists players active in the last few days, so a banned account vanishes from it within days. A donation record is permanent, so the feed still names accounts banned months ago. Measured on one country over one month: 140 donors missing from the roster, 28 of them banned.\n\nCosts one extra paginated pass per region before the scan starts, and the amount donated is shown on each account it finds.`} style={{display:'flex',alignItems:'center',gap:8,fontSize:11.5,color:'#9fb0d4',cursor:'pointer'}}>
+              <input type="checkbox" checked={settings.donationDiscovery} onChange={e=>setSettings({...settings,donationDiscovery:e.target.checked})} style={{accentColor:'#3fd0a3'}} disabled={isScanning}/>
+              Find users via donations <span style={{fontSize:9.5,color:'#5d6e96'}}>(sees past the roster)</span>
             </label>
             <label style={{display:'flex',alignItems:'center',gap:8,fontSize:11.5,color:'#9fb0d4',cursor:'pointer'}}>
               <input type="checkbox" checked={settings.verboseDebug} onChange={e=>setSettings({...settings,verboseDebug:e.target.checked})} style={{accentColor:'#4fc3e8'}} disabled={isScanning}/>
