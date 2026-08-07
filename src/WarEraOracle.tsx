@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import MultiDeepDive from './MultiDeepDive.jsx';
 import { 
   ShieldAlert, Play, Square, Activity, ChevronRight, 
   ChevronDown, AlertTriangle, Users, Database, UserX, 
@@ -919,6 +920,10 @@ const DONATION_REPORT_MIN_COINS = 150;
 // Phase 1's transaction lookback. Named here so the donation report can state it: the report
 // walks the full donation history, so its totals legitimately exceed a dossier's signals.
 const lookbackDaysForSignals = 60;
+// Deep dive: how many accounts can be compared at once, and how far back their activity is
+// pulled. Ten keeps the pair matrix readable (45 pairs) and the colour palette distinct.
+const DD_MAX = 10;
+const DD_LOOKBACK_DAYS = 60;
 // Donation burst: a large amount pushed through in a short time. The window is ROLLING,
 // which is the whole point — 15x200 coins 90 minutes apart all land in one 3-day window
 // and trigger, while 15x200 spread one-a-day never gets more than ~800 into any window and
@@ -2116,6 +2121,8 @@ export function WarEraOracle() {
   const [dbOpen, setDbOpen] = useState(false);
   const [dbStats, setDbStats] = useState(null);
   const [deepDive, setDeepDive] = useState(null);          // timing-correlation modal state
+  const [ddSel, setDdSel] = useState(new Set());           // accounts ticked for a multi-account deep dive
+  const [multiDive, setMultiDive] = useState(null);        // multi-account deep dive modal state
   useEffect(() => { dbModeRef.current = dbMode; }, [dbMode]);
   // Flush any buffered writes to the DB file whenever a scan stops, and on tab close.
   useEffect(() => { if (!isScanning && localStore.isOpen()) localStore.flushNow(); }, [isScanning]);
@@ -2490,6 +2497,47 @@ export function WarEraOracle() {
       const shadowPct = aTimes.length ? near / aTimes.length : 0;
       setDeepDive({ loading: false, account, counterpart, aCount: aTimes.length, bCount: bTimes.length, aH, bH, containment, corr, shadowPct });
     } catch (e) { setDeepDive({ loading: false, error: e.message, account, counterpart }); }
+    finally { if (!isScanning) isScanningRef.current = false; }
+  };
+
+  // Multi-account deep dive. Same timestamp source as the 2-account version, but keeps the
+  // transaction TYPE alongside each time so the panel can filter by it, and fetches accounts
+  // sequentially — 10 accounts x 7 types in parallel would swamp the gateway, and this is
+  // near-instant against a Local DB anyway.
+  const toggleDdSel = (id) => setDdSel(prev => {
+    const n = new Set(prev);
+    if (n.has(id)) n.delete(id);
+    else if (n.size < DD_MAX) n.add(id);
+    return n;
+  });
+
+  const runMultiDive = async (ids) => {
+    const list = [...ids].slice(0, DD_MAX);
+    setMultiDive({ loading: true, accounts: list.map(id => ({ id, name: globalCacheRef.current.names[id] || id, times: [] })) });
+    isScanningRef.current = true;   // let gatherTx's loop run outside a formal scan
+    try {
+      const cutoff = Date.now() - DD_LOOKBACK_DAYS * 86400000;
+      const types = ['itemMarket', 'donation', 'articleTip', 'wage', 'openCase', 'craftItem', 'dismantleItem'];
+      const accounts = [];
+      for (let i = 0; i < list.length; i++) {
+        const id = list[i];
+        setMultiDive(m => ({ ...m, progress: `${i + 1} / ${list.length}` }));
+        const times = [];
+        for (const ty of types) {
+          try {
+            const txs = await gatherTx(ty, id, cutoff);
+            for (const tx of txs) { const ms = new Date(tx.createdAt || tx.timestamp || 0).getTime(); if (ms) times.push({ t: ms, type: ty }); }
+          } catch { /* skip this type for this account */ }
+        }
+        times.sort((a, b) => a.t - b.t);
+        accounts.push({
+          id, name: globalCacheRef.current.names[id] || ('user_' + String(id).slice(-6)),
+          banned: !!globalBans.current[id], inactive: !!globalInactive.current[id], times,
+        });
+      }
+      const empty = accounts.filter(a => !a.times.length).map(a => a.name);
+      setMultiDive({ loading: false, accounts, note: empty.length ? `No transactions found for: ${empty.join(', ')}.` : null });
+    } catch (e) { setMultiDive({ loading: false, error: e.message, accounts: [] }); }
     finally { if (!isScanning) isScanningRef.current = false; }
   };
 
@@ -4253,6 +4301,16 @@ export function WarEraOracle() {
                 );
               })}
             </div>
+            {ddSel.size>0&&(
+              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,background:'rgba(169,139,255,0.10)',border:'1px solid rgba(169,139,255,0.42)',borderRadius:6,padding:'5px 7px'}}>
+                <span style={{fontSize:10.5,fontWeight:700,color:'#a98bff',whiteSpace:'nowrap'}}>{ddSel.size}/{DD_MAX} selected</span>
+                <button onClick={()=>runMultiDive(ddSel)} disabled={ddSel.size<2} title={ddSel.size<2?'Pick at least two accounts to compare':`Compare these ${ddSel.size} accounts' activity`}
+                  style={{marginLeft:'auto',padding:'3px 9px',borderRadius:5,fontSize:10.5,fontWeight:700,cursor:ddSel.size<2?'not-allowed':'pointer',background:ddSel.size<2?'#121b35':'rgba(169,139,255,0.22)',border:`1px solid ${ddSel.size<2?'#1f2b4e':'rgba(169,139,255,0.6)'}`,color:ddSel.size<2?'#5d6e96':'#a98bff',display:'flex',alignItems:'center',gap:4}}>
+                  <Activity size={10}/> Deep dive
+                </button>
+                <button onClick={()=>setDdSel(new Set())} title="Clear selection" style={{background:'none',border:'none',color:'#5d6e96',cursor:'pointer',fontSize:15,lineHeight:1,padding:'0 2px'}}>&#215;</button>
+              </div>
+            )}
             {/* Sort + heuristic-type filter */}
             {(() => {
               const sel = {background:'#121b35',border:'1px solid #1f2b4e',color:'#9fb0d4',fontSize:10,fontWeight:600,borderRadius:6,padding:'3px 4px',cursor:'pointer',outline:'none',fontFamily:"IBM Plex Sans, system-ui, sans-serif"};
@@ -4300,11 +4358,17 @@ export function WarEraOracle() {
                     return (
                       <div key={r.player.id} onClick={()=>{setNavHistory([]);setActiveSuspectId(r.player.id);}}
                         style={{display:'flex',alignItems:'stretch',cursor:'pointer',
-                          background:isActive?'rgba(79,195,232,0.08)':'transparent',
+                          background:ddSel.has(r.player.id)?'rgba(169,139,255,0.10)':isActive?'rgba(79,195,232,0.08)':'transparent',
                           borderLeft:isActive?'3px solid #4fc3e8':`3px solid ${T_COLOR[tier]}`,
                           borderBottom:'1px solid #1f2b4e',
                         }}>
-                        <div style={{flex:1,padding:'8px 8px 8px 9px',minWidth:0}}>
+                        <div onClick={(e)=>{e.stopPropagation();toggleDdSel(r.player.id);}} title={ddSel.has(r.player.id)?'Remove from Deep Dive':`Add to Deep Dive (max ${DD_MAX})`}
+                          style={{display:'flex',alignItems:'center',paddingLeft:7,flexShrink:0}}>
+                          <div style={{width:12,height:12,borderRadius:3,border:`1px solid ${ddSel.has(r.player.id)?'#a98bff':'#2e3f6a'}`,background:ddSel.has(r.player.id)?'#a98bff':'transparent',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                            {ddSel.has(r.player.id)&&<span style={{color:'#070b18',fontSize:9,fontWeight:900,lineHeight:1}}>✓</span>}
+                          </div>
+                        </div>
+                        <div style={{flex:1,padding:'8px 8px 8px 7px',minWidth:0}}>
                           <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:2}}>
                             <div style={{width:5,height:5,borderRadius:'50%',background:T_COLOR[tier],flexShrink:0}}/>
                             {(r.player.isBanned||globalBans.current[r.player.id])
@@ -4637,6 +4701,7 @@ export function WarEraOracle() {
       </div>
 
       {/* ── DEEP DIVE (timing correlation) ── */}
+      {multiDive&&<MultiDeepDive data={multiDive} onClose={()=>setMultiDive(null)}/>}
       {deepDive&&(()=>{
         const dd=deepDive, aName=dd.account?.name||'Account', bName=dd.counterpart?.name||'Counterpart', close=()=>setDeepDive(null);
         return (
