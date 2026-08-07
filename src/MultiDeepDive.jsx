@@ -38,6 +38,8 @@ const typeColor = (t) => TYPE_COLOR[t] || '#5d6e96';
 // Quadrant thresholds — the same ones the pair verdict uses, so the scatter and the text
 // can never disagree.
 const HANDOFF_HI = 0.5, OVERLAP_LO = 0.05;
+// A fitted axis can span a fraction of a percent, where "0%,0%,0%,1%,1%" is useless.
+const v1Dec = (range) => range < 0.05;
 
 const SHADOW_MS = 10 * 60000;   // "acting together" window
 const HANDOFF_MS = 15 * 60000;  // "one put the other down and picked this up" window
@@ -200,6 +202,7 @@ export default function MultiDeepDive({ data, onClose }) {
       })}
     </div>
 
+    {data.note && <div style={{ margin: '10px 16px 0', background: 'rgba(255,171,61,0.10)', border: '1px solid rgba(255,171,61,0.42)', borderRadius: 7, padding: '7px 11px', fontSize: 10.5, color: C.high, lineHeight: 1.5, flexShrink: 0 }}>{data.note}</div>}
     <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
       {mode === 'matrix' && <Matrix series={series} cells={cells} metric={metric} setMetric={setMetric} onPick={setPair} pair={pair} />}
       {mode === 'scatter' && <PairScatter series={series} cells={cells} onPick={setPair} pair={pair} />}
@@ -405,7 +408,7 @@ function DayHeat({ series, span }) {
 // position then splits it — down-right is one pair of hands alternating, up-right is two
 // people playing alongside each other. Metrics read as a table cannot show that clustering.
 function PairScatter({ series, cells, onPick, pair }) {
-  const W = 560, H = 380, PAD = 46;
+  const W = 620, H = 400, PAD = 52, TOP = 16, RIGHT = 16;
   const pts = [];
   for (let i = 0; i < series.length; i++) for (let j = i + 1; j < series.length; j++) {
     const c = cells[`${i}_${j}`];
@@ -413,37 +416,57 @@ function PairScatter({ series, cells, onPick, pair }) {
     pts.push({ i, j, x: c.handoff || 0, y: c.overlap || 0, crossings: c.crossings || 0 });
   }
   if (!pts.length) return <Empty />;
-  const px = (v) => PAD + v * (W - PAD - 14);
-  const py = (v) => H - PAD - v * (H - PAD - 18);
-  const zone = (p) => p.crossings < 20 ? 'thin' : (p.x >= HANDOFF_HI && p.y <= OVERLAP_LO) ? 'solo' : (p.x >= HANDOFF_HI) ? 'duo' : 'none';
-  const ZC = { solo: C.crit, duo: C.high, none: C.tx3, thin: C.line2 };
+
+  // Real pairs bunch up — handoff is rarely below ~50% for accounts in the same cluster, and
+  // same-minute overlap is almost always in the low tens. On fixed 0–100% axes that puts
+  // every dot in one corner with 70% of the chart empty, which is exactly what made this
+  // unreadable. So fit the axes to the data (padded, and always keeping the threshold line
+  // and zero in view) and let the spread fill the plot.
+  const fit = (vals, floor) => {
+    let lo = Math.min(...vals, floor), hi = Math.max(...vals, floor);
+    const sp = hi - lo || 0.1;
+    return [Math.max(0, lo - sp * 0.15), Math.min(1, hi + sp * 0.15)];
+  };
+  const [x0, x1] = fit(pts.map(p => p.x), HANDOFF_HI);
+  const [y0, y1] = fit(pts.map(p => p.y), 0);
+  const px = (v) => PAD + ((v - x0) / (x1 - x0 || 1)) * (W - PAD - RIGHT);
+  const py = (v) => H - PAD - ((v - y0) / (y1 - y0 || 1)) * (H - PAD - TOP);
+  const ticks = (a, b) => Array.from({ length: 5 }, (_, k) => a + ((b - a) * k) / 4);
+  // Colour is now a continuous ramp rather than a hard quadrant flip. Real overlap values
+  // sit on a gradient, so a pair at 6% was being painted the same as one at 90% purely
+  // because it cleared a 5% line — which read as "two people" when it plainly is not.
+  const ramp = (y) => {
+    const t = Math.max(0, Math.min(1, y / 0.35));   // 0 = pure alternation, 0.35+ = clearly simultaneous
+    const r = Math.round(255), g = Math.round(93 + t * 78), b = Math.round(108 - t * 47);
+    return `rgb(${r},${g},${b})`;
+  };
   return (
     <div>
       <div style={{ fontSize: 10.5, color: C.tx2, marginBottom: 10, lineHeight: 1.5 }}>
-        One dot per pair. Moving <b>right</b> means the two accounts hand off to each other quickly — that is relatedness. Height then tells you what kind:
-        <b style={{ color: C.crit }}> bottom-right</b> is one operator alternating (they never act in the same minute), <b style={{ color: C.high }}> top-right</b> is two people playing together. Faded dots have too few switches to judge.
+        One dot per pair. Further <b>right</b> = they hand off to each other faster (relatedness). <b>Lower</b> = they almost never act in the same minute, which is one operator alternating; <b>higher</b> = they act together, which is two people. Colour follows height, so <b style={{ color: C.crit }}>red</b> is single-operator-shaped and <b style={{ color: C.high }}>amber</b> is company. Faded dots have under 20 switches — too thin to judge. Axes are fitted to your data, so read the numbers, not the position.
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
-        <rect x={px(HANDOFF_HI)} y={py(OVERLAP_LO)} width={W - 14 - px(HANDOFF_HI)} height={H - PAD - py(OVERLAP_LO)} fill="rgba(255,93,108,0.09)" />
-        <rect x={px(HANDOFF_HI)} y={18} width={W - 14 - px(HANDOFF_HI)} height={py(OVERLAP_LO) - 18} fill="rgba(255,171,61,0.07)" />
-        <text x={px(HANDOFF_HI) + 8} y={H - PAD - 8} fill={C.crit} fontSize="9.5" fontWeight="700" fontFamily={MONO}>ONE OPERATOR</text>
-        <text x={px(HANDOFF_HI) + 8} y={32} fill={C.high} fontSize="9.5" fontWeight="700" fontFamily={MONO}>TWO PEOPLE TOGETHER</text>
-        <line x1={PAD} y1={H - PAD} x2={W - 14} y2={H - PAD} stroke={C.line2} />
-        <line x1={PAD} y1={18} x2={PAD} y2={H - PAD} stroke={C.line2} />
-        {[0, 0.25, 0.5, 0.75, 1].map(v => (
-          <g key={v}>
-            <text x={px(v)} y={H - PAD + 15} fill={C.tx3} fontSize="8.5" textAnchor="middle" fontFamily={MONO}>{(v * 100).toFixed(0)}%</text>
-            <text x={PAD - 6} y={py(v) + 3} fill={C.tx3} fontSize="8.5" textAnchor="end" fontFamily={MONO}>{(v * 100).toFixed(0)}%</text>
-          </g>
-        ))}
+        {y0 <= OVERLAP_LO && OVERLAP_LO <= y1 && <>
+          <line x1={PAD} y1={py(OVERLAP_LO)} x2={W - RIGHT} y2={py(OVERLAP_LO)} stroke={C.crit} strokeDasharray="3 3" strokeOpacity="0.55" />
+          <text x={W - RIGHT - 4} y={py(OVERLAP_LO) - 5} fill={C.crit} fontSize="8.5" textAnchor="end" fontFamily={MONO} opacity="0.85">below = never simultaneous</text>
+        </>}
+        {x0 <= HANDOFF_HI && HANDOFF_HI <= x1 && <>
+          <line x1={px(HANDOFF_HI)} y1={TOP} x2={px(HANDOFF_HI)} y2={H - PAD} stroke={C.line2} strokeDasharray="3 3" />
+          <text x={px(HANDOFF_HI) + 4} y={TOP + 10} fill={C.tx3} fontSize="8.5" fontFamily={MONO}>related →</text>
+        </>}
+        <line x1={PAD} y1={H - PAD} x2={W - RIGHT} y2={H - PAD} stroke={C.line2} />
+        <line x1={PAD} y1={TOP} x2={PAD} y2={H - PAD} stroke={C.line2} />
+        {ticks(x0, x1).map((v, k) => <text key={k} x={px(v)} y={H - PAD + 15} fill={C.tx3} fontSize="8.5" textAnchor="middle" fontFamily={MONO}>{(v * 100).toFixed(0)}%</text>)}
+        {ticks(y0, y1).map((v, k) => <text key={k} x={PAD - 7} y={py(v) + 3} fill={C.tx3} fontSize="8.5" textAnchor="end" fontFamily={MONO}>{(v * 100).toFixed(v1Dec(y1 - y0) ? 1 : 0)}%</text>)}
         <text x={(W + PAD) / 2} y={H - 8} fill={C.tx2} fontSize="10" textAnchor="middle">Handoff — how fast they switch between each other</text>
-        <text x={13} y={(H) / 2} fill={C.tx2} fontSize="10" textAnchor="middle" transform={`rotate(-90 13 ${H / 2})`}>Same-minute overlap</text>
+        <text x={13} y={H / 2} fill={C.tx2} fontSize="10" textAnchor="middle" transform={`rotate(-90 13 ${H / 2})`}>Same-minute overlap</text>
         {pts.map((p, k) => {
-          const z = zone(p), sel = pair && ((pair[0] === p.i && pair[1] === p.j) || (pair[0] === p.j && pair[1] === p.i));
+          const thin = p.crossings < 20;
+          const sel = pair && ((pair[0] === p.i && pair[1] === p.j) || (pair[0] === p.j && pair[1] === p.i));
           return (
             <g key={k} onClick={() => onPick([p.i, p.j])} style={{ cursor: 'pointer' }}>
-              <title>{`${series[p.i].name} ↔ ${series[p.j].name}\nhandoff ${(p.x * 100).toFixed(0)}% · same-minute ${(p.y * 100).toFixed(0)}% · ${p.crossings} switches`}</title>
-              <circle cx={px(p.x)} cy={py(p.y)} r={sel ? 8 : 5.5} fill={ZC[z]} fillOpacity={z === 'thin' ? 0.35 : 0.85} stroke={sel ? C.tx : 'none'} strokeWidth="1.6" />
+              <title>{`${series[p.i].name} ↔ ${series[p.j].name}\nhandoff ${(p.x * 100).toFixed(0)}% · same-minute ${(p.y * 100).toFixed(1)}% · ${p.crossings} switches`}</title>
+              <circle cx={px(p.x)} cy={py(p.y)} r={sel ? 8.5 : 6} fill={thin ? C.line2 : ramp(p.y)} fillOpacity={thin ? 0.5 : 0.9} stroke={sel ? C.tx : 'rgba(7,11,24,0.8)'} strokeWidth={sel ? 1.8 : 1} />
             </g>
           );
         })}

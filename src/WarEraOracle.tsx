@@ -924,6 +924,12 @@ const lookbackDaysForSignals = 60;
 // pulled. Ten keeps the pair matrix readable (45 pairs) and the colour palette distinct.
 const DD_MAX = 10;
 const DD_LOOKBACK_DAYS = 60;
+// gatherTx defaults to 1000 items per type, which a heavy producer blows through in days
+// (one wage tx per item crafted). Truncation is silent and biases everything downstream —
+// the activity mix under-reports the capped type, and the timing metrics only see the most
+// recent slice. Raised well past any realistic 60-day count, and the panel is told when a
+// type still hits the ceiling so a truncated read is never mistaken for a real one.
+const DD_MAX_TX_PER_TYPE = 6000;
 // Donation burst: a large amount pushed through in a short time. The window is ROLLING,
 // which is the whole point — 15x200 coins 90 minutes apart all land in one 3-day window
 // and trigger, while 15x200 spread one-a-day never gets more than ~800 into any window and
@@ -2519,24 +2525,30 @@ export function WarEraOracle() {
       const cutoff = Date.now() - DD_LOOKBACK_DAYS * 86400000;
       const types = ['itemMarket', 'donation', 'articleTip', 'wage', 'openCase', 'craftItem', 'dismantleItem'];
       const accounts = [];
+      const truncated = [];
       for (let i = 0; i < list.length; i++) {
         const id = list[i];
+        const nm = globalCacheRef.current.names[id] || ('user_' + String(id).slice(-6));
         setMultiDive(m => ({ ...m, progress: `${i + 1} / ${list.length}` }));
         const times = [];
         for (const ty of types) {
           try {
-            const txs = await gatherTx(ty, id, cutoff);
+            const txs = await gatherTx(ty, id, cutoff, DD_MAX_TX_PER_TYPE);
+            if (txs.length >= DD_MAX_TX_PER_TYPE) truncated.push(`${nm}/${ty}`);
             for (const tx of txs) { const ms = new Date(tx.createdAt || tx.timestamp || 0).getTime(); if (ms) times.push({ t: ms, type: ty }); }
           } catch { /* skip this type for this account */ }
         }
         times.sort((a, b) => a.t - b.t);
         accounts.push({
-          id, name: globalCacheRef.current.names[id] || ('user_' + String(id).slice(-6)),
+          id, name: nm,
           banned: !!globalBans.current[id], inactive: !!globalInactive.current[id], times,
         });
       }
       const empty = accounts.filter(a => !a.times.length).map(a => a.name);
-      setMultiDive({ loading: false, accounts, note: empty.length ? `No transactions found for: ${empty.join(', ')}.` : null });
+      const notes = [];
+      if (empty.length) notes.push(`No transactions found for: ${empty.join(', ')}.`);
+      if (truncated.length) notes.push(`Hit the ${DD_MAX_TX_PER_TYPE.toLocaleString('en-US')}-transaction ceiling on ${truncated.join(', ')} — those series are cut to the most recent slice, so their share and timing are understated.`);
+      setMultiDive({ loading: false, accounts, note: notes.join(' ') || null });
     } catch (e) { setMultiDive({ loading: false, error: e.message, accounts: [] }); }
     finally { if (!isScanning) isScanningRef.current = false; }
   };
