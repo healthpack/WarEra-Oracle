@@ -27,6 +27,17 @@ const C = {
 const MONO = "IBM Plex Mono, monospace";
 // Distinct per-account colours; 10 max so the palette never wraps.
 const SERIES = ['#4fc3e8', '#ff5d6c', '#3fd0a3', '#ffab3d', '#a98bff', '#ffd84d', '#ff7ab8', '#7ee787', '#f78166', '#79c0ff'];
+// Stable colour per transaction type, so an account's activity mix is recognisable by
+// silhouette across every view rather than needing the legend re-read each time.
+const TYPE_COLOR = {
+  itemMarket: '#4fc3e8', wage: '#3fd0a3', donation: '#ff5d6c', articleTip: '#a98bff',
+  openCase: '#ffab3d', craftItem: '#ffd84d', dismantleItem: '#ff7ab8', trading: '#79c0ff',
+};
+const typeColor = (t) => TYPE_COLOR[t] || '#5d6e96';
+
+// Quadrant thresholds — the same ones the pair verdict uses, so the scatter and the text
+// can never disagree.
+const HANDOFF_HI = 0.5, OVERLAP_LO = 0.05;
 
 const SHADOW_MS = 10 * 60000;   // "acting together" window
 const HANDOFF_MS = 15 * 60000;  // "one put the other down and picked this up" window
@@ -109,6 +120,7 @@ export default function MultiDeepDive({ data, onClose }) {
   const [metric, setMetric] = useState('handoff');
   const [types, setTypes] = useState(null);        // null = all
   const [pair, setPair] = useState(null);
+  const [share, setShare] = useState(true);        // activity mix: 100%-stacked vs absolute
   const accounts = data?.accounts || [];
 
   const allTypes = useMemo(() => {
@@ -118,10 +130,10 @@ export default function MultiDeepDive({ data, onClose }) {
   }, [accounts]);
 
   // Timestamps per account after the type filter, sorted — every metric consumes these.
-  const series = useMemo(() => accounts.map(a => ({
-    ...a,
-    ts: a.times.filter(x => !types || types.has(x.type)).map(x => x.t).sort((p, q) => p - q),
-  })), [accounts, types]);
+  const series = useMemo(() => accounts.map(a => {
+    const evts = a.times.filter(x => !types || types.has(x.type));
+    return { ...a, evts, ts: evts.map(x => x.t).sort((p, q) => p - q) };
+  }), [accounts, types]);
 
   const cells = useMemo(() => {
     const n = series.length, out = {};
@@ -177,7 +189,7 @@ export default function MultiDeepDive({ data, onClose }) {
   return shell(<>
     {header}
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderBottom: `1px solid ${C.line}`, flexWrap: 'wrap', flexShrink: 0 }}>
-      {tab('matrix', 'Pair matrix')}{tab('raster', 'Timeline')}{tab('hours', 'Hour profile')}{tab('days', 'Day calendar')}
+      {tab('matrix', 'Pair matrix')}{tab('scatter', 'Pair scatter')}{tab('mix', 'Activity mix')}{tab('raster', 'Timeline')}{tab('hours', 'Hour profile')}{tab('days', 'Day calendar')}
       <span style={{ width: 1, height: 18, background: C.line, margin: '0 4px' }} />
       <span style={{ fontSize: 9.5, color: C.tx3 }}>TYPES</span>
       <button onClick={() => setTypes(null)} style={{ padding: '3px 8px', borderRadius: 99, fontSize: 9.5, fontWeight: 600, cursor: 'pointer', background: !types ? 'rgba(63,208,163,0.14)' : C.elev, border: `1px solid ${!types ? 'rgba(63,208,163,0.45)' : C.line}`, color: !types ? C.ok : C.tx3 }}>All</button>
@@ -190,6 +202,8 @@ export default function MultiDeepDive({ data, onClose }) {
 
     <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
       {mode === 'matrix' && <Matrix series={series} cells={cells} metric={metric} setMetric={setMetric} onPick={setPair} pair={pair} />}
+      {mode === 'scatter' && <PairScatter series={series} cells={cells} onPick={setPair} pair={pair} />}
+      {mode === 'mix' && <Mix series={series} share={share} setShare={setShare} />}
       {mode === 'raster' && <Raster series={series} span={span} />}
       {mode === 'hours' && <HourHeat series={series} />}
       {mode === 'days' && <DayHeat series={series} span={span} />}
@@ -381,6 +395,138 @@ function DayHeat({ series, span }) {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── pair scatter ──────────────────────────────────────────────────────────────────────
+// Handoff (x) against same-minute overlap (y), one point per pair. This is the whole
+// argument in one picture: relatedness pushes a pair to the RIGHT, and the vertical
+// position then splits it — down-right is one pair of hands alternating, up-right is two
+// people playing alongside each other. Metrics read as a table cannot show that clustering.
+function PairScatter({ series, cells, onPick, pair }) {
+  const W = 560, H = 380, PAD = 46;
+  const pts = [];
+  for (let i = 0; i < series.length; i++) for (let j = i + 1; j < series.length; j++) {
+    const c = cells[`${i}_${j}`];
+    if (!c) continue;
+    pts.push({ i, j, x: c.handoff || 0, y: c.overlap || 0, crossings: c.crossings || 0 });
+  }
+  if (!pts.length) return <Empty />;
+  const px = (v) => PAD + v * (W - PAD - 14);
+  const py = (v) => H - PAD - v * (H - PAD - 18);
+  const zone = (p) => p.crossings < 20 ? 'thin' : (p.x >= HANDOFF_HI && p.y <= OVERLAP_LO) ? 'solo' : (p.x >= HANDOFF_HI) ? 'duo' : 'none';
+  const ZC = { solo: C.crit, duo: C.high, none: C.tx3, thin: C.line2 };
+  return (
+    <div>
+      <div style={{ fontSize: 10.5, color: C.tx2, marginBottom: 10, lineHeight: 1.5 }}>
+        One dot per pair. Moving <b>right</b> means the two accounts hand off to each other quickly — that is relatedness. Height then tells you what kind:
+        <b style={{ color: C.crit }}> bottom-right</b> is one operator alternating (they never act in the same minute), <b style={{ color: C.high }}> top-right</b> is two people playing together. Faded dots have too few switches to judge.
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
+        <rect x={px(HANDOFF_HI)} y={py(OVERLAP_LO)} width={W - 14 - px(HANDOFF_HI)} height={H - PAD - py(OVERLAP_LO)} fill="rgba(255,93,108,0.09)" />
+        <rect x={px(HANDOFF_HI)} y={18} width={W - 14 - px(HANDOFF_HI)} height={py(OVERLAP_LO) - 18} fill="rgba(255,171,61,0.07)" />
+        <text x={px(HANDOFF_HI) + 8} y={H - PAD - 8} fill={C.crit} fontSize="9.5" fontWeight="700" fontFamily={MONO}>ONE OPERATOR</text>
+        <text x={px(HANDOFF_HI) + 8} y={32} fill={C.high} fontSize="9.5" fontWeight="700" fontFamily={MONO}>TWO PEOPLE TOGETHER</text>
+        <line x1={PAD} y1={H - PAD} x2={W - 14} y2={H - PAD} stroke={C.line2} />
+        <line x1={PAD} y1={18} x2={PAD} y2={H - PAD} stroke={C.line2} />
+        {[0, 0.25, 0.5, 0.75, 1].map(v => (
+          <g key={v}>
+            <text x={px(v)} y={H - PAD + 15} fill={C.tx3} fontSize="8.5" textAnchor="middle" fontFamily={MONO}>{(v * 100).toFixed(0)}%</text>
+            <text x={PAD - 6} y={py(v) + 3} fill={C.tx3} fontSize="8.5" textAnchor="end" fontFamily={MONO}>{(v * 100).toFixed(0)}%</text>
+          </g>
+        ))}
+        <text x={(W + PAD) / 2} y={H - 8} fill={C.tx2} fontSize="10" textAnchor="middle">Handoff — how fast they switch between each other</text>
+        <text x={13} y={(H) / 2} fill={C.tx2} fontSize="10" textAnchor="middle" transform={`rotate(-90 13 ${H / 2})`}>Same-minute overlap</text>
+        {pts.map((p, k) => {
+          const z = zone(p), sel = pair && ((pair[0] === p.i && pair[1] === p.j) || (pair[0] === p.j && pair[1] === p.i));
+          return (
+            <g key={k} onClick={() => onPick([p.i, p.j])} style={{ cursor: 'pointer' }}>
+              <title>{`${series[p.i].name} ↔ ${series[p.j].name}\nhandoff ${(p.x * 100).toFixed(0)}% · same-minute ${(p.y * 100).toFixed(0)}% · ${p.crossings} switches`}</title>
+              <circle cx={px(p.x)} cy={py(p.y)} r={sel ? 8 : 5.5} fill={ZC[z]} fillOpacity={z === 'thin' ? 0.35 : 0.85} stroke={sel ? C.tx : 'none'} strokeWidth="1.6" />
+            </g>
+          );
+        })}
+      </svg>
+      {pair && cells[`${pair[0]}_${pair[1]}`] && (
+        <div style={{ marginTop: 11, background: C.elev, border: `1px solid ${C.line2}`, borderRadius: 8, padding: '10px 13px' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.tx, marginBottom: 5 }}>{series[pair[0]].name} ↔ {series[pair[1]].name}</div>
+          <div style={{ fontSize: 10.5, color: C.tx3, lineHeight: 1.55 }}>{verdict(cells[`${pair[0]}_${pair[1]}`])}</div>
+          <DivergingHours a={series[pair[0]]} b={series[pair[1]]} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── diverging hour bars ───────────────────────────────────────────────────────────────
+// Back-to-back hour profiles for one pair. Each side is normalised to its own peak, so the
+// question it answers is "do these two occupy the SAME hours" rather than "who is busier" —
+// a mirrored shape means a shared daily routine, a complementary one means they take turns.
+function DivergingHours({ a, b }) {
+  const ha = hourHist(a.ts), hb = hourHist(b.ts);
+  const ma = Math.max(1, ...ha), mb = Math.max(1, ...hb);
+  return (
+    <div style={{ marginTop: 11 }}>
+      <div style={{ fontSize: 9.5, color: C.tx3, marginBottom: 5, display: 'flex', justifyContent: 'space-between' }}>
+        <span style={{ color: SERIES[0] }}>◀ {a.name}</span><span>hour (UTC)</span><span style={{ color: SERIES[1] }}>{b.name} ▶</span>
+      </div>
+      {ha.map((_, h) => (
+        <div key={h} style={{ display: 'flex', alignItems: 'center', height: 9, gap: 3 }}>
+          <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end' }}>
+            <div title={`${a.name} — ${h}:00 · ${ha[h]}`} style={{ width: `${(ha[h] / ma) * 100}%`, height: 7, background: SERIES[0], opacity: ha[h] ? 0.85 : 0, borderRadius: '2px 0 0 2px' }} />
+          </div>
+          <span style={{ width: 16, textAlign: 'center', fontSize: 7.5, color: C.tx3, fontFamily: MONO, flexShrink: 0 }}>{String(h).padStart(2, '0')}</span>
+          <div style={{ flex: 1 }}>
+            <div title={`${b.name} — ${h}:00 · ${hb[h]}`} style={{ width: `${(hb[h] / mb) * 100}%`, height: 7, background: SERIES[1], opacity: hb[h] ? 0.85 : 0, borderRadius: '0 2px 2px 0' }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── activity mix (stacked bars) ───────────────────────────────────────────────────────
+// What each account actually DOES, as a share of its own activity. Accounts built from one
+// template have near-identical mixes — a rack of pure-wage bars is a work farm, and that
+// pattern is invisible in any of the timing views.
+function Mix({ series, share, setShare }) {
+  const rows = series.map(s => {
+    const by = new Map();
+    s.evts.forEach(x => by.set(x.type, (by.get(x.type) || 0) + 1));
+    return { s, by, total: s.evts.length };
+  });
+  const maxTotal = Math.max(1, ...rows.map(r => r.total));
+  const allTypes = [...new Set(rows.flatMap(r => [...r.by.keys()]))].sort();
+  if (!rows.some(r => r.total)) return <Empty />;
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 10.5, color: C.tx2, flex: 1, minWidth: 260, lineHeight: 1.5 }}>
+          What each account spends its actions on. Bars with the same silhouette were built to the same template — a rack of near-identical mixes is a farm, which none of the timing views can show you.
+        </span>
+        <button onClick={() => setShare(!share)} style={{ padding: '3px 9px', borderRadius: 6, fontSize: 10, fontWeight: 600, cursor: 'pointer', background: C.elev, border: `1px solid ${C.line}`, color: C.link }}>{share ? 'Show absolute' : 'Show share'}</button>
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 11 }}>
+        {allTypes.map(t => <span key={t} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9.5, color: C.tx2, fontFamily: MONO }}>
+          <span style={{ width: 9, height: 9, borderRadius: 2, background: typeColor(t) }} />{t}</span>)}
+      </div>
+      {rows.map(({ s, by, total }, i) => (
+        <div key={i} style={{ marginBottom: 9 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontFamily: MONO, marginBottom: 3 }}>
+            <span style={{ color: SERIES[i % SERIES.length] }}>{s.banned && <b style={{ color: C.crit }}>- </b>}{s.name}</span>
+            <span style={{ color: C.tx3 }}>{total.toLocaleString('en-US')} actions</span>
+          </div>
+          <div style={{ display: 'flex', height: 17, borderRadius: 4, overflow: 'hidden', background: C.elev, border: `1px solid ${C.line}`, width: share ? '100%' : `${Math.max(3, (total / maxTotal) * 100)}%` }}>
+            {allTypes.map(t => {
+              const v = by.get(t) || 0;
+              if (!v) return null;
+              return <div key={t} title={`${s.name} — ${t}: ${v} (${((v / total) * 100).toFixed(1)}%)`}
+                style={{ width: `${(v / total) * 100}%`, background: typeColor(t) }} />;
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
