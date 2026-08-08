@@ -117,7 +117,31 @@ const METRICS = {
   days:    { label: 'Day overlap', hint: 'Jaccard overlap of active calendar days. Catches accounts that go quiet together, which a shared timezone does not explain.', fmt: v => (v * 100).toFixed(0) + '%', good: v => v },
 };
 
-export default function MultiDeepDive({ data, onClose }) {
+// A render error anywhere in these charts used to unmount the whole app, leaving a blank
+// page with the scan results gone. Contain it: the panel reports the failure and closes,
+// and everything behind it survives.
+class Boundary extends React.Component {
+  constructor(p) { super(p); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <div onClick={this.props.onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(3,6,15,0.86)', zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 22 }}>
+        <div onClick={e => e.stopPropagation()} style={{ background: C.panel, border: `1px solid ${C.crit}`, borderRadius: 12, padding: 22, maxWidth: 560 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.crit, marginBottom: 8 }}>Deep Dive failed to render</div>
+          <div style={{ fontSize: 11.5, color: C.tx2, fontFamily: MONO, lineHeight: 1.5, wordBreak: 'break-word' }}>{String(this.state.err?.message || this.state.err)}</div>
+          <button onClick={this.props.onClose} style={{ marginTop: 14, ...SEL, cursor: 'pointer', color: C.link }}>Close</button>
+        </div>
+      </div>
+    );
+  }
+}
+
+export default function MultiDeepDiveSafe(props) {
+  return <Boundary onClose={props.onClose}><MultiDeepDive {...props} /></Boundary>;
+}
+
+function MultiDeepDive({ data, onClose }) {
   const [mode, setMode] = useState('matrix');
   const [metric, setMetric] = useState('handoff');
   const [types, setTypes] = useState(null);        // null = all
@@ -196,7 +220,7 @@ export default function MultiDeepDive({ data, onClose }) {
         {accounts.map((a, i) => {
           const n = a.times.length;
           return <span key={a.id} title={n ? `${a.name}: ${n.toLocaleString('en-US')} actions${a.times.length ? ` (${new Date(a.times[0].t).toISOString().slice(0, 10)} → ${new Date(a.times[a.times.length - 1].t).toISOString().slice(0, 10)})` : ''}` : `${a.name}: no activity in this window`}
-            style={{ fontSize: 9, fontFamily: MONO, padding: '1px 5px', borderRadius: 3, border: `1px solid ${n ? C.line2 : 'rgba(255,93,108,0.45)'}`, color: n ? SERIES[(s?.ci ?? i) % SERIES.length] : C.crit, opacity: n ? 1 : 0.75, whiteSpace: 'nowrap' }}>
+            style={{ fontSize: 9, fontFamily: MONO, padding: '1px 5px', borderRadius: 3, border: `1px solid ${n ? C.line2 : 'rgba(255,93,108,0.45)'}`, color: n ? SERIES[i % SERIES.length] : C.crit, opacity: n ? 1 : 0.75, whiteSpace: 'nowrap' }}>
             {a.banned && '-'}{a.name} {n ? n.toLocaleString('en-US') : '0'}</span>;
         })}
       </span>
