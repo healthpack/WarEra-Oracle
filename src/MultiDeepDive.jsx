@@ -123,6 +123,8 @@ export default function MultiDeepDive({ data, onClose }) {
   const [types, setTypes] = useState(null);        // null = all
   const [pair, setPair] = useState(null);
   const [share, setShare] = useState(true);        // activity mix: 100%-stacked vs absolute
+  const [xKey, setXKey] = useState('handoff');     // pair-scatter axes
+  const [yKey, setYKey] = useState('overlap');
   const accounts = data?.accounts || [];
 
   const allTypes = useMemo(() => {
@@ -201,7 +203,7 @@ export default function MultiDeepDive({ data, onClose }) {
   return shell(<>
     {header}
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderBottom: `1px solid ${C.line}`, flexWrap: 'wrap', flexShrink: 0 }}>
-      {tab('matrix', 'Pair matrix')}{tab('scatter', 'Pair scatter')}{tab('mix', 'Activity mix')}{tab('raster', 'Timeline')}{tab('hours', 'Hour profile')}{tab('days', 'Day calendar')}
+      {tab('matrix', 'Pair matrix')}{tab('scatter', 'Pair scatter')}{tab('finger', 'Fingerprint')}{tab('mix', 'Activity mix')}{tab('raster', 'Timeline')}{tab('hours', 'Hour profile')}{tab('days', 'Day calendar')}
       <span style={{ width: 1, height: 18, background: C.line, margin: '0 4px' }} />
       <span style={{ fontSize: 9.5, color: C.tx3 }}>TYPES</span>
       <button onClick={() => setTypes(null)} style={{ padding: '3px 8px', borderRadius: 99, fontSize: 9.5, fontWeight: 600, cursor: 'pointer', background: !types ? 'rgba(63,208,163,0.14)' : C.elev, border: `1px solid ${!types ? 'rgba(63,208,163,0.45)' : C.line}`, color: !types ? C.ok : C.tx3 }}>All</button>
@@ -215,7 +217,8 @@ export default function MultiDeepDive({ data, onClose }) {
     {data.note && <div style={{ margin: '10px 16px 0', background: 'rgba(255,171,61,0.10)', border: '1px solid rgba(255,171,61,0.42)', borderRadius: 7, padding: '7px 11px', fontSize: 10.5, color: C.high, lineHeight: 1.5, flexShrink: 0 }}>{data.note}</div>}
     <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
       {mode === 'matrix' && <Matrix series={series} cells={cells} metric={metric} setMetric={setMetric} onPick={setPair} pair={pair} />}
-      {mode === 'scatter' && <PairScatter series={series} cells={cells} onPick={setPair} pair={pair} />}
+      {mode === 'scatter' && <PairScatter series={series} cells={cells} onPick={setPair} pair={pair} xKey={xKey} yKey={yKey} setXKey={setXKey} setYKey={setYKey} />}
+      {mode === 'finger' && <Fingerprint series={series} span={span} />}
       {mode === 'mix' && <Mix series={series} share={share} setShare={setShare} />}
       {mode === 'raster' && <Raster series={series} span={span} />}
       {mode === 'hours' && <HourHeat series={series} />}
@@ -417,13 +420,14 @@ function DayHeat({ series, span }) {
 // argument in one picture: relatedness pushes a pair to the RIGHT, and the vertical
 // position then splits it — down-right is one pair of hands alternating, up-right is two
 // people playing alongside each other. Metrics read as a table cannot show that clustering.
-function PairScatter({ series, cells, onPick, pair }) {
+function PairScatter({ series, cells, onPick, pair, xKey, yKey, setXKey, setYKey }) {
   const W = 620, H = 400, PAD = 52, TOP = 16, RIGHT = 16;
+  const MX = METRICS[xKey], MY = METRICS[yKey];
   const pts = [];
   for (let i = 0; i < series.length; i++) for (let j = i + 1; j < series.length; j++) {
     const c = cells[`${i}_${j}`];
     if (!c) continue;
-    pts.push({ i, j, x: c.handoff || 0, y: c.overlap || 0, crossings: c.crossings || 0 });
+    pts.push({ i, j, x: c[xKey] || 0, y: c[yKey] || 0, crossings: c.crossings || 0 });
   }
   if (!pts.length) return <Empty />;
 
@@ -437,8 +441,9 @@ function PairScatter({ series, cells, onPick, pair }) {
     const sp = hi - lo || 0.1;
     return [Math.max(0, lo - sp * 0.15), Math.min(1, hi + sp * 0.15)];
   };
-  const [x0, x1] = fit(pts.map(p => p.x), HANDOFF_HI);
+  const [x0, x1] = fit(pts.map(p => p.x), xKey === 'handoff' ? HANDOFF_HI : 0);
   const [y0, y1] = fit(pts.map(p => p.y), 0);
+  const isDefaultAxes = xKey === 'handoff' && yKey === 'overlap';
   const px = (v) => PAD + ((v - x0) / (x1 - x0 || 1)) * (W - PAD - RIGHT);
   const py = (v) => H - PAD - ((v - y0) / (y1 - y0 || 1)) * (H - PAD - TOP);
   const ticks = (a, b) => Array.from({ length: 5 }, (_, k) => a + ((b - a) * k) / 4);
@@ -452,15 +457,25 @@ function PairScatter({ series, cells, onPick, pair }) {
   };
   return (
     <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 9, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 9.5, color: C.tx3 }}>X</span>
+        <select value={xKey} onChange={e => setXKey(e.target.value)} style={SEL}>{Object.entries(METRICS).map(([k, m]) => <option key={k} value={k} style={{ background: C.elev }}>{m.label}</option>)}</select>
+        <span style={{ fontSize: 9.5, color: C.tx3, marginLeft: 6 }}>Y</span>
+        <select value={yKey} onChange={e => setYKey(e.target.value)} style={SEL}>{Object.entries(METRICS).map(([k, m]) => <option key={k} value={k} style={{ background: C.elev }}>{m.label}</option>)}</select>
+        {!isDefaultAxes && <button onClick={() => { setXKey('handoff'); setYKey('overlap'); }} style={{ ...SEL, color: C.link, cursor: 'pointer' }}>Reset to handoff × same-minute</button>}
+      </div>
       <div style={{ fontSize: 10.5, color: C.tx2, marginBottom: 10, lineHeight: 1.5 }}>
-        One dot per pair. Further <b>right</b> = they hand off to each other faster (relatedness). <b>Lower</b> = they almost never act in the same minute, which is one operator alternating; <b>higher</b> = they act together, which is two people. Colour follows height, so <b style={{ color: C.crit }}>red</b> is single-operator-shaped and <b style={{ color: C.high }}>amber</b> is company. Faded dots have under 20 switches — too thin to judge. Axes are fitted to your data, so read the numbers, not the position.
+        {isDefaultAxes
+          ? <>One dot per pair. Further <b>right</b> = they hand off to each other faster (relatedness). <b>Lower</b> = they almost never act in the same minute, which is one operator alternating; <b>higher</b> = they act together, which is two people. Colour follows height, so <b style={{ color: C.crit }}>red</b> is single-operator-shaped and <b style={{ color: C.high }}>amber</b> is company.</>
+          : <>One dot per pair — <b>{MX.label}</b> against <b>{MY.label}</b>. Colour still follows same-minute overlap, so red dots are alternating pairs whatever the axes show. Pairs that sit apart from the crowd on any two metrics are worth opening.</>}
+        {' '}Faded dots have under 20 switches — too thin to judge. Axes are fitted to your data, so read the numbers, not the position.
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }}>
-        {y0 <= OVERLAP_LO && OVERLAP_LO <= y1 && <>
+        {yKey === 'overlap' && y0 <= OVERLAP_LO && OVERLAP_LO <= y1 && <>
           <line x1={PAD} y1={py(OVERLAP_LO)} x2={W - RIGHT} y2={py(OVERLAP_LO)} stroke={C.crit} strokeDasharray="3 3" strokeOpacity="0.55" />
           <text x={W - RIGHT - 4} y={py(OVERLAP_LO) - 5} fill={C.crit} fontSize="8.5" textAnchor="end" fontFamily={MONO} opacity="0.85">below = never simultaneous</text>
         </>}
-        {x0 <= HANDOFF_HI && HANDOFF_HI <= x1 && <>
+        {xKey === 'handoff' && x0 <= HANDOFF_HI && HANDOFF_HI <= x1 && <>
           <line x1={px(HANDOFF_HI)} y1={TOP} x2={px(HANDOFF_HI)} y2={H - PAD} stroke={C.line2} strokeDasharray="3 3" />
           <text x={px(HANDOFF_HI) + 4} y={TOP + 10} fill={C.tx3} fontSize="8.5" fontFamily={MONO}>related →</text>
         </>}
@@ -468,15 +483,18 @@ function PairScatter({ series, cells, onPick, pair }) {
         <line x1={PAD} y1={TOP} x2={PAD} y2={H - PAD} stroke={C.line2} />
         {ticks(x0, x1).map((v, k) => <text key={k} x={px(v)} y={H - PAD + 15} fill={C.tx3} fontSize="8.5" textAnchor="middle" fontFamily={MONO}>{(v * 100).toFixed(0)}%</text>)}
         {ticks(y0, y1).map((v, k) => <text key={k} x={PAD - 7} y={py(v) + 3} fill={C.tx3} fontSize="8.5" textAnchor="end" fontFamily={MONO}>{(v * 100).toFixed(v1Dec(y1 - y0) ? 1 : 0)}%</text>)}
-        <text x={(W + PAD) / 2} y={H - 8} fill={C.tx2} fontSize="10" textAnchor="middle">Handoff — how fast they switch between each other</text>
-        <text x={13} y={H / 2} fill={C.tx2} fontSize="10" textAnchor="middle" transform={`rotate(-90 13 ${H / 2})`}>Same-minute overlap</text>
+        <text x={(W + PAD) / 2} y={H - 8} fill={C.tx2} fontSize="10" textAnchor="middle">{MX.label}</text>
+        <text x={13} y={H / 2} fill={C.tx2} fontSize="10" textAnchor="middle" transform={`rotate(-90 13 ${H / 2})`}>{MY.label}</text>
         {pts.map((p, k) => {
           const thin = p.crossings < 20;
           const sel = pair && ((pair[0] === p.i && pair[1] === p.j) || (pair[0] === p.j && pair[1] === p.i));
+          // Colour always tracks same-minute overlap, not the y axis — so an alternating
+          // pair stays red no matter which metrics you put on the axes.
+          const c = cells[`${p.i}_${p.j}`];
           return (
             <g key={k} onClick={() => onPick([p.i, p.j])} style={{ cursor: 'pointer' }}>
-              <title>{`${series[p.i].name} ↔ ${series[p.j].name}\nhandoff ${(p.x * 100).toFixed(0)}% · same-minute ${(p.y * 100).toFixed(1)}% · ${p.crossings} switches`}</title>
-              <circle cx={px(p.x)} cy={py(p.y)} r={sel ? 8.5 : 6} fill={thin ? C.line2 : ramp(p.y)} fillOpacity={thin ? 0.5 : 0.9} stroke={sel ? C.tx : 'rgba(7,11,24,0.8)'} strokeWidth={sel ? 1.8 : 1} />
+              <title>{`${series[p.i].name} ↔ ${series[p.j].name}\n${MX.label} ${MX.fmt(p.x)} · ${MY.label} ${MY.fmt(p.y)} · ${p.crossings} switches`}</title>
+              <circle cx={px(p.x)} cy={py(p.y)} r={sel ? 8.5 : 6} fill={thin ? C.line2 : ramp(c?.overlap ?? 0)} fillOpacity={thin ? 0.5 : 0.9} stroke={sel ? C.tx : 'rgba(7,11,24,0.8)'} strokeWidth={sel ? 1.8 : 1} />
             </g>
           );
         })}
@@ -486,6 +504,7 @@ function PairScatter({ series, cells, onPick, pair }) {
           <div style={{ fontSize: 12, fontWeight: 700, color: C.tx, marginBottom: 5 }}>{series[pair[0]].name} ↔ {series[pair[1]].name}</div>
           <div style={{ fontSize: 10.5, color: C.tx3, lineHeight: 1.55 }}>{verdict(cells[`${pair[0]}_${pair[1]}`])}</div>
           <DivergingHours a={series[pair[0]]} b={series[pair[1]]} />
+          <LagProfile a={series[pair[0]]} b={series[pair[1]]} />
         </div>
       )}
     </div>
@@ -563,5 +582,114 @@ function Mix({ series, share, setShare }) {
     </div>
   );
 }
+
+// ── activity fingerprint ──────────────────────────────────────────────────────────────
+// Every action as a dot: calendar date across, hour-of-day up. The densest single view of
+// "when does this account live". Sleep shows up as a horizontal empty band, a shift as a
+// solid one, and a bot as a band that never breaks. Overlaying accounts by colour makes a
+// shared routine — same waking hour, same gaps, same day the pattern started — visible in
+// one glance, which neither the 1D timeline nor the 24h histogram can do (one loses the
+// clock, the other loses the calendar).
+function Fingerprint({ series, span }) {
+  const ref = useRef(null);
+  const [only, setOnly] = useState(null);
+  useEffect(() => {
+    const cv = ref.current; if (!cv || !span) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth, h = 380, L = 34, B = 26;
+    cv.width = w * dpr; cv.height = h * dpr; cv.style.height = h + 'px';
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    const d0 = Math.floor(span.lo / DAY_MS), d1 = Math.floor(span.hi / DAY_MS), days = Math.max(1, d1 - d0 + 1);
+    // hour gridlines every 6h
+    g.strokeStyle = '#1f2b4e'; g.lineWidth = 1;
+    for (let hh = 0; hh <= 24; hh += 6) {
+      const y = B + (1 - hh / 24) * (h - B - 12);
+      g.beginPath(); g.moveTo(L, y); g.lineTo(w, y); g.stroke();
+      g.fillStyle = '#5d6e96'; g.font = '9px IBM Plex Mono, monospace';
+      g.fillText(String(hh).padStart(2, '0'), 4, y + 3);
+    }
+    series.forEach((s, i) => {
+      if (only != null && only !== i) return;
+      g.fillStyle = SERIES[i % SERIES.length]; g.globalAlpha = only != null ? 0.75 : 0.5;
+      for (const t of s.ts) {
+        const d = new Date(t);
+        const x = L + ((Math.floor(t / DAY_MS) - d0) / days) * (w - L - 4);
+        const hr = d.getUTCHours() + d.getUTCMinutes() / 60;
+        const y = B + (1 - hr / 24) * (h - B - 12);
+        g.fillRect(x, y - 1, 2, 2);
+      }
+      g.globalAlpha = 1;
+    });
+    g.fillStyle = '#5d6e96'; g.font = '9px IBM Plex Mono, monospace';
+    for (let k = 0; k <= 3; k++) {
+      const dd = d0 + Math.round((days - 1) * (k / 3));
+      g.fillText(new Date(dd * DAY_MS).toISOString().slice(5, 10), L + (k / 3) * (w - L - 60), h - 8);
+    }
+  }, [series, span, only]);
+  if (!span) return <Empty />;
+  return (
+    <div>
+      <div style={{ fontSize: 10.5, color: C.tx2, marginBottom: 9, lineHeight: 1.5 }}>
+        One dot per action — date across, hour of day up. Empty horizontal bands are sleep. Accounts sharing a routine share the same band edges and the same gaps; a band that never breaks is not a person. Click a name to isolate it.
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+        <button onClick={() => setOnly(null)} style={{ ...SEL, cursor: 'pointer', color: only == null ? C.link : C.tx3 }}>All</button>
+        {series.map((s, i) => (
+          <button key={s.id} onClick={() => setOnly(only === i ? null : i)}
+            style={{ ...SEL, cursor: 'pointer', color: SERIES[i % SERIES.length], borderColor: only === i ? SERIES[i % SERIES.length] : C.line }}>{s.name}</button>
+        ))}
+      </div>
+      <canvas ref={ref} style={{ width: '100%', background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }} />
+    </div>
+  );
+}
+
+// ── lag profile ───────────────────────────────────────────────────────────────────────
+// Cross-correlation: for every action by A, how long until the nearest action by B? A
+// human pair produces a broad, shapeless hump. A scripted follower produces a SPIKE at a
+// consistent offset — "B always acts ~90s after A" — which no summary statistic exposes,
+// because the totals are identical whether the lag is consistent or random.
+function LagProfile({ a, b }) {
+  const BIN = 30000, HALF = 40;   // 30s bins, +/- 20 min
+  const bins = new Array(HALF * 2 + 1).fill(0);
+  let j = 0;
+  for (const t of a.ts) {
+    while (j < b.ts.length && b.ts[j] < t - HALF * BIN) j++;
+    for (let k = j; k < b.ts.length; k++) {
+      const d = b.ts[k] - t;
+      if (d > HALF * BIN) break;
+      bins[Math.round(d / BIN) + HALF]++;
+    }
+  }
+  const max = Math.max(1, ...bins);
+  const total = bins.reduce((s, v) => s + v, 0);
+  if (!total) return null;
+  // Is the mass concentrated away from zero? That is the scripted-follower shape.
+  let peak = 0; bins.forEach((v, i) => { if (v > bins[peak]) peak = i; });
+  const peakOffS = ((peak - HALF) * BIN) / 1000;
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 10, color: C.tx3, marginBottom: 5 }}>
+        Lag profile — how long after {a.name} acts does {b.name} act. A broad hump is two people in the same hours; a narrow spike off zero means one is following the other on a timer.
+      </div>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 64, background: C.bg, border: `1px solid ${C.line}`, borderRadius: 6, padding: '4px 5px' }}>
+        {bins.map((v, i) => (
+          <div key={i} title={`${(((i - HALF) * BIN) / 60000).toFixed(1)} min · ${v}`}
+            style={{ flex: 1, height: `${(v / max) * 100}%`, minHeight: v ? 1 : 0, background: i === HALF ? C.tx3 : (i === peak ? C.crit : C.link), opacity: i === HALF ? 0.5 : 0.85, borderRadius: '1px 1px 0 0' }} />
+        ))}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8.5, color: C.tx3, fontFamily: MONO, marginTop: 3 }}>
+        <span>−20 min</span><span>0 (simultaneous)</span><span>+20 min</span>
+      </div>
+      <div style={{ fontSize: 10, color: peak !== HALF ? C.high : C.tx3, marginTop: 5 }}>
+        Peak at {peakOffS === 0 ? 'zero — they act in the same moment' : `${peakOffS > 0 ? '+' : ''}${(peakOffS / 60).toFixed(1)} min`}
+        {peak !== HALF && Math.abs(peakOffS) >= 30 && ' — a consistent offset like this is what a scripted follower looks like.'}
+      </div>
+    </div>
+  );
+}
+
+const SEL = { background: C.elev, border: `1px solid ${C.line}`, color: C.tx2, fontSize: 10, fontWeight: 600, borderRadius: 6, padding: '3px 7px', outline: 'none', fontFamily: 'inherit' };
 
 const Empty = () => <div style={{ padding: 30, textAlign: 'center', color: C.tx3, fontSize: 12 }}>No activity for the selected transaction types.</div>;
