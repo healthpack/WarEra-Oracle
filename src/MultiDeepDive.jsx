@@ -177,6 +177,16 @@ export default function MultiDeepDive({ data, onClose }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '13px 16px', borderBottom: `1px solid ${C.line}`, flexShrink: 0 }}>
       <span style={{ fontSize: 13, fontWeight: 700, color: C.tx }}>Deep Dive — {accounts.length} accounts</span>
       {span && <span style={{ fontSize: 10.5, color: C.tx3, fontFamily: MONO }}>{new Date(span.lo).toISOString().slice(0, 10)} → {new Date(span.hi).toISOString().slice(0, 10)}</span>}
+      {/* Per-account coverage up front: an account contributing nothing to every chart
+          should be obvious here rather than inferred from an empty row further down. */}
+      <span style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginLeft: 4 }}>
+        {accounts.map((a, i) => {
+          const n = a.times.length;
+          return <span key={a.id} title={n ? `${a.name}: ${n.toLocaleString('en-US')} actions${a.times.length ? ` (${new Date(a.times[0].t).toISOString().slice(0, 10)} → ${new Date(a.times[a.times.length - 1].t).toISOString().slice(0, 10)})` : ''}` : `${a.name}: no activity in this window`}
+            style={{ fontSize: 9, fontFamily: MONO, padding: '1px 5px', borderRadius: 3, border: `1px solid ${n ? C.line2 : 'rgba(255,93,108,0.45)'}`, color: n ? SERIES[i % SERIES.length] : C.crit, opacity: n ? 1 : 0.75, whiteSpace: 'nowrap' }}>
+            {a.banned && '-'}{a.name} {n ? n.toLocaleString('en-US') : '0'}</span>;
+        })}
+      </span>
       <button onClick={onClose} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: C.tx3, cursor: 'pointer', fontSize: 20, lineHeight: 1 }}>&#215;</button>
     </div>
   );
