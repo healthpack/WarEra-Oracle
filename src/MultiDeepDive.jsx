@@ -125,7 +125,13 @@ export default function MultiDeepDive({ data, onClose }) {
   const [share, setShare] = useState(true);        // activity mix: 100%-stacked vs absolute
   const [xKey, setXKey] = useState('handoff');     // pair-scatter axes
   const [yKey, setYKey] = useState('overlap');
+  const [order, setOrder] = useState([]);          // row order, for lining rows up by eye
   const accounts = data?.accounts || [];
+  useEffect(() => { setOrder(accounts.map((_, i) => i)); }, [accounts.length]);
+  const moveRow = (from, to) => setOrder(prev => {
+    if (to < 0 || to >= prev.length) return prev;
+    const n = [...prev]; const [x] = n.splice(from, 1); n.splice(to, 0, x); return n;
+  });
 
   const allTypes = useMemo(() => {
     const s = new Set();
@@ -134,10 +140,15 @@ export default function MultiDeepDive({ data, onClose }) {
   }, [accounts]);
 
   // Timestamps per account after the type filter, sorted — every metric consumes these.
-  const series = useMemo(() => accounts.map(a => {
-    const evts = a.times.filter(x => !types || types.has(x.type));
-    return { ...a, evts, ts: evts.map(x => x.t).sort((p, q) => p - q) };
-  }), [accounts, types]);
+  // `ci` pins each account to a colour by its ORIGINAL position, so reordering rows in the
+  // timeline doesn't reshuffle the palette and invalidate every other view you've just read.
+  const series = useMemo(() => {
+    const base = accounts.map((a, i) => {
+      const evts = a.times.filter(x => !types || types.has(x.type));
+      return { ...a, ci: i, evts, ts: evts.map(x => x.t).sort((p, q) => p - q) };
+    });
+    return order.length === base.length ? order.map(i => base[i]) : base;
+  }, [accounts, types, order]);
 
   const cells = useMemo(() => {
     const n = series.length, out = {};
@@ -185,7 +196,7 @@ export default function MultiDeepDive({ data, onClose }) {
         {accounts.map((a, i) => {
           const n = a.times.length;
           return <span key={a.id} title={n ? `${a.name}: ${n.toLocaleString('en-US')} actions${a.times.length ? ` (${new Date(a.times[0].t).toISOString().slice(0, 10)} → ${new Date(a.times[a.times.length - 1].t).toISOString().slice(0, 10)})` : ''}` : `${a.name}: no activity in this window`}
-            style={{ fontSize: 9, fontFamily: MONO, padding: '1px 5px', borderRadius: 3, border: `1px solid ${n ? C.line2 : 'rgba(255,93,108,0.45)'}`, color: n ? SERIES[i % SERIES.length] : C.crit, opacity: n ? 1 : 0.75, whiteSpace: 'nowrap' }}>
+            style={{ fontSize: 9, fontFamily: MONO, padding: '1px 5px', borderRadius: 3, border: `1px solid ${n ? C.line2 : 'rgba(255,93,108,0.45)'}`, color: n ? SERIES[(s?.ci ?? i) % SERIES.length] : C.crit, opacity: n ? 1 : 0.75, whiteSpace: 'nowrap' }}>
             {a.banned && '-'}{a.name} {n ? n.toLocaleString('en-US') : '0'}</span>;
         })}
       </span>
@@ -220,7 +231,7 @@ export default function MultiDeepDive({ data, onClose }) {
       {mode === 'scatter' && <PairScatter series={series} cells={cells} onPick={setPair} pair={pair} xKey={xKey} yKey={yKey} setXKey={setXKey} setYKey={setYKey} />}
       {mode === 'finger' && <Fingerprint series={series} span={span} />}
       {mode === 'mix' && <Mix series={series} share={share} setShare={setShare} />}
-      {mode === 'raster' && <Raster series={series} span={span} />}
+      {mode === 'raster' && <Raster series={series} span={span} moveRow={moveRow} />}
       {mode === 'hours' && <HourHeat series={series} />}
       {mode === 'days' && <DayHeat series={series} span={span} />}
     </div>
@@ -252,11 +263,11 @@ function Matrix({ series, cells, metric, setMetric, onPick, pair }) {
       </div>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ borderCollapse: 'collapse', fontFamily: MONO, fontSize: 10.5 }}>
-          <thead><tr><th /> {series.map((s, j) => <th key={j} style={{ padding: '3px 5px', color: SERIES[j % SERIES.length], fontWeight: 700, writingMode: 'vertical-rl', transform: 'rotate(180deg)', maxHeight: 96, whiteSpace: 'nowrap' }}>{s.name}</th>)}</tr></thead>
+          <thead><tr><th /> {series.map((s, j) => <th key={j} style={{ padding: '3px 5px', color: SERIES[(s?.ci ?? j) % SERIES.length], fontWeight: 700, writingMode: 'vertical-rl', transform: 'rotate(180deg)', maxHeight: 96, whiteSpace: 'nowrap' }}>{s.name}</th>)}</tr></thead>
           <tbody>
             {series.map((s, i) => (
               <tr key={i}>
-                <td style={{ padding: '3px 8px 3px 0', color: SERIES[i % SERIES.length], fontWeight: 700, whiteSpace: 'nowrap', textAlign: 'right' }}>{s.name}</td>
+                <td style={{ padding: '3px 8px 3px 0', color: SERIES[(s?.ci ?? i) % SERIES.length], fontWeight: 700, whiteSpace: 'nowrap', textAlign: 'right' }}>{s.name}</td>
                 {series.map((_, j) => {
                   if (i === j) return <td key={j} style={{ background: C.elev, border: `1px solid ${C.line}`, width: 46, height: 30 }} />;
                   const c = cells[`${i}_${j}`] || {};
@@ -300,7 +311,7 @@ function verdict(p) {
 }
 
 // ── raster timeline ───────────────────────────────────────────────────────────────────
-function Raster({ series, span }) {
+function Raster({ series, span, moveRow }) {
   const ref = useRef(null);
   const [zoom, setZoom] = useState(null);   // [lo,hi] or null = full span
   const view = zoom || (span ? [span.lo, span.hi] : null);
@@ -315,7 +326,7 @@ function Raster({ series, span }) {
     series.forEach((s, i) => {
       const y = i * rowH + 11;
       g.fillStyle = '#121b35'; g.fillRect(0, y - 8, w, 17);
-      g.strokeStyle = SERIES[i % SERIES.length]; g.globalAlpha = 0.9; g.lineWidth = 1;
+      g.strokeStyle = SERIES[(s?.ci ?? i) % SERIES.length]; g.globalAlpha = 0.9; g.lineWidth = 1;
       g.beginPath();
       for (const t of s.ts) {
         if (t < lo || t > hi) continue;
@@ -335,14 +346,18 @@ function Raster({ series, span }) {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 9, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 10.5, color: C.tx2 }}>Each tick is one action. Look for rows that interleave without ever overlapping — that is one pair of hands moving between accounts.</span>
+        <span style={{ fontSize: 10.5, color: C.tx2 }}>Each tick is one action. Look for rows that interleave without ever overlapping — that is one pair of hands moving between accounts. Use ▲▼ to sit two accounts next to each other; the ordering carries across the other views, and colours stay fixed to each account.</span>
         {zoom && <button onClick={() => setZoom(null)} style={{ marginLeft: 'auto', padding: '3px 9px', borderRadius: 6, fontSize: 10, cursor: 'pointer', background: C.elev, border: `1px solid ${C.line}`, color: C.link }}>Reset zoom</button>}
       </div>
       <div style={{ display: 'flex', gap: 9 }}>
         <div style={{ flexShrink: 0, paddingTop: 3 }}>
           {series.map((s, i) => (
-            <div key={i} style={{ height: 26, display: 'flex', alignItems: 'center', gap: 5, fontFamily: MONO, fontSize: 10, color: SERIES[i % SERIES.length], whiteSpace: 'nowrap', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {s.banned && <span style={{ color: C.crit, fontWeight: 700 }}>-</span>}{s.name}
+            <div key={i} style={{ height: 26, display: 'flex', alignItems: 'center', gap: 3, fontFamily: MONO, fontSize: 10, color: SERIES[(s?.ci ?? i) % SERIES.length], whiteSpace: 'nowrap', width: 150 }}>
+              <button onClick={() => moveRow(i, i - 1)} disabled={i === 0} title="Move up"
+                style={{ ...ARROW, opacity: i === 0 ? 0.25 : 1, cursor: i === 0 ? 'default' : 'pointer' }}>▲</button>
+              <button onClick={() => moveRow(i, i + 1)} disabled={i === series.length - 1} title="Move down"
+                style={{ ...ARROW, opacity: i === series.length - 1 ? 0.25 : 1, cursor: i === series.length - 1 ? 'default' : 'pointer' }}>▼</button>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.banned && <b style={{ color: C.crit }}>-</b>}{s.name}</span>
             </div>
           ))}
         </div>
@@ -361,20 +376,55 @@ function Raster({ series, span }) {
 
 // ── hour-of-day heatmap ───────────────────────────────────────────────────────────────
 function HourHeat({ series }) {
+  const [drill, setDrill] = useState(null);   // hour 0-23, or null
   const rows = series.map(s => { const h = hourHist(s.ts); const mx = Math.max(1, ...h); return { s, h, mx }; });
   if (!rows.length) return <Empty />;
+
+  if (drill != null) {
+    // Minute-of-hour profile. A human's minutes are scattered; a scheduled job piles up on
+    // the same few minutes every time, which is invisible at hour resolution because the
+    // hourly total looks identical either way.
+    const mins = series.map(s => {
+      const m = new Array(60).fill(0);
+      s.ts.forEach(t => { const d = new Date(t); if (d.getUTCHours() === drill) m[d.getUTCMinutes()]++; });
+      return { s, m, mx: Math.max(1, ...m), total: m.reduce((a, b) => a + b, 0) };
+    });
+    return (
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 10, flexWrap: 'wrap' }}>
+          <button onClick={() => setDrill(null)} style={{ ...SEL, cursor: 'pointer', color: C.link }}>← All hours</button>
+          <span style={{ fontSize: 12, fontWeight: 700, color: C.tx, fontFamily: MONO }}>{String(drill).padStart(2, '0')}:00–{String(drill).padStart(2, '0')}:59 UTC</span>
+          <span style={{ fontSize: 10.5, color: C.tx2, flex: 1, minWidth: 240 }}>Minute by minute. Scattered = a person. Spikes on the same minutes every time = something scheduled — and the hourly total looks the same either way, which is why this only shows up here.</span>
+        </div>
+        {mins.map(({ s, m, mx, total }, i) => (
+          <div key={s.id} style={{ marginBottom: 9 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontFamily: MONO, marginBottom: 3 }}>
+              <span style={{ color: SERIES[(s?.ci ?? i) % SERIES.length] }}>{s.name}</span>
+              <span style={{ color: C.tx3 }}>{total} action(s) in this hour</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 34, background: C.bg, border: `1px solid ${C.line}`, borderRadius: 5, padding: '3px 4px' }}>
+              {m.map((v, mi) => <div key={mi} title={`${String(drill).padStart(2, '0')}:${String(mi).padStart(2, '0')} · ${v}`}
+                style={{ flex: 1, height: `${(v / mx) * 100}%`, minHeight: v ? 1 : 0, background: SERIES[(s?.ci ?? i) % SERIES.length], opacity: 0.85, borderRadius: '1px 1px 0 0' }} />)}
+            </div>
+          </div>
+        ))}
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8.5, color: C.tx3, fontFamily: MONO }}><span>:00</span><span>:15</span><span>:30</span><span>:45</span><span>:59</span></div>
+      </div>
+    );
+  }
+
   return (
     <div>
-      <div style={{ fontSize: 10.5, color: C.tx2, marginBottom: 10 }}>Each row is normalised to its own busiest hour, so a small account and a large one can be compared by SHAPE rather than volume. Identical shapes mean a shared daily routine — suggestive, though a shared timezone alone can produce it.</div>
+      <div style={{ fontSize: 10.5, color: C.tx2, marginBottom: 10 }}>Each row is normalised to its own busiest hour, so a small account and a large one can be compared by SHAPE rather than volume. Identical shapes mean a shared daily routine — suggestive, though a shared timezone alone can produce it. <b style={{ color: C.link }}>Click any hour to open it minute by minute.</b></div>
       <div style={{ overflowX: 'auto' }}>
         <div style={{ display: 'grid', gridTemplateColumns: `minmax(96px,auto) repeat(24, 26px)`, gap: 2, alignItems: 'center' }}>
-          <div />{Array.from({ length: 24 }, (_, i) => <div key={i} style={{ fontSize: 8.5, color: C.tx3, textAlign: 'center', fontFamily: MONO }}>{String(i).padStart(2, '0')}</div>)}
+          <div />{Array.from({ length: 24 }, (_, i) => <div key={i} onClick={() => setDrill(i)} title={`Open ${String(i).padStart(2, '0')}:00 minute by minute`} style={{ fontSize: 8.5, color: C.tx3, textAlign: 'center', fontFamily: MONO, cursor: 'pointer' }}>{String(i).padStart(2, '0')}</div>)}
           {rows.map(({ s, h, mx }, i) => (
             <React.Fragment key={i}>
-              <div style={{ fontFamily: MONO, fontSize: 10, color: SERIES[i % SERIES.length], whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: 6 }}>{s.name}</div>
+              <div style={{ fontFamily: MONO, fontSize: 10, color: SERIES[(s?.ci ?? i) % SERIES.length], whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: 6 }}>{s.name}</div>
               {h.map((v, j) => (
-                <div key={j} title={`${s.name} — ${String(j).padStart(2, '0')}:00 UTC · ${v} action(s)`}
-                  style={{ height: 22, borderRadius: 3, background: v === 0 ? C.elev : `rgba(79,195,232,${(0.12 + 0.85 * (v / mx)).toFixed(3)})`, border: `1px solid ${C.line}` }} />
+                <div key={j} onClick={() => setDrill(j)} title={`${s.name} — ${String(j).padStart(2, '0')}:00 UTC · ${v} action(s) — click for minute detail`}
+                  style={{ height: 22, borderRadius: 3, cursor: 'pointer', background: v === 0 ? C.elev : `rgba(79,195,232,${(0.12 + 0.85 * (v / mx)).toFixed(3)})`, border: `1px solid ${C.line}` }} />
               ))}
             </React.Fragment>
           ))}
@@ -401,7 +451,7 @@ function DayHeat({ series, span }) {
         <div style={{ display: 'grid', gridTemplateColumns: `minmax(96px,auto) repeat(${days}, 11px)`, gap: 1.5, alignItems: 'center' }}>
           {rows.map(({ s, m, mx }, i) => (
             <React.Fragment key={i}>
-              <div style={{ fontFamily: MONO, fontSize: 10, color: SERIES[i % SERIES.length], whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: 6 }}>{s.name}</div>
+              <div style={{ fontFamily: MONO, fontSize: 10, color: SERIES[(s?.ci ?? i) % SERIES.length], whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: 6 }}>{s.name}</div>
               {Array.from({ length: days }, (_, d) => {
                 const v = m.get(d) || 0;
                 return <div key={d} title={`${s.name} — ${new Date((d0 + d) * DAY_MS).toISOString().slice(0, 10)} · ${v} action(s)`}
@@ -566,7 +616,7 @@ function Mix({ series, share, setShare }) {
       {rows.map(({ s, by, total }, i) => (
         <div key={i} style={{ marginBottom: 9 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontFamily: MONO, marginBottom: 3 }}>
-            <span style={{ color: SERIES[i % SERIES.length] }}>{s.banned && <b style={{ color: C.crit }}>- </b>}{s.name}</span>
+            <span style={{ color: SERIES[(s?.ci ?? i) % SERIES.length] }}>{s.banned && <b style={{ color: C.crit }}>- </b>}{s.name}</span>
             <span style={{ color: C.tx3 }}>{total.toLocaleString('en-US')} actions</span>
           </div>
           <div style={{ display: 'flex', height: 17, borderRadius: 4, overflow: 'hidden', background: C.elev, border: `1px solid ${C.line}`, width: share ? '100%' : `${Math.max(3, (total / maxTotal) * 100)}%` }}>
@@ -593,15 +643,25 @@ function Mix({ series, share, setShare }) {
 function Fingerprint({ series, span }) {
   const ref = useRef(null);
   const [only, setOnly] = useState(null);
+  const [zoom, setZoom] = useState(null);
+  const view = zoom || (span ? [span.lo, span.hi] : null);
   useEffect(() => {
-    const cv = ref.current; if (!cv || !span) return;
+    const cv = ref.current; if (!cv || !view) return;
     const dpr = window.devicePixelRatio || 1;
     const w = cv.clientWidth, h = 380, L = 34, B = 26;
     cv.width = w * dpr; cv.height = h * dpr; cv.style.height = h + 'px';
     const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, w, h);
-    const d0 = Math.floor(span.lo / DAY_MS), d1 = Math.floor(span.hi / DAY_MS), days = Math.max(1, d1 - d0 + 1);
-    // hour gridlines every 6h
+    const [lo, hi] = view, sp = Math.max(1, hi - lo);
+    // Day separators, as long as they aren't so dense they turn into a solid block.
+    const dayCount = sp / DAY_MS;
+    if (dayCount <= 90) {
+      g.strokeStyle = '#131c33'; g.lineWidth = 1;
+      for (let d = Math.ceil(lo / DAY_MS); d <= Math.floor(hi / DAY_MS); d++) {
+        const x = L + ((d * DAY_MS - lo) / sp) * (w - L - 4);
+        g.beginPath(); g.moveTo(x, B); g.lineTo(x, h - 14); g.stroke();
+      }
+    }
     g.strokeStyle = '#1f2b4e'; g.lineWidth = 1;
     for (let hh = 0; hh <= 24; hh += 6) {
       const y = B + (1 - hh / 24) * (h - B - 12);
@@ -611,11 +671,14 @@ function Fingerprint({ series, span }) {
     }
     series.forEach((s, i) => {
       if (only != null && only !== i) return;
-      g.fillStyle = SERIES[i % SERIES.length]; g.globalAlpha = only != null ? 0.75 : 0.5;
+      g.fillStyle = SERIES[(s?.ci ?? i) % SERIES.length]; g.globalAlpha = only != null ? 0.8 : 0.55;
       for (const t of s.ts) {
+        if (t < lo || t > hi) continue;
+        // Exact timestamp on x — this used to floor to whole days, which stacked every
+        // action of a day onto one vertical line and threw away the within-day position.
+        const x = L + ((t - lo) / sp) * (w - L - 4);
         const d = new Date(t);
-        const x = L + ((Math.floor(t / DAY_MS) - d0) / days) * (w - L - 4);
-        const hr = d.getUTCHours() + d.getUTCMinutes() / 60;
+        const hr = d.getUTCHours() + d.getUTCMinutes() / 60 + d.getUTCSeconds() / 3600;
         const y = B + (1 - hr / 24) * (h - B - 12);
         g.fillRect(x, y - 1, 2, 2);
       }
@@ -623,24 +686,36 @@ function Fingerprint({ series, span }) {
     });
     g.fillStyle = '#5d6e96'; g.font = '9px IBM Plex Mono, monospace';
     for (let k = 0; k <= 3; k++) {
-      const dd = d0 + Math.round((days - 1) * (k / 3));
-      g.fillText(new Date(dd * DAY_MS).toISOString().slice(5, 10), L + (k / 3) * (w - L - 60), h - 8);
+      const t = lo + (sp * k) / 3;
+      const lbl = dayCount <= 4 ? new Date(t).toISOString().slice(5, 16).replace('T', ' ') : new Date(t).toISOString().slice(5, 10);
+      g.fillText(lbl, Math.min(w - 70, L + (k / 3) * (w - L - 60)), h - 8);
     }
-  }, [series, span, only]);
+  }, [series, view, only]);
   if (!span) return <Empty />;
+  const dayCount = (view[1] - view[0]) / DAY_MS;
   return (
     <div>
       <div style={{ fontSize: 10.5, color: C.tx2, marginBottom: 9, lineHeight: 1.5 }}>
-        One dot per action — date across, hour of day up. Empty horizontal bands are sleep. Accounts sharing a routine share the same band edges and the same gaps; a band that never breaks is not a person. Click a name to isolate it.
+        One dot per action — time across, hour of day up. Dots sit at their exact timestamp, so zooming in resolves individual actions rather than a daily column. Empty horizontal bands are sleep; accounts sharing a routine share the same band edges and the same gaps, and a band that never breaks is not a person. Click a name to isolate, click the chart to zoom 4×.
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 7, fontSize: 10, color: C.tx3, fontFamily: MONO }}>
+        <span>span {dayCount >= 2 ? `${dayCount.toFixed(1)} days` : `${(dayCount * 24).toFixed(1)} h`}</span>
+        {zoom && <button onClick={() => setZoom(null)} style={{ ...SEL, cursor: 'pointer', color: C.link }}>Reset zoom</button>}
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
         <button onClick={() => setOnly(null)} style={{ ...SEL, cursor: 'pointer', color: only == null ? C.link : C.tx3 }}>All</button>
         {series.map((s, i) => (
           <button key={s.id} onClick={() => setOnly(only === i ? null : i)}
-            style={{ ...SEL, cursor: 'pointer', color: SERIES[i % SERIES.length], borderColor: only === i ? SERIES[i % SERIES.length] : C.line }}>{s.name}</button>
+            style={{ ...SEL, cursor: 'pointer', color: SERIES[(s?.ci ?? i) % SERIES.length], borderColor: only === i ? SERIES[(s?.ci ?? i) % SERIES.length] : C.line }}>{s.name}</button>
         ))}
       </div>
-      <canvas ref={ref} style={{ width: '100%', background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8 }} />
+      <canvas ref={ref} style={{ width: '100%', background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8, cursor: 'crosshair' }}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          const L = 34, f = Math.max(0, (e.clientX - r.left - L) / (r.width - L));
+          const [lo, hi] = view, sp = hi - lo, c = lo + f * sp, nw = sp / 4;
+          setZoom([c - nw / 2, c + nw / 2]);
+        }} />
     </div>
   );
 }
@@ -693,3 +768,5 @@ function LagProfile({ a, b }) {
 const SEL = { background: C.elev, border: `1px solid ${C.line}`, color: C.tx2, fontSize: 10, fontWeight: 600, borderRadius: 6, padding: '3px 7px', outline: 'none', fontFamily: 'inherit' };
 
 const Empty = () => <div style={{ padding: 30, textAlign: 'center', color: C.tx3, fontSize: 12 }}>No activity for the selected transaction types.</div>;
+
+const ARROW = { background: 'transparent', border: 'none', color: 'inherit', fontSize: 7, lineHeight: 1, padding: 0, width: 9, flexShrink: 0 };
